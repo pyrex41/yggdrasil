@@ -1,6 +1,6 @@
 # Behavioural parity gate
 
-Yggdrasil's headline guarantee is that all seven ports emit a **byte-identical**
+Yggdrasil's headline guarantee is that all eight stage-1 host ports emit a **byte-identical**
 `kernel.kl` + manifest and portable user KL. That proves the *slice* is the same
 bytes everywhere. It does **not** prove the slice *computes the same thing* on
 each target.

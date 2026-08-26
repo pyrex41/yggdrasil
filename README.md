@@ -35,11 +35,11 @@ program can actually reach, emits just that slice as KLambda, and hands the
 result to a per-target builder that compiles it with the target port's own
 KL compiler.
 
-> **The shaker runs on any of the seven ports.** Stage 1 is pure Shen, but
+> **The shaker runs on any of the eight ports.** Stage 1 is pure Shen, but
 > it compiles your program to KLambda with the host's `bootstrap`
-> compiler, so the host must emit fully portable KL. All seven ports —
-> shen-cl, shen-lua, shen-go, shen-rust, ShenScript, shen-julia and
-> shen-swift — are now verified to produce a byte-identical `kernel.kl` +
+> compiler, so the host must emit fully portable KL. All eight ports —
+> shen-cl, shen-lua, shen-go, shen-erl, shen-rust, ShenScript, shen-julia
+> and shen-swift — are now verified to produce a byte-identical `kernel.kl` +
 > manifest and portable user KL (see the Gotchas section for the per-host
 > launcher invocation and the `*hush*` caveat). shen-cl remains the
 > reference and the fastest host; shen-julia and shen-swift matched it
@@ -81,7 +81,7 @@ yggdrasil targets                              # list stage-2 targets
 | `build … --target js --web` | emit a browser-safe ES module (`import $ from './app.js'; $.caller('fn')(…)`) instead of the Node artifact — no `node:fs`/streams/`process`; passes `--web` to ShenScript's builder |
 | `run PROG OUTDIR --target T` | build, then execute the artifact |
 | `parity PROG OUTDIR` | run the shaken slice on every target and diff outputs against a reference — see [Behavioural parity gate](#behavioural-parity-gate) |
-| `targets` | list available targets (`lisp`/`lua`/`go`/`rust`/`js`/`julia`/`scheme`/`swift`/`truffle`/`truffle-native`) |
+| `targets` | list available targets (`lisp`/`lua`/`go`/`erlang`/`rust`/`js`/`julia`/`scheme`/`swift`/`truffle`/`truffle-native`) |
 
 The stage-1 **host** defaults to the sibling `../shen-cl/bin/sbcl/shen`
 binary, used as-is. The reference is shen-cl built from its S41.2-refresh
@@ -104,12 +104,12 @@ and Windows. Launcher resolution matches `shen.exe` (PATHEXT) on Windows, and a
 auto-wrapped (`cmd /c` / `sh` — the latter needs git-bash/WSL/MSYS `sh` on
 PATH). The `go` CI job builds and tests the binary — including these helpers and
 the embedded `builders.json` — on `ubuntu`/`macos`/`windows-latest`. As ever,
-whether a given target's *toolchain* (sbcl/luajit/go/cargo/node/julia/chez/swift)
+whether a given target's *toolchain* (sbcl/luajit/go/Erlang/cargo/node/julia/chez/swift)
 is available is your environment's call.
 
 ## Architecture
 
-**Stage 1 — shake** (this repo; run on any of the seven ports — see the
+**Stage 1 — shake** (this repo; run on any of the eight ports — see the
 host-portability gotcha for per-host launcher syntax):
 
 ```
@@ -139,6 +139,7 @@ repo):
 | Common Lisp | `builders/lisp/build.sh <dir> <exe>` (this repo; `LISP_IMPL=sbcl\|clisp\|ecl`) | saved image (SBCL ~36 MB, CLISP ~7.8 MB) or compiled binary (ECL ~620 KB + libecl) |
 | LuaJIT | `shen-lua/bin/yggdrasil-build.lua <dir> <out.lua>` | self-contained .lua (~640 KB, ~25 ms startup) |
 | Go | `shen-go/cmd/yggdrasil-build <dir> <outdir>` then `go build` | static binary (~4.5 MB, ≤10 ms startup, cross-compiles linux/windows) |
+| Erlang | `builders/erlang/build.sh <dir> <outdir>` (this repo; `SHEN_ERL=<checkout>`) | shaken KLambda compiled to BEAM plus the small shen-erl runtime and a `run` launcher; requires Erlang/OTP at runtime, but never boots the full kernel. |
 | Rust | `shen-rust/crates/yggdrasil-build <dir> <outdir>` then `cargo build --release` | static binary (~9 MB, ~40 ms startup) |
 | JavaScript | `node ShenScript/bin/yggdrasil-build.js <dir> <out.js>` (`--linked` for needs-eval; `--web` for a browser module) | self-contained ES module (~120 KB, runs on Node 20+ / Bun / Deno 2; `--web` → browser, `import`s the booted env) |
 | Julia | `julia --project=shen-julia shen-julia/bin/yggdrasil-build.jl <dir> <outdir> [--sysimage]` | artifact project; with `--sysimage` a per-program sysimage (~266 MB, ~0.15 s warm startup), else a lib-mode `.jl` (~4 s, no sysimage). The shaken kernel+user defuns are baked as module methods (same AOT technique as shen-julia's own fast boot). |
@@ -213,8 +214,9 @@ mode refuses eval-capable manifests).
   `yggdrasil.shen` carries its own `ygg.*` versions.
 - Compiled KL carries explicit property-table arguments — e.g. the
   external-symbols registration is a 5-element `put` node, not 4.
-- **Stage 1 runs on all seven ports** (verified 2026-06-12 for `fib` and
-  `prolog` on the first five; shen-julia and shen-swift verified 2026-06-19:
+- **Stage 1 runs on all eight ports** (verified 2026-06-12 for `fib` and
+  `prolog` on the first five; shen-julia and shen-swift verified 2026-06-19,
+  and shen-erl verified 2026-08-26:
   byte-identical `kernel.kl` + both manifests against the shen-cl reference,
   user KL identical modulo gensym numbering). Getting there took one fix per
   non-shen-cl host, since the user program's KL comes from the host's
@@ -224,6 +226,7 @@ mode refuses eval-capable manifests).
   - **shen-cl** — reference host, fastest (~0.06 s): `shen eval -q -l yggdrasil.shen -e '(yggdrasil.shake ["prog.shen"] "out")'`
   - **shen-lua** — `bin/shen yggdrasil.shen -e '(yggdrasil.shake ...)'`. Its native engine compiled `prolog?` to port-local `shen.lua-run-query*` hooks; that expansion is now gated to skip the dynamic extent of `bootstrap`, so compiled `.kl` carries the kernel's portable CPS expansion.
   - **shen-go** — `shen eval -q -l yggdrasil.shen -e '(yggdrasil.shake ...)'`. Gained the standard launcher CLI (`extension-launcher.kl`); the stock binary previously had no `-l`/`-e` and fell straight into the REPL.
+  - **shen-erl** — `shen-erl eval -q -l yggdrasil.shen -e '(yggdrasil.shake ...)'`. Verified 2026-08-26: emitted byte-identical `kernel.kl` and manifests against shen-cl; its native `pr` override keeps file writes active under `-q`.
   - **shen-rust** — `shen-rust eval -l yggdrasil.shen -e '(yggdrasil.shake ...)'`. Gained the same launcher CLI (on a 1 GB-stack thread for the deep call-graph walk); also fixed `open/2` to honour the `in`/`out` direction symbol so the KL writers truncate-for-write.
   - **ShenScript** — `node bin/shen.js eval -l yggdrasil.shen -e '(yggdrasil.shake ...)'`. The async `read-byte`/file streams left EOF as an unsettled promise, so `read-file-as-bytelist` looped forever (the 50-min hang); file streams are now synchronous and the shake finishes in ~25 s.
   - **shen-julia** — `shen-julia/bin/shen eval -l yggdrasil.shen -e '(yggdrasil.shake ...)'` (omit `-q`: like shen-lua/shen-rust, `*hush*` would otherwise silence the `pr` writes; a host-side `pr` override makes `*hush*` gate only stdout). Pre-create the output dir (the shake doesn't `mkdir`). Produced byte-identical `kernel.kl` + manifests on the first try — no portability fix needed.
@@ -231,7 +234,7 @@ mode refuses eval-capable manifests).
   - **`*hush*` caveat**: `-q` sets `*hush*`, and on **shen-lua and
     shen-rust** that silences the `pr` writes to the output files,
     producing zero-byte artifacts — **omit `-q` on those two**. shen-cl
-    (native `pr` override), shen-go, ShenScript, shen-julia and shen-swift
+    (native `pr` override), shen-go, shen-erl, ShenScript, shen-julia and shen-swift
     route `pr` to file streams regardless of `*hush*`, so `-q` is harmless
     there. Dropping `-q` everywhere is the safe default; it only adds a
     load-echo line to stdout, not to the artifacts.

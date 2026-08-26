@@ -9,15 +9,15 @@
     "  {outdir}    the shake output dir (kernel.kl + <prog>.kl + manifest)",
     "  {tmp}       a scratch dir for intermediate build tools",
     "  {shen_lua}/{shen_go}/{shen_rust}/{shenscript}/{shen_julia}/{shen_scheme}/",
-    "  {shen_swift}/{shen_cl}/{shen_truffle}            sibling port repo roots;",
+    "  {shen_swift}/{shen_erl}/{shen_cl}/{shen_truffle} sibling port repo roots;",
     "              default to {yggroot}/../<name>, overridable via the env var",
     "              named in each target's 'dir_env'.",
     "",
     "Each target: 'build' is a list of steps (argv + optional cwd/env), run in",
     "order; 'run' is the argv that executes the built artifact and prints to",
     "stdout; 'needs' lists external tools that must be on PATH (else SKIP).",
-    "All eight bifrost ports now have a builder: scheme compiles via shen-scheme's",
-    "kl->scheme; swift drives the shen-swift tree-walking interpreter on the slice."
+    "The Erlang target compiles the shaken slice to BEAM with shen-erl; scheme",
+    "compiles via kl->scheme; swift interprets the minimal slice directly."
   ],
 
   "lisp": {
@@ -107,6 +107,17 @@
        "env": {"SHEN_SWIFT": "{shen_swift}"}}
     ],
     "run": ["{outdir}/app-swift/run"]
+  },
+
+  "erlang": {
+    "run_impl": "shen-erl",
+    "dir_env": "YGGDRASIL_SHEN_ERL_DIR",
+    "needs": ["erl", "erlc", "make", "cc", "curl", "unzip", "tar", "shasum"],
+    "build": [
+      {"argv": ["{yggroot}/builders/erlang/build.sh", "{outdir}", "{outdir}/app-erlang"],
+       "env": {"SHEN_ERL": "{shen_erl}"}}
+    ],
+    "run": ["{outdir}/app-erlang/run"]
   },
 
   "hvm": {
