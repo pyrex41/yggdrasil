@@ -137,3 +137,63 @@ func TestTruffleBuilderRecipes(t *testing.T) {
 		}
 	}
 }
+
+func TestReorderArgsTypecheckBoolFlag(t *testing.T) {
+	// --typecheck is a bool flag (not in valueFlags): it must be pulled
+	// forward WITHOUT swallowing the following positional.
+	got := reorderArgs([]string{"prog.shen", "out", "--typecheck", "--target", "lua"}, "host", "eval-style", "target")
+	want := []string{"--typecheck", "--target", "lua", "prog.shen", "out"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("reorderArgs(--typecheck) = %v, want %v", got, want)
+	}
+}
+
+func TestParseCheckOK(t *testing.T) {
+	ver, ok := parseCheckOK("boot chatter\nyggdrasil-check: OK files=1 inferences=42 version=S41.2\ntrailer\n")
+	if !ok || ver != "S41.2" {
+		t.Errorf("parseCheckOK OK line = (%q, %v), want (\"S41.2\", true)", ver, ok)
+	}
+	// FAIL sentinel is not OK.
+	if _, ok := parseCheckOK("yggdrasil-check: FAIL file=x.shen form=2 name=bad\n  type error\n"); ok {
+		t.Error("FAIL sentinel parsed as OK")
+	}
+	// Garbage (host crash, no sentinel) is not OK.
+	if _, ok := parseCheckOK("Segmentation fault\n"); ok {
+		t.Error("garbage output parsed as OK")
+	}
+	// OK without a version field still passes, with empty version.
+	ver, ok = parseCheckOK("yggdrasil-check: OK files=1\n")
+	if !ok || ver != "" {
+		t.Errorf("versionless OK = (%q, %v), want (\"\", true)", ver, ok)
+	}
+}
+
+func TestAppendTypecheckManifest(t *testing.T) {
+	dir := t.TempDir()
+	txt := filepath.Join(dir, "yggdrasil.manifest.txt")
+	sexp := filepath.Join(dir, "yggdrasil.manifest")
+	if err := os.WriteFile(txt, []byte("manifest-version=3\nneeds-eval=false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sexp, []byte("(\"yggdrasil-manifest\" 3)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := appendTypecheckManifest(dir, []string{"node", "/p/shen.js"}, "S41.2"); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(txt)
+	for _, want := range []string{"needs-eval=false", "typechecked=true", "typecheck-host=node /p/shen.js", "typecheck-kernel=S41.2"} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("manifest.txt missing %q:\n%s", want, b)
+		}
+	}
+	s, _ := os.ReadFile(sexp)
+	if !strings.Contains(string(s), "(\"typechecked\" true)") {
+		t.Errorf("sexp manifest missing typechecked line:\n%s", s)
+	}
+	// Appending to a missing manifest is an error, not a silent create: the
+	// gate only records into a manifest a shake already wrote.
+	if err := appendTypecheckManifest(t.TempDir(), nil, "x"); err == nil {
+		t.Error("append into an empty outdir must fail")
+	}
+}
