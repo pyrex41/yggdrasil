@@ -105,10 +105,27 @@ func TestLoadBuildersEmbedded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"lisp", "lua", "go", "rust", "js", "truffle", "truffle-native"} {
+	for _, want := range []string{"lisp", "lua", "go", "rust", "js", "erlang", "truffle", "truffle-native"} {
 		if _, ok := b[want]; !ok {
 			t.Errorf("missing target %q", want)
 		}
+	}
+}
+
+func TestErlangBuilderRecipe(t *testing.T) {
+	b, err := loadBuilders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bld := b["erlang"]
+	if bld.RunImpl != "shen-erl" || bld.DirEnv != "YGGDRASIL_SHEN_ERL_DIR" {
+		t.Fatalf("unexpected erlang builder: %#v", bld)
+	}
+	if len(bld.Build) != 1 || !strings.Contains(strings.Join(bld.Build[0].Argv, " "), "builders/erlang/build.sh") {
+		t.Fatalf("unexpected erlang build steps: %#v", bld.Build)
+	}
+	if got := strings.Join(bld.Run, " "); got != "{outdir}/app-erlang/run" {
+		t.Fatalf("erlang run recipe = %q", got)
 	}
 }
 

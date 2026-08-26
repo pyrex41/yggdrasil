@@ -487,7 +487,7 @@ func siblingDir(target string, b builder) string {
 	name := map[string]string{
 		"lua": "shen-lua", "go": "shen-go", "rust": "shen-rust",
 		"js": "ShenScript", "julia": "shen-julia", "scheme": "shen-scheme",
-		"swift": "shen-swift", "lisp": "shen-cl", "hvm": "inets/shen-inets",
+		"swift": "shen-swift", "erlang": "shen-erl", "lisp": "shen-cl", "hvm": "inets/shen-inets",
 		"truffle": "shen-truffle", "truffle-native": "shen-truffle",
 	}[target]
 	cwd, _ := os.Getwd()
@@ -535,7 +535,8 @@ func build(target, outdir string, web bool) ([]string, error) {
 		"{shen_lua}": siblingDir("lua", b), "{shen_go}": siblingDir("go", b),
 		"{shen_rust}": siblingDir("rust", b), "{shenscript}": siblingDir("js", b),
 		"{shen_julia}": siblingDir("julia", b), "{shen_scheme}": siblingDir("scheme", b),
-		"{shen_swift}": siblingDir("swift", b), "{shen_cl}": siblingDir("lisp", b),
+		"{shen_swift}": siblingDir("swift", b), "{shen_erl}": siblingDir("erlang", b),
+		"{shen_cl}":      siblingDir("lisp", b),
 		"{shen_inets}":   siblingDir("hvm", b),
 		"{shen_truffle}": siblingDir(target, b),
 	}
@@ -626,7 +627,7 @@ func cmdStage(cmd string, rest []string) int {
 	fs.SetOutput(os.Stderr)
 	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: shen-cl`)
 	evalStyle := fs.String("eval-style", "sub", "how the host evaluates the shake expr (sub | positional)")
-	target := fs.String("target", "", "stage-2 target (lisp/lua/go/rust/js/julia/scheme/swift/truffle/truffle-native)")
+	target := fs.String("target", "", "stage-2 target (lisp/lua/go/rust/js/julia/scheme/swift/erlang/truffle/truffle-native)")
 	web := fs.Bool("web", false, "with --target js: emit a browser-safe ES module (passes --web to ShenScript's builder)")
 	typecheck := fs.Bool("typecheck", false, "typecheck PROG under (tc +) on the host before shaking; failure aborts with no artifacts, success is recorded as typechecked= in the manifest")
 	// Allow flags after the PROG/OUTDIR positionals (Go's flag stops at the
