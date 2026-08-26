@@ -214,6 +214,160 @@
      [defun shen.f-error [V]
         [simple-error [cn [str V] ": partial function or unhandled case"]]])
 
+\\ ====================== build-time typecheck gate =======================
+\\ Stage 1 never runs the typechecker: bootstrap is read-file + shen->kl-h,
+\\ purely syntactic, and strip-user-declares drops signatures from eval-free
+\\ programs - so a program whose types are wrong shakes without complaint.
+\\ (yggdrasil.check Files) closes that gap: run BEFORE a shake (in its own
+\\ host process), it loads each file's forms under (tc +) semantics -
+\\ mirroring shen.check-eval-and-print from load.kl - and reports the first
+\\ type failure with per-form blame.  Erasure is preserved: a passing check
+\\ changes nothing about the shake, which still strips declares and consumes
+\\ inline signatures syntactically.
+\\
+\\ Both typed styles are accepted.  The kernel's own typetable only honours
+\\ inline {A --> B} signatures and hard-errors "missing { in F" on unsigned
+\\ defines, so a toplevel (declare F Type) - the strip-friendly style - is
+\\ first folded into its define as an inline signature, then the standalone
+\\ declare form is dropped (its information now travels with the define).
+\\
+\\ Like the kernel's work-through, each form is typechecked and THEN
+\\ evaluated, so later forms see earlier defines and datatypes.  Toplevel
+\\ side effects of the checked program therefore execute during the check;
+\\ run it in a throwaway process (the Go driver does).
+\\
+\\ Output contract (the Go side trusts these sentinels, never exit codes):
+\\   yggdrasil-check: OK files=N inferences=I version=V
+\\   yggdrasil-check: FAIL file=F form=N name=G   + reason + truncated form
+
+(define yggdrasil.check
+  Files -> (let Tc     (set shen.*tc* true)
+                Result (trap-error (do (ygg.mapc (/. F (ygg.check-file F)) Files)
+                                       ok)
+                                   (/. E (ygg.check-trap E)))
+                Off    (set shen.*tc* false)
+                (if (= Result ok)
+                    (do (pr (make-string "yggdrasil-check: OK files=~A inferences=~A version=~A~%"
+                                         (ygg.len Files)
+                                         (trap-error (inferences) (/. E "?"))
+                                         (trap-error (value *version*) (/. E "?")))
+                            (stoutput))
+                        done)
+                    check-failed)))
+
+\\ check-fail already printed its own FAIL sentinel before raising the abort
+\\ marker; any other error (unreadable file, host trouble) gets a generic
+\\ FAIL line here so the Go driver always has a sentinel to parse.
+(define ygg.check-trap
+  E -> failed  where (= "yggdrasil-check-abort" (error-to-string E))
+  E -> (do (pr (make-string "yggdrasil-check: FAIL file=? form=? name=?~%  ~A~%"
+                            (error-to-string E))
+               (stoutput))
+           failed))
+
+(define ygg.check-file
+  File -> (let Forms  (read-file File)
+               Sigs   (ygg.collect-declares Forms)
+               Merged (ygg.merge-declares Forms Sigs)
+               Pairs  (ygg.signature-pass File Merged 1)
+               Assume (shen.assumetypes Pairs)
+               (ygg.check-forms File Merged 1)))
+
+\\ [[F Type] ...] for every toplevel (declare F Type).
+(define ygg.collect-declares
+  [] -> []
+  [[declare F Type] | Forms] -> [[F Type] | (ygg.collect-declares Forms)]
+      where (symbol? F)
+  [_ | Forms] -> (ygg.collect-declares Forms))
+
+\\ Fold declared signatures into their unsigned defines as inline { ... }
+\\ groups (top-level splice: nested type sub-expressions stay as sublists,
+\\ which shen.type-F accepts), and drop the standalone declare forms.
+(define ygg.merge-declares
+  [] _ -> []
+  [[declare F _] | Forms] Sigs -> (ygg.merge-declares Forms Sigs)
+      where (symbol? F)
+  [[define F | Rest] | Forms] Sigs ->
+      [(ygg.merge-define F Rest (ygg.declared-type F Sigs))
+       | (ygg.merge-declares Forms Sigs)]
+  [Form | Forms] Sigs -> [Form | (ygg.merge-declares Forms Sigs)])
+
+(define ygg.declared-type
+  _ [] -> none
+  F [[F Type] | _] -> [found Type]
+  F [_ | Sigs] -> (ygg.declared-type F Sigs))
+
+(define ygg.merge-define
+  F Rest none -> [define F | Rest]
+  F Rest _    -> [define F | Rest]
+      where (and (cons? Rest) (= (intern "{") (hd Rest)))
+  F Rest [found Type] ->
+      [define F (intern "{") | (append Type [(intern "}") | Rest])])
+
+\\ Signature pass with blame: every define must carry an inline signature by
+\\ now (native or merged).  Returns the flat [F1 T1 F2 T2 ...] list that
+\\ shen.assumetypes consumes (rectified by the kernel's own typetable).
+(define ygg.signature-pass
+  _ [] _ -> []
+  File [[define F | Rest] | Forms] N ->
+      (append (trap-error (shen.typetable [define F | Rest])
+                          (/. E (ygg.check-fail File N F (error-to-string E)
+                                                [define F | Rest])))
+              (ygg.signature-pass File Forms (+ N 1)))
+      where (and (cons? Rest) (= (intern "{") (hd Rest)))
+  File [[define F | Rest] | Forms] N ->
+      (ygg.check-fail File N F
+        "no type signature: under the typecheck gate every define needs an inline {A --> B} signature or a toplevel (declare F Type)"
+        [define F | Rest])
+  File [_ | Forms] N -> (ygg.signature-pass File Forms (+ N 1)))
+
+\\ work-through with blame: typecheck each form against a fresh variable,
+\\ then evaluate it so later forms see it.  shen.typecheck returns false
+\\ (no reason) on ordinary failures, so blame is file + form + name.
+(define ygg.check-forms
+  _ [] _ -> done
+  File [Form | Forms] N -> (do (ygg.check-form File Form N)
+                               (ygg.check-forms File Forms (+ N 1))))
+
+(define ygg.check-form
+  File Form N ->
+    (let Name (ygg.form-name Form)
+         T    (trap-error (shen.typecheck Form (intern "A"))
+                          (/. E (ygg.check-fail File N Name
+                                                (error-to-string E) Form)))
+         (if (= T false)
+             (ygg.check-fail File N Name "type error" Form)
+             (let Run (trap-error (eval-kl (shen.shen->kl Form))
+                                  (/. E (ygg.check-fail File N Name
+                                          (make-string "evaluation failed: ~A"
+                                                       (error-to-string E))
+                                          Form)))
+                  (pr (make-string "  ~A : ~R~%" Name (shen.pretty-type T))
+                      (stoutput))))))
+
+(define ygg.form-name
+  [define F | _] -> F
+  [datatype F | _] -> F
+  [Op | _] -> Op  where (symbol? Op)
+  _ -> toplevel)
+
+(define ygg.check-fail
+  File N Name Reason Form ->
+    (do (pr (make-string "yggdrasil-check: FAIL file=~A form=~A name=~A~%"
+                         File N Name)
+            (stoutput))
+        (pr (make-string "  ~A~%" Reason) (stoutput))
+        (pr (make-string "  form: ~A~%"
+                         (ygg.take-chars (make-string "~R" Form) 200))
+            (stoutput))
+        (simple-error "yggdrasil-check-abort")))
+
+(define ygg.take-chars
+  _ 0 -> "..."
+  S N -> (if (= S "")
+             ""
+             (@s (pos S 0) (ygg.take-chars (tlstr S) (- N 1)))))
+
 \\ ====================== kernel call graph (cached) ======================
 \\ The original Yggdrasil computed a full transitive closure with Warshall's
 \\ algorithm - O(N^3) over every kernel symbol, which does not scale to the

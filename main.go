@@ -13,6 +13,10 @@
 //	build  PROG OUTDIR --target T  stage 1 + stage 2 builder for target T
 //	                               (--web with --target js: emit a browser module)
 //	run    PROG OUTDIR --target T  build, then execute the artifact (prints stdout)
+//	check  PROG                    typecheck PROG under (tc +) on a live host;
+//	                               also available as --typecheck on shake/build/run,
+//	                               which gates the shake and records typechecked=
+//	                               in the manifest
 //	parity PROG OUTDIR             behavioural parity gate: run the shaken slice on
 //	                               every target and diff outputs against a reference
 //	targets                        list available stage-2 targets
@@ -234,6 +238,129 @@ func shake(prog, outdir string, host []string, evalStyle string, quiet bool) (st
 		os.Stderr.WriteString(out)
 	}
 	return outdir, nil
+}
+
+// check runs the build-time typecheck gate: a separate host process loads
+// yggdrasil.shen and evaluates (yggdrasil.check ["prog"]), which loads the
+// program's forms under (tc +) with per-form blame. Success is detected by
+// the sentinel line, never the exit code (same trust model as shake). The
+// separate process is deliberate: the check evaluates the user program into
+// the host image, and sharing that image with a shake would let user macros
+// leak into bootstrap — two processes make "check passes ⇒ shake output
+// unchanged" true by construction. Returns the check host's kernel version
+// for manifest recording.
+func check(prog string, host []string, evalStyle string) (string, error) {
+	out, ver, ok, err := runCheck(prog, host, evalStyle)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		os.Stderr.WriteString(failReport(out))
+		if host == nil {
+			host = defaultHost()
+		}
+		return "", fmt.Errorf("typecheck failed: %s (host=%s)", prog, strings.Join(host, " "))
+	}
+	return ver, nil
+}
+
+// failReport trims host output to the check report: everything from the
+// first sentinel line onward (progress lines for forms that DID check,
+// then the FAIL). Without a sentinel (host crash), the whole output is
+// the report.
+func failReport(out string) string {
+	if i := strings.Index(out, "yggdrasil-check:"); i >= 0 {
+		if j := strings.LastIndex(out[:i], "\n"); j >= 0 {
+			return out[j+1:]
+		}
+		return out[i:]
+	}
+	return out
+}
+
+// runCheck drives the host and returns its combined output alongside the
+// parsed sentinel, so callers (and tests) can inspect the FAIL report.
+func runCheck(prog string, host []string, evalStyle string) (out, ver string, ok bool, err error) {
+	if host == nil {
+		host = defaultHost()
+	}
+	if host == nil {
+		return "", "", false, fmt.Errorf("no Shen host launcher found. Set $YGGDRASIL_HOST (or $BIFROST_SHEN_CL) to a Shen launcher, e.g.\n  YGGDRASIL_HOST=/path/to/shen-cl/bin/sbcl/shen yggdrasil check ...")
+	}
+	prog, _ = filepath.Abs(prog)
+	if _, statErr := os.Stat(prog); statErr != nil {
+		return "", "", false, fmt.Errorf("program not found: %s", prog)
+	}
+	root, err := yggRoot()
+	if err != nil {
+		return "", "", false, fmt.Errorf("materialising shaker: %w", err)
+	}
+	expr := fmt.Sprintf(`(yggdrasil.check ["%s"])`, prog)
+
+	var argv []string
+	if evalStyle == "positional" {
+		tmp, _ := os.MkdirTemp("", "yggdrasil_check_")
+		drv := filepath.Join(tmp, "_check_driver.shen")
+		os.WriteFile(drv, []byte("(load \"yggdrasil.shen\")\n"+expr+"\n"), 0o644)
+		argv = append(append([]string{}, host...), drv)
+	} else {
+		argv = append(append([]string{}, host...), "eval", "-q", "-l", "yggdrasil.shen", "-e", expr)
+	}
+
+	out, _ = runAt(wrapExecutable(argv), root)
+	ver, ok = parseCheckOK(out)
+	return out, ver, ok, nil
+}
+
+// parseCheckOK scans combined host output for the check sentinel and pulls
+// the kernel version out of it. ok is false when no OK sentinel is present
+// (a FAIL sentinel, a host crash, or garbage all land here).
+func parseCheckOK(out string) (version string, ok bool) {
+	for _, ln := range strings.Split(out, "\n") {
+		ln = strings.TrimSpace(ln)
+		if !strings.HasPrefix(ln, "yggdrasil-check: OK") {
+			continue
+		}
+		// version= is printed last and may contain spaces ("Shen 41.2"):
+		// take the remainder of the line, not a whitespace-split field.
+		if i := strings.Index(ln, "version="); i >= 0 {
+			version = strings.TrimSpace(ln[i+len("version="):])
+		}
+		return version, true
+	}
+	return "", false
+}
+
+// appendTypecheckManifest records a passing check in both manifest files.
+// Appended from Go rather than threaded into write-manifest because the
+// shake host cannot know the check happened (separate process); builders
+// must ignore keys they do not recognise, so appending is contract-safe.
+// The recorded kernel version is the CHECK host's, which may differ from
+// the vendored slice's kernel-version= line — recording both is honest.
+func appendTypecheckManifest(outdir string, host []string, kernelVer string) error {
+	if host == nil {
+		host = defaultHost()
+	}
+	hostStr := strings.Join(host, " ")
+	if kernelVer == "" {
+		kernelVer = "?"
+	}
+	txt := fmt.Sprintf("typechecked=true\ntypecheck-host=%s\ntypecheck-kernel=%s\n", hostStr, kernelVer)
+	if err := appendFile(filepath.Join(outdir, "yggdrasil.manifest.txt"), txt); err != nil {
+		return err
+	}
+	sexp := fmt.Sprintf("(\"typechecked\" true)\n(\"typecheck-host\" %q)\n(\"typecheck-kernel\" %q)\n", hostStr, kernelVer)
+	return appendFile(filepath.Join(outdir, "yggdrasil.manifest"), sexp)
+}
+
+func appendFile(path, s string) error {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(s)
+	return err
 }
 
 // runAt runs argv at cwd, returning combined output.
@@ -461,7 +588,7 @@ func main() { os.Exit(run(os.Args[1:])) }
 
 func run(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: yggdrasil <shake|build|run|parity|targets> ...")
+		fmt.Fprintln(os.Stderr, "usage: yggdrasil <shake|build|run|check|parity|targets> ...")
 		return 2
 	}
 	cmd, rest := args[0], args[1:]
@@ -484,6 +611,8 @@ func run(args []string) int {
 		return 0
 	case "shake", "build", "run":
 		return cmdStage(cmd, rest)
+	case "check":
+		return cmdCheck(rest)
 	case "parity":
 		return cmdParity(rest)
 	default:
@@ -499,6 +628,7 @@ func cmdStage(cmd string, rest []string) int {
 	evalStyle := fs.String("eval-style", "sub", "how the host evaluates the shake expr (sub | positional)")
 	target := fs.String("target", "", "stage-2 target (lisp/lua/go/rust/js/julia/scheme/swift/truffle/truffle-native)")
 	web := fs.Bool("web", false, "with --target js: emit a browser-safe ES module (passes --web to ShenScript's builder)")
+	typecheck := fs.Bool("typecheck", false, "typecheck PROG under (tc +) on the host before shaking; failure aborts with no artifacts, success is recorded as typechecked= in the manifest")
 	// Allow flags after the PROG/OUTDIR positionals (Go's flag stops at the
 	// first non-flag token otherwise).
 	if err := fs.Parse(reorderArgs(rest, "host", "eval-style", "target")); err != nil {
@@ -517,11 +647,29 @@ func cmdStage(cmd string, rest []string) int {
 		}
 	}
 
+	// --typecheck gates the shake: check first in its own host process, so a
+	// type failure aborts before any artifact is written.
+	var checkedKernel string
+	if *typecheck {
+		ver, err := check(prog, host, *evalStyle)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "yggdrasil:", err)
+			return 1
+		}
+		checkedKernel = ver
+	}
+
 	if cmd == "shake" {
 		out, err := shake(prog, outdir, host, *evalStyle, false)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "yggdrasil:", err)
 			return 1
+		}
+		if *typecheck {
+			if err := appendTypecheckManifest(out, host, checkedKernel); err != nil {
+				fmt.Fprintln(os.Stderr, "yggdrasil: recording typecheck in manifest:", err)
+				return 1
+			}
 		}
 		fmt.Println("shaken ->", out)
 		entries, _ := os.ReadDir(out)
@@ -543,6 +691,13 @@ func cmdStage(cmd string, rest []string) int {
 	if _, err := shake(prog, outdir, host, *evalStyle, true); err != nil {
 		fmt.Fprintln(os.Stderr, "yggdrasil:", err)
 		return 1
+	}
+	if *typecheck {
+		abs, _ := filepath.Abs(outdir)
+		if err := appendTypecheckManifest(abs, host, checkedKernel); err != nil {
+			fmt.Fprintln(os.Stderr, "yggdrasil: recording typecheck in manifest:", err)
+			return 1
+		}
 	}
 	if *web {
 		if err := webPreflight(outdir); err != nil {
@@ -574,6 +729,40 @@ func cmdStage(cmd string, rest []string) int {
 		fmt.Fprintln(os.Stderr, "yggdrasil:", err)
 		return 1
 	}
+	return 0
+}
+
+// cmdCheck is the standalone form of the typecheck gate: no outdir, no
+// shake, no manifest — fast feedback for iterating on typed sources.
+func cmdCheck(rest []string) int {
+	fs := flag.NewFlagSet("yggdrasil check", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: shen-cl`)
+	evalStyle := fs.String("eval-style", "sub", "how the host evaluates the check expr (sub | positional)")
+	if err := fs.Parse(reorderArgs(rest, "host", "eval-style")); err != nil {
+		return 2
+	}
+	if fs.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "usage: yggdrasil check PROG [--host ...] [--eval-style ...]")
+		return 2
+	}
+	prog := fs.Arg(0)
+	var host []string
+	if *hostFlag != "" {
+		host = strings.Fields(*hostFlag)
+		if hit := findExecutablePath(host[0]); hit != "" {
+			host[0] = hit
+		}
+	}
+	ver, err := check(prog, host, *evalStyle)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "yggdrasil:", err)
+		return 1
+	}
+	if ver == "" {
+		ver = "?"
+	}
+	fmt.Printf("typechecked %s (kernel %s)\n", prog, ver)
 	return 0
 }
 
