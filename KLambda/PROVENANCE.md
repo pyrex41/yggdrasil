@@ -1,16 +1,13 @@
 # Kernel provenance
 
-The `.kl` files in this directory are Mark Tarver's **refreshed S41.2**
+The `.kl` files in this directory are Mark Tarver's **S42.0 (2026-08-25)**
 kernel, vendored byte-for-byte from the canonical mirror of his uploads:
 
 - **Canonical source:** `pyrex41/shen-upstream`, tag
-  `s41.2-pristine-20260711` (commit `11fc51b`), files `KLambda/*.kl`.
-  Verified byte-identical here with `cmp` at vendoring time.
-- **Upstream origin:** <https://www.shenlanguage.org/Download/S41.2.zip>,
-  re-uploaded 2026-07-11 (`Last-Modified` header; an in-place refresh —
-  same URL and version number as the earlier S41.2, substantially
-  different content). Zip SHA-256:
-  `51becbfd60fa8c93c3f8ae5b20b948eaa84c4b1d14ad2f5d2a056002a53ee836`
+  `s42-pristine-20260825`, files `KLambda/*.kl`.
+- **Upstream origin:** <https://www.shenlanguage.org/Download/S42.zip>,
+  re-uploaded 2026-08-25. Zip SHA-256:
+  `30abdc7e5a1e27b7a20109c1ed141e4712885e31f24d9710d16415fbbd4dfb23`
 
 This is a **lineage switch**: earlier Yggdrasil vendored the community
 ShenOSKernel-41.2 packaging (Shen-Language/shen-sources, tag `shen-41.2`).

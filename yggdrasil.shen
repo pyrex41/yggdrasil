@@ -1,7 +1,7 @@
 \\                                           Yggdrasil
 \\                  descended from Yggdrasil 1.0, (c) Mark Tarver, 3 clause BSD
 \\
-\\ Tree-shaker for Shen programs, targeting Mark Tarver's refreshed S41.2
+\\ Tree-shaker for Shen programs, targeting Mark Tarver's S42.0 (2026-08-25)
 \\ kernel (shenlanguage.org, re-uploaded 2026-07-11).
 \\
 \\ Stage 1 (this file): shake a program against that kernel and emit
@@ -47,7 +47,7 @@
  "KLambda/sequent.kl" "KLambda/track.kl" "KLambda/t-star.kl"
  "KLambda/yacc.kl" "KLambda/types.kl"])
 
-(set *callgraph-cache* "KLambda/callgraph-s41r-20260711.shen")
+(set *callgraph-cache* "KLambda/callgraph-s42-20260825.shen")
 
 \\ The 41.2 primitives: special forms plus everything the kernel calls but
 \\ does not define.  Derived mechanically: symbols in call position across
@@ -714,7 +714,7 @@
   Dir UserFiles Fns Required Optional Globals NeedsEval Reaches Cannot ->
     (let Sink (open (@s Dir "/yggdrasil.manifest") out)
          W1 (pr-kl-line ["yggdrasil-manifest" 3] Sink)
-         W2 (pr-kl-line ["kernel-version" "41.2-s41r.20260711"] Sink)
+         W2 (pr-kl-line ["kernel-version" "42-s42.20260825"] Sink)
          W3 (pr-kl-line ["kernel" "kernel.kl"] Sink)
          W4 (pr-kl-line ["init" shen.initialise] Sink)
          W5 (pr-kl-line ["user" | UserFiles] Sink)
@@ -731,7 +731,7 @@
   Dir UserFiles Fns Required Optional Globals NeedsEval Reaches Cannot ->
     (let Sink (open (@s Dir "/yggdrasil.manifest.txt") out)
          W1 (pr (make-string "manifest-version=3~%") Sink)
-         W2 (pr (make-string "kernel-version=41.2-s41r.20260711~%") Sink)
+         W2 (pr (make-string "kernel-version=42-s42.20260825~%") Sink)
          W3 (pr (make-string "kernel=kernel.kl~%") Sink)
          W4 (pr (make-string "init=shen.initialise~%") Sink)
          W5 (ygg.mapc (/. F (pr (make-string "user=~A~%" F) Sink)) UserFiles)

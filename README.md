@@ -1,6 +1,6 @@
 # Yggdrasil
 
-> **Kernel lineage — S41.2 refresh (merged).** The shaker targets Mark
+> **Kernel lineage — S42.0 (2026-08-25).** The shaker targets Mark
 > Tarver's **refreshed S41.2** kernel (shenlanguage.org, re-uploaded
 > 2026-07-11; canonical mirror `pyrex41/shen-upstream`, tag
 > `s41.2-pristine-20260711`), a lineage switch from the community
