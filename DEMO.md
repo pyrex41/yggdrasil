@@ -46,7 +46,7 @@ grep -c "(defun" out-demo/kernel.kl && grep -E "manifest-version|kernel-version|
 ```output
 54
 manifest-version=3
-kernel-version=41.2-s41r.20260711
+kernel-version=42-s42.20260825
 user=fib.kl
 fn=fib 1
 needs-eval=false
