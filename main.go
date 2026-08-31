@@ -174,12 +174,9 @@ func yggRoot() (string, error) {
 
 // ---- host (stage 1) ----
 
-// defaultHost resolves the stage-1 host launcher argv, or nil. The sibling
-// ../shen-cl/bin/sbcl/shen is used as-is: whatever binary is built there is
-// the host. After the S41.2-refresh migration the reference host is a
-// shen-cl built from its refreshed master; an older community-41.2 binary
-// at that path still works (both produce byte-identical stage-1 output) —
-// rebuild shen-cl master to refresh the host. Override with $YGGDRASIL_HOST.
+// defaultHost resolves the stage-1 host launcher argv, or nil. Preference:
+// $YGGDRASIL_HOST / $BIFROST_SHEN_CL, then sibling shen-cl, then sibling
+// shen-go. Stage-1 is Shen (not C); shen-c cannot yet load yggdrasil.shen.
 func defaultHost() []string {
 	for _, env := range []string{"YGGDRASIL_HOST", "BIFROST_SHEN_CL"} {
 		if v := os.Getenv(env); v != "" {
@@ -190,9 +187,17 @@ func defaultHost() []string {
 		}
 	}
 	cwd, _ := os.Getwd()
-	cand, _ := filepath.Abs(filepath.Join(cwd, "..", "shen-cl", "bin", "sbcl", "shen"))
-	if hit := findExecutablePath(cand); hit != "" {
-		return []string{hit}
+	// Stage-1 host is Shen, not C. shen-c cannot yet load yggdrasil.shen;
+	// fall back to sibling shen-go when shen-cl is missing.
+	for _, rel := range []string{
+		filepath.Join("..", "shen-cl", "bin", "sbcl", "shen"),
+		filepath.Join("..", "shen-go", "bin", "shen"),
+		filepath.Join("..", "shen-go", "shen"),
+	} {
+		cand, _ := filepath.Abs(filepath.Join(cwd, rel))
+		if hit := findExecutablePath(cand); hit != "" {
+			return []string{hit}
+		}
 	}
 	return nil
 }
@@ -489,6 +494,7 @@ func siblingDir(target string, b builder) string {
 		"js": "ShenScript", "julia": "shen-julia", "scheme": "shen-scheme",
 		"swift": "shen-swift", "erlang": "shen-erl", "lisp": "shen-cl", "hvm": "inets/shen-inets",
 		"truffle": "shen-truffle", "truffle-native": "shen-truffle",
+		"c": "shen-c", "forth": "shen-forth",
 	}[target]
 	cwd, _ := os.Getwd()
 	abs, _ := filepath.Abs(filepath.Join(cwd, "..", name))
@@ -539,6 +545,8 @@ func build(target, outdir string, web bool) ([]string, error) {
 		"{shen_cl}":      siblingDir("lisp", b),
 		"{shen_inets}":   siblingDir("hvm", b),
 		"{shen_truffle}": siblingDir(target, b),
+		"{shen_c}":       siblingDir("c", b),
+		"{shen_forth}":   siblingDir("forth", b),
 	}
 	for _, st := range b.Build {
 		argv := make([]string, len(st.Argv))
@@ -627,7 +635,7 @@ func cmdStage(cmd string, rest []string) int {
 	fs.SetOutput(os.Stderr)
 	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: shen-cl`)
 	evalStyle := fs.String("eval-style", "sub", "how the host evaluates the shake expr (sub | positional)")
-	target := fs.String("target", "", "stage-2 target (lisp/lua/go/rust/js/julia/scheme/swift/erlang/truffle/truffle-native)")
+	target := fs.String("target", "", "stage-2 target (lisp/lua/go/rust/js/julia/scheme/swift/erlang/truffle/truffle-native/c)")
 	web := fs.Bool("web", false, "with --target js: emit a browser-safe ES module (passes --web to ShenScript's builder)")
 	typecheck := fs.Bool("typecheck", false, "typecheck PROG under (tc +) on the host before shaking; failure aborts with no artifacts, success is recorded as typechecked= in the manifest")
 	// Allow flags after the PROG/OUTDIR positionals (Go's flag stops at the

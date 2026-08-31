@@ -81,7 +81,7 @@ yggdrasil targets                              # list stage-2 targets
 | `build … --target js --web` | emit a browser-safe ES module (`import $ from './app.js'; $.caller('fn')(…)`) instead of the Node artifact — no `node:fs`/streams/`process`; passes `--web` to ShenScript's builder |
 | `run PROG OUTDIR --target T` | build, then execute the artifact |
 | `parity PROG OUTDIR` | run the shaken slice on every target and diff outputs against a reference — see [Behavioural parity gate](#behavioural-parity-gate) |
-| `targets` | list available targets (`lisp`/`lua`/`go`/`erlang`/`rust`/`js`/`julia`/`scheme`/`swift`/`truffle`/`truffle-native`) |
+| `targets` | list available targets (`lisp`/`lua`/`go`/`erlang`/`rust`/`js`/`julia`/`scheme`/`swift`/`truffle`/`truffle-native`/`c`) |
 
 The stage-1 **host** defaults to the sibling `../shen-cl/bin/sbcl/shen`
 binary, used as-is. The reference is shen-cl built from its S41.2-refresh
@@ -147,6 +147,22 @@ repo):
 | Swift | `builders/swift/build.sh <dir> <outdir>` (this repo; `SHEN_SWIFT=<checkout>`) | slice + `run` launcher driving the shen-swift tree-walking interpreter in `--shaken` mode. shen-swift is an *interpreter*, so there is nothing to code-generate (like LuaJIT/Julia it references its runtime); the artifact is the KL slice and the win is boot speed — a ~200-line shaken kernel vs the full ~2500-line kernel. |
 | Truffle (JVM) | `java -jar shen-truffle/target/yggdrasil-builder.jar --format jvm <dir> <out>` | relocatable JVM application (`app-truffle/bin/shen-truffle`) launched with Java; requires the Shen 41.2 Truffle runtime. |
 | Truffle (Native Image) | `java -jar shen-truffle/target/yggdrasil-builder.jar --format native <dir> <out>` | platform-native executable (`app-truffle-native`) produced by the Truffle builder. |
+| C (shen-c) | `builders/c/build.sh <dir> <outdir>` (this repo; `SHEN_C` / `$YGGDRASIL_SHEN_C_DIR`) | project dir with generated `app.c` + Makefile + CMakeLists.txt, then `make` links `libshenc.a` into `<outdir>/app`. Option 5 rung 1: each shaken `defun` is a C `NativeFunction` on `shen_context` / Boehm — not `eval_kl_object` of the source string, not Chicken-on-C-stack. |
+
+Shake first (stage 1), then build `--target c`. The shaker is Shen, not C:
+
+```
+yggdrasil shake tests/fib.shen out/          # default host: sibling shen-cl
+yggdrasil build tests/fib.shen out/ --target c
+# or host-eval the shaker:
+../shen-cl/bin/sbcl/shen eval -q -l yggdrasil.shen -e '(yggdrasil.shake ["tests/fib.shen"] "out")'
+# fallback host if shen-cl is missing:
+../shen-go/bin/shen eval -q -l yggdrasil.shen -e '(yggdrasil.shake ["tests/fib.shen"] "out")'
+# then:
+builders/c/build.sh out out/app-c && out/app-c/app
+```
+
+`shen-c eval -l yggdrasil.shen -e '(yggdrasil.shake …)'` exists (`*hush*` gates stdout only) but `yggdrasil.shake` on shen-c is unverified; use shen-cl or shen-go. Stage-2 is always C. `yggdrasil build tests/hello.shen out/ --target c` and `tests/fib.shen` emit NativeFunctions on `shen_context` / Boehm (not `eval_kl_object` of the source string) and print `hello from shaken shen` / `fib 20 = 6765`. `tests/tc-interp.shen` is the needs-eval typecheck slice (`(tc +)` + `load interpreter.shen`): shaken `kernel.kl` keeps `t-star` / `types` / reader / load (~568 defuns). Run the C app from a directory that contains `tests/interpreter.shen`. Kernel `declare` tables run as NativeFunctions (`inferences = 2778`); `load interpreter.shen` currently traps in `macroexpand`/`walk`. C linking uses Nix `bdw-gc` (`builders/c/build.sh` re-enters `nix develop` in the shen-c flake when Homebrew libgc is on PATH).
 
 **Builder contract**: load `kernel.kl`'s defuns, call `(shen.initialise)`
 (41.2 consolidates all global initialisation there), then run each user
@@ -231,6 +247,7 @@ mode refuses eval-capable manifests).
   - **ShenScript** — `node bin/shen.js eval -l yggdrasil.shen -e '(yggdrasil.shake ...)'`. The async `read-byte`/file streams left EOF as an unsettled promise, so `read-file-as-bytelist` looped forever (the 50-min hang); file streams are now synchronous and the shake finishes in ~25 s.
   - **shen-julia** — `shen-julia/bin/shen eval -l yggdrasil.shen -e '(yggdrasil.shake ...)'` (omit `-q`: like shen-lua/shen-rust, `*hush*` would otherwise silence the `pr` writes; a host-side `pr` override makes `*hush*` gate only stdout). Pre-create the output dir (the shake doesn't `mkdir`). Produced byte-identical `kernel.kl` + manifests on the first try — no portability fix needed.
   - **shen-swift** — `shen-swift/.build/release/shen-swift eval -q -l yggdrasil.shen -e '(yggdrasil.shake ...)'`. Tree-walking KLambda interpreter (iOS-capable), drives the standard `extension-launcher.kl` CLI. A host-side `pr` override gates `*hush*` to stdout only (file streams always write), so `-q` is safe. Produced byte-identical `kernel.kl` + manifests against the shen-cl reference on the first try — no portability fix needed.
+  - **shen-c** — `shen-c eval -l yggdrasil.shen -e '(yggdrasil.shake ...)'`. Launcher `-l`/`-e` exist and `*hush*` is stdout-only, but running the shaker on shen-c is unverified. Prefer shen-cl (reference) or shen-go. Stage-2 for `--target c` is the C NativeFunction builder in the shen-c tree, not this host path.
   - **`*hush*` caveat**: `-q` sets `*hush*`, and on **shen-lua and
     shen-rust** that silences the `pr` writes to the output files,
     producing zero-byte artifacts — **omit `-q` on those two**. shen-cl

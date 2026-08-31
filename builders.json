@@ -9,7 +9,7 @@
     "  {outdir}    the shake output dir (kernel.kl + <prog>.kl + manifest)",
     "  {tmp}       a scratch dir for intermediate build tools",
     "  {shen_lua}/{shen_go}/{shen_rust}/{shenscript}/{shen_julia}/{shen_scheme}/",
-    "  {shen_swift}/{shen_erl}/{shen_cl}/{shen_truffle} sibling port repo roots;",
+    "  {shen_swift}/{shen_erl}/{shen_cl}/{shen_truffle}/{shen_c} sibling port repo roots;",
     "              default to {yggroot}/../<name>, overridable via the env var",
     "              named in each target's 'dir_env'.",
     "",
@@ -17,7 +17,9 @@
     "order; 'run' is the argv that executes the built artifact and prints to",
     "stdout; 'needs' lists external tools that must be on PATH (else SKIP).",
     "The Erlang target compiles the shaken slice to BEAM with shen-erl; scheme",
-    "compiles via kl->scheme; swift interprets the minimal slice directly."
+    "compiles via kl->scheme; swift interprets the minimal slice directly.",
+    "The C target (shen-c) emits NativeFunction C + Makefile/CMakeLists and",
+    "links libshenc.a (option 5 rung 1; not eval_kl_object of the source)."
   ],
 
   "lisp": {
@@ -154,5 +156,26 @@
                 "{outdir}", "{outdir}/app-truffle-native"]}
     ],
     "run": ["{outdir}/app-truffle-native"]
+  },
+
+  "c": {
+    "run_impl": "shen-c",
+    "dir_env": "YGGDRASIL_SHEN_C_DIR",
+    "needs": ["cc", "pkg-config", "make"],
+    "build": [
+      {"argv": ["{yggroot}/builders/c/build.sh", "{outdir}", "{outdir}/app-c"],
+       "env": {"SHEN_C": "{shen_c}"}}
+    ],
+    "run": ["{outdir}/app-c/app"]
+  },
+
+  "forth": {
+    "run_impl": "shen-forth",
+    "dir_env": "YGGDRASIL_SHEN_FORTH_DIR",
+    "needs": ["gforth", "shen-forth"],
+    "build": [
+      {"argv": ["shen-forth", "script", "{outdir}/app.shen"], "cwd": "{yggroot}"}
+    ],
+    "run": ["{outdir}/app-forth"]
   }
 }

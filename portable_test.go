@@ -105,9 +105,38 @@ func TestLoadBuildersEmbedded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"lisp", "lua", "go", "rust", "js", "erlang", "truffle", "truffle-native"} {
+	for _, want := range []string{"lisp", "lua", "go", "rust", "js", "erlang", "c", "truffle", "truffle-native"} {
 		if _, ok := b[want]; !ok {
 			t.Errorf("missing target %q", want)
+		}
+	}
+}
+
+func TestCBuilderRecipe(t *testing.T) {
+	b, err := loadBuilders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bld := b["c"]
+	if bld.RunImpl != "shen-c" || bld.DirEnv != "YGGDRASIL_SHEN_C_DIR" {
+		t.Fatalf("unexpected c builder: %#v", bld)
+	}
+	joinedNeeds := strings.Join(bld.Needs, " ")
+	if !strings.Contains(joinedNeeds, "cc") || !(strings.Contains(joinedNeeds, "make") || strings.Contains(joinedNeeds, "cmake")) {
+		t.Fatalf("c needs = %v (want cc and make or cmake)", bld.Needs)
+	}
+	if len(bld.Build) != 1 || !strings.Contains(strings.Join(bld.Build[0].Argv, " "), "builders/c/build.sh") {
+		t.Fatalf("unexpected c build steps: %#v", bld.Build)
+	}
+	if env := bld.Build[0].Env; env["SHEN_C"] != "{shen_c}" {
+		t.Fatalf("c build env SHEN_C = %v", env)
+	}
+	if got := strings.Join(bld.Run, " "); got != "{outdir}/app-c/app" {
+		t.Fatalf("c run recipe = %q (must run the linked binary, not shen-c script)", got)
+	}
+	for _, a := range bld.Build[0].Argv {
+		if strings.Contains(a, "script") || strings.Contains(a, "app.shen") {
+			t.Fatalf("c builder still looks like fake shen-c script wrap: %v", bld.Build[0].Argv)
 		}
 	}
 }
