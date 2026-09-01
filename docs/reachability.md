@@ -49,7 +49,7 @@ pairwise answers per shake and then throws away all but one row's worth.
 1. **Build the direct call graph once** (`build-call-graph`): for each
    `defun`, record which kernel-defined names appear in its body. This is
    the only expensive pass (it walks every symbol leaf of ~280 KB of KL),
-   so it is cached to disk (`KLambda/callgraph-s41r-20260711.shen`) and reloaded on
+   so it is cached to disk (`KLambda/callgraph-s42-20260825.shen`) and reloaded on
    subsequent shakes. The cache is keyed to the kernel version, which only
    changes when the kernel does.
 2. **Per shake, traverse from the seeds** (`footprint` / `reach`): a pure

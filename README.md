@@ -1,23 +1,31 @@
 # Yggdrasil
 
-> **Kernel lineage — S42.0 (2026-08-25).** The shaker targets Mark
-> Tarver's **refreshed S41.2** kernel (shenlanguage.org, re-uploaded
-> 2026-07-11; canonical mirror `pyrex41/shen-upstream`, tag
-> `s41.2-pristine-20260711`), a lineage switch from the community
-> ShenOSKernel-41.2 packaging. The refreshed kernel has no
+> **Kernel lineage — S42 (2026-08-25).** The shaker targets Mark
+> Tarver's **S42** kernel (shenlanguage.org, re-uploaded 2026-08-25;
+> canonical mirror `pyrex41/shen-upstream`, tag
+> `s42-pristine-20260825`, zip SHA-256 `30abdc7e…`), continuing the
+> lineage switch away from the community ShenOSKernel-41.2 packaging
+> that began with the S41.2 refresh. The vendored kernel under
+> `KLambda/` and the active call-graph cache
+> (`KLambda/callgraph-s42-20260825.shen`, selected at
+> `yggdrasil.shen:50`) are both S42; the S41.2 graph is retained
+> alongside it for comparison. Like S41.2, S42 has no
 > `shen.initialise` (init is toplevel forms, wrapped into a synthetic
 > initialiser at shake time), no dict layer (property vector instead),
-> and a leaner surface: 683 boot defuns vs 1,152. The lua, rust, go and
+> and a leaner surface: 686 boot defuns vs 1,152. The lua, rust, go and
 > js targets are green on their migrated ports (all four fixtures;
 > eval-free `fib` shakes to **54 defuns / 13.4 KB**, metaeval to 548;
 > four-target parity gate PASS). The reference stage-1 host is shen-cl
 > built from its refreshed master (same lineage); a community-41.2
 > shen-cl binary is a verified-working alternative — both produce
 > byte-identical `kernel.kl` + manifest on every fixture. Prose below
-> that predates the refresh is being updated as sections are touched.
+> that predates the S42 re-vendor is being updated as sections are
+> touched; where a passage still says 41.2 it is describing either the
+> historical community packaging or a shen-cl/Truffle host version, not
+> the kernel this shaker targets.
 
 A tree-shaker for [Shen](https://shenlanguage.org) programs, targeting
-Tarver's refreshed **S41.2** kernel. Descended from Mark Tarver's **Yggdrasil 1.0**
+Tarver's **S42** kernel. Descended from Mark Tarver's **Yggdrasil 1.0**
 (3-clause BSD), it restores the name Tarver gave the project. In Norse
 mythology Yggdrasil is the world tree; here its roots are KLambda and its
 branches are the target runtimes reached by each minimal kernel slice.
@@ -171,9 +179,10 @@ expressions that must execute in source order.
 
 ## How the shake works
 
-The kernel call graph (683 defuns, 2568 edges on the S41.2 refresh) is
+The kernel call graph (686 defuns, 2583 edges on S42; 683 / 2568 on the
+S41.2 refresh) is
 built once by walking every defun body for call-position symbols and
-cached as plain text (`KLambda/callgraph-s41r-20260711.shen`). Per
+cached as plain text (`KLambda/callgraph-s42-20260825.shen`). Per
 shake, a pure worklist reachability pass runs from the seed set
 `symbols(kernel toplevel init forms) ∪ symbols(user KL)`. See
 `docs/reachability.md` for why this replaced Yggdrasil 1.0's O(N³)
