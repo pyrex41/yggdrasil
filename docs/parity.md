@@ -75,6 +75,61 @@ input, so a correct implementation is deterministic (the golden in
 misbehaves returns stale cached values and diverges. It stays non-eval so it
 shakes to the small (~100-defun) slice.
 
+## The committed fixtures and the gate script
+
+Every fixture in `tests/` that has a `tests/<name>.expected` beside it is gated.
+The goldens were captured once from the reference target (`--target lisp`,
+shen-cl on sbcl) and their values are independently checkable by reading the
+fixture, which is the point of keeping them small:
+
+| fixture | golden | exercises |
+|---|---|---|
+| `hello` | `hello from shaken shen` | output + strings, the minimal slice |
+| `fib` | `fib 20 = 6765` | recursion + arithmetic |
+| `prolog` | `mary likes chocolate: true` | drags in the Prolog engine |
+| `metaeval` | three lines of `42` | `needs-eval=true`; keeps the reader (js: see known gaps) |
+| `parity` | `tests/parity.expected` | content-addressed memo; the only `===` fixture |
+
+`scripts/parity-gate.sh` runs all of them:
+
+```bash
+scripts/parity-gate.sh                          # every fixture, every target on PATH
+scripts/parity-gate.sh --targets go,lua,rust,js # a subset
+scripts/parity-gate.sh --fixtures fib,prolog --time
+```
+
+It builds the CLI from the working tree rather than trusting a `./yggdrasil` on
+disk, shakes each fixture, and diffs every selected target against the
+committed golden. A fixture with no golden is listed under `no golden` and
+skipped — the gate will not mint a truth source from the run it is checking.
+Exit status: `0` pass, `1` any fixture failed, `3` nothing was checkable.
+
+Fixtures that carry no golden are listed under `no golden` and skipped. The
+`typed-*` fixtures belong to the `check` gate (`check_test.go`) and
+`interpreter` / `tc-interp` are the needs-eval typecheck slice used by the C
+target, so none of them is a parity fixture; they show up in that line by
+design.
+
+### Known gaps
+
+`KNOWN_GAPS` in the script records a fixture/target pair that cannot currently
+be gated, with the reason and its issue. Such a target is dropped from that
+fixture's run and **probed separately**, so the exclusion is printed on every
+run rather than quietly shrinking the gate. If a probed gap starts passing the
+gate **fails**, naming the line to delete — an exclusion that outlives its
+cause is exactly where the next real failure would hide.
+
+The one entry today is `metaeval:js` (pyrex41/yggdrasil#23): ShenScript
+supports `needs-eval=true` only in `--linked` mode and `builders.json` has no
+way to select it, so the js target cannot build any eval-capable program.
+`metaeval` is gated on go, lua and rust.
+
+**This is not run by CI** (pyrex41/yggdrasil#24). `.github/workflows/go.yml`
+builds and unit-tests the Go CLI on three OSes, but a shake needs a Shen
+stage-1 host and each target needs its own port checkout plus toolchain — none
+of which the hosted matrix has. Run the script locally (or from a self-hosted
+runner) before changing `yggdrasil.shen`, `KLambda/`, or a builder.
+
 ## Writing your own oracle
 
 To gate your own program, make a fixture that:
