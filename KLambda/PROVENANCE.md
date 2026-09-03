@@ -31,4 +31,10 @@ lineage note):
 - Boot order is `install.lsp`'s: sys writer core reader declarations
   toplevel macros load prolog sequent track t-star yacc types.
 
-`callgraph-*.shen` files are generated caches (gitignored).
+No `callgraph-*.shen` belongs in this directory. The derived call-graph cache
+lives at the root of the shaker tree as `callgraph-cache.shen`, because
+`main.go` embeds this directory into the binary and a bare `go:embed KLambda`
+would sweep a generated cache in with the kernel sources — which is how a
+stale graph once reached extracted roots and silently under-shook. The embed
+patterns now name `KLambda/*.kl` explicitly, so only kernel sources, this
+file and `LICENSE` are embedded.

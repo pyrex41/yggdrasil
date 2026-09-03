@@ -1,7 +1,10 @@
 package main
 
 import (
+	"fmt"
+	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -241,5 +244,142 @@ func TestAppendTypecheckManifest(t *testing.T) {
 	// gate only records into a manifest a shake already wrote.
 	if err := appendTypecheckManifest(t.TempDir(), nil, "x"); err == nil {
 		t.Error("append into an empty outdir must fail")
+	}
+}
+
+// TestManifestPairs covers the reader that step.When and webPreflight share.
+// A nil return means "no manifest", which callers must not confuse with "the
+// manifest said nothing" -- one is unreadable, the other is a real answer.
+func TestManifestPairs(t *testing.T) {
+	dir := t.TempDir()
+	if got := manifestPairs(dir); got != nil {
+		t.Errorf("no manifest should give nil, got %v", got)
+	}
+	body := "manifest-version=3\nneeds-eval=false\n\nfn=member 2\nfn=flatten 1\n"
+	if err := os.WriteFile(filepath.Join(dir, "yggdrasil.manifest.txt"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := manifestPairs(dir)
+	for _, want := range []string{"needs-eval=false", "fn=member 2", "fn=flatten 1"} {
+		if !p[want] {
+			t.Errorf("missing pair %q", want)
+		}
+	}
+	// Repeated keys are kept whole, not collapsed to a last-wins map.
+	if p["needs-eval=true"] {
+		t.Error("needs-eval=true must not be present")
+	}
+	if len(p) != 4 {
+		t.Errorf("blank lines should be dropped; got %d pairs: %v", len(p), p)
+	}
+}
+
+// TestJSBuilderSelectsLinkedOnEval pins the fix for #23.  ShenScript's default
+// mode is self-contained but refuses needs-eval=true; --linked can carry the
+// compiler but imports from the ShenScript checkout.  Exactly one step must
+// apply to any given shake, and --linked must attach to the eval-capable one
+// and ONLY to it -- passing it unconditionally would quietly de-portabilise
+// every eval-free js artifact, which is the common case.
+func TestJSBuilderSelectsLinkedOnEval(t *testing.T) {
+	builders, err := loadBuilders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	js, ok := builders["js"]
+	if !ok {
+		t.Fatal("no js target")
+	}
+	byWhen := map[string]step{}
+	for _, st := range js.Build {
+		if st.When == "" {
+			t.Fatalf("every js build step must be conditional, found unconditional %v", st.Argv)
+		}
+		if _, dup := byWhen[st.When]; dup {
+			t.Fatalf("two js steps share when=%q", st.When)
+		}
+		byWhen[st.When] = st
+	}
+	free, hasFree := byWhen["needs-eval=false"]
+	eval, hasEval := byWhen["needs-eval=true"]
+	if !hasFree || !hasEval {
+		t.Fatalf("js needs one step per needs-eval value, have %v", byWhen)
+	}
+	hasLinked := func(st step) bool {
+		for _, a := range st.Argv {
+			if a == "--linked" {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasLinked(eval) {
+		t.Errorf("needs-eval=true step must pass --linked: %v", eval.Argv)
+	}
+	if hasLinked(free) {
+		t.Errorf("needs-eval=false step must NOT pass --linked (it would import "+
+			"from the ShenScript checkout): %v", free.Argv)
+	}
+}
+
+// TestBuildConditionalStepWithoutManifest: a builder with conditional steps and
+// no readable manifest must error, not run zero steps.  Skipping silently would
+// exit 0 having produced no artifact -- a build that reports success and builds
+// nothing.
+func TestBuildConditionalStepWithoutManifest(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("js target needs node on PATH")
+	}
+	_, err := build("js", t.TempDir(), false)
+	if err == nil {
+		t.Fatal("expected an error when the manifest is missing")
+	}
+	if !strings.Contains(err.Error(), "conditional build step") {
+		t.Errorf("error should name the cause, got: %v", err)
+	}
+}
+
+// TestEmbeddedTreeHasNoGeneratedCache pins the fix for #21.
+//
+// main.go embeds `KLambda` wholesale, and go:embed takes whatever is in the
+// working tree -- gitignored, locally generated files included. Two derived
+// call-graph caches were being swept into the binary this way, which broke two
+// properties at once:
+//
+//   - build reproducibility: embeddedHash() covered them, so the extracted
+//     root's identity (and thus what got shaken) depended on untracked files
+//     that happened to exist at `go build` time;
+//   - shake correctness: a cache is keyed by FILENAME alone and load-call-graph
+//     validates only non-emptiness, so a stale one loads and silently
+//     under-shakes rather than failing.
+//
+// The cache now lives at the repo root, which matches no go:embed pattern. This
+// test is what keeps it there: adding `KLambda/callgraph-*.shen` back, or a new
+// generated artifact under an embedded directory, fails here rather than
+// silently changing what a build shakes.
+func TestEmbeddedTreeHasNoGeneratedCache(t *testing.T) {
+	// Every extension actually present in the tracked tree: KLambda/*.kl,
+	// Primitives/**/*.lsp, builders/**/*.sh, yggdrasil.shen, builders.json,
+	// PROVENANCE.md and two LICENSE files (no extension).
+	allowed := map[string]bool{".kl": true, ".lsp": true, ".sh": true,
+		".shen": true, ".json": true, ".md": true, "": true}
+	err := fs.WalkDir(embedded, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		base := filepath.Base(p)
+		if strings.Contains(base, "callgraph") {
+			return fmt.Errorf("generated call-graph cache is embedded: %s\n"+
+				"  go:embed sweeps up untracked working-tree files. Keep the cache at the\n"+
+				"  repo root (see *callgraph-cache* in yggdrasil.shen), not under KLambda/.", p)
+		}
+		if ext := filepath.Ext(base); !allowed[ext] {
+			return fmt.Errorf("unexpected file type in the embedded tree: %s\n"+
+				"  if this is a build artifact it must not be embedded; if it is a real\n"+
+				"  source file, add its extension to this test.", p)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Error(err)
 	}
 }

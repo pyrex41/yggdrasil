@@ -47,7 +47,27 @@
  "KLambda/sequent.kl" "KLambda/track.kl" "KLambda/t-star.kl"
  "KLambda/yacc.kl" "KLambda/types.kl"])
 
-(set *callgraph-cache* "KLambda/callgraph-s42-20260825.shen")
+\\ The call-graph cache is a DERIVED artifact and deliberately does NOT live
+\\ in KLambda/.  It used to, and main.go's go:embed then said `KLambda` --
+\\ a bare directory pattern, which sweeps up whatever is in the working tree
+\\ including gitignored generated files.  So the cache rode into the binary,
+\\ into embeddedHash() (which names the extracted root), and into every root:
+\\ the shaker's behaviour depended on untracked files present at `go build`
+\\ time, and two builds of one commit were not equivalent.  Since a cache is
+\\ keyed by filename alone, a stale one loaded fine and SILENTLY UNDER-SHOOK
+\\ (see the defp note on load-call-graph).
+\\
+\\ Both halves are now closed.  main.go names `KLambda/*.kl` explicitly, so
+\\ nothing generated under KLambda/ can be embedded even if it reappears; and
+\\ at the repo root this file matches no embed pattern at all.  The CLI's
+\\ extracted root is named for a hash of the embedded tree, so a cache
+\\ written inside one is, by construction, the cache for that kernel.
+\\ portable_test.go's TestEmbeddedTreeHasNoGeneratedCache keeps it so.
+\\
+\\ A content check in Shen is not an option: folding over the 324 KB of
+\\ KLambda as a bytelist measured ~5 s per pass on the shen-go host, against
+\\ the ~0.24 s the cache saves there.  Freshness has to be structural.
+(set *callgraph-cache* "callgraph-cache.shen")
 
 \\ The 41.2 primitives: special forms plus everything the kernel calls but
 \\ does not define.  Derived mechanically: symbols in call position across

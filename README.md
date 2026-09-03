@@ -6,10 +6,9 @@
 > `s42-pristine-20260825`, zip SHA-256 `30abdc7e…`), continuing the
 > lineage switch away from the community ShenOSKernel-41.2 packaging
 > that began with the S41.2 refresh. The vendored kernel under
-> `KLambda/` and the active call-graph cache
-> (`KLambda/callgraph-s42-20260825.shen`, selected at
-> `yggdrasil.shen:50`) are both S42; the S41.2 graph is retained
-> alongside it for comparison. Like S41.2, S42 has no
+> `KLambda/` is S42. The call-graph cache is derived, not vendored: it
+> is built on first shake into the CLI's extracted root (never under
+> `KLambda/` — see `*callgraph-cache*` in `yggdrasil.shen`). Like S41.2, S42 has no
 > `shen.initialise` (init is toplevel forms, wrapped into a synthetic
 > initialiser at shake time), no dict layer (property vector instead),
 > and a leaner surface: 686 boot defuns vs 1,152. The lua, rust, go and
@@ -203,11 +202,16 @@ expressions that must execute in source order.
 The kernel call graph (686 defuns, 2583 edges on S42; 683 / 2568 on the
 S41.2 refresh) is
 built once by walking every defun body for call-position symbols and
-cached as plain text (`KLambda/callgraph-s42-20260825.shen`). Per
+cached as plain text (`callgraph-cache.shen`, at the root of the CLI's
+extracted tree — deliberately not under `KLambda/`, which is embedded
+into the binary). Per
 shake, a pure worklist reachability pass runs from the seed set
 `symbols(kernel toplevel init forms) ∪ symbols(user KL)`. See
 `docs/reachability.md` for why this replaced Yggdrasil 1.0's O(N³)
 Warshall transitive closure, and why fancier algorithms lose on this graph.
+`docs/eval-free-cli.md` covers the other half of the story: how a program
+that reads stdin can stay `needs-eval=false` (read bytes, not S-expressions
+— `read` is an eval entry point), and the two traps that catches people.
 
 Several kernel "tables masquerading as code" (the arity table, the package
 external-symbols registry, `*special*`, type-signature keys, lambda-form

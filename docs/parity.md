@@ -87,8 +87,9 @@ fixture, which is the point of keeping them small:
 | `hello` | `hello from shaken shen` | output + strings, the minimal slice |
 | `fib` | `fib 20 = 6765` | recursion + arithmetic |
 | `prolog` | `mary likes chocolate: true` | drags in the Prolog engine |
-| `metaeval` | three lines of `42` | `needs-eval=true`; keeps the reader (js: see known gaps) |
-| `parity` | `tests/parity.expected` | content-addressed memo; the only `===` fixture |
+| `metaeval` | three lines of `42` | `needs-eval=true`; keeps the reader |
+| `stdin-sum` | `bytes: 15` / `digest: 12410` | an **eval-free CLI**: reads stdin with `read-byte`, never `read` |
+| `parity` | `tests/parity.expected` | content-addressed memo |
 
 `scripts/parity-gate.sh` runs all of them:
 
@@ -96,7 +97,26 @@ fixture, which is the point of keeping them small:
 scripts/parity-gate.sh                          # every fixture, every target on PATH
 scripts/parity-gate.sh --targets go,lua,rust,js # a subset
 scripts/parity-gate.sh --fixtures fib,prolog --time
+scripts/parity-gate.sh --min-targets 4          # fail if a toolchain went missing
 ```
+
+`--min-targets N` fails the gate unless every gated fixture actually checked at
+least N targets. Without it a runner that has quietly lost a toolchain still
+reports PASS, just over a smaller set — a green run that gates less than the
+last one and does not say so. CI passes it (see below).
+
+### Fixtures that read stdin
+
+A fixture may ship `tests/<name>.stdin`; the gate passes it to
+`yggdrasil parity --stdin`, which feeds those bytes to **both** boots, so
+`two-boot` and `two-pass` keep their meaning. Without the flag an artifact gets
+an immediately-closed stdin, never the parent's — a program that reads to EOF
+must terminate, and the run must be reproducible.
+
+This is what makes an eval-free CLI gateable at all. `read` is an
+eval-entry-point, so a driver that reads an S-expression forces
+`needs-eval=true`; `tests/stdin-sum.shen` reads **bytes** instead and shakes to
+`needs-eval=false`. See `docs/eval-free-cli.md`.
 
 It builds the CLI from the working tree rather than trusting a `./yggdrasil` on
 disk, shakes each fixture, and diffs every selected target against the
@@ -119,16 +139,29 @@ run rather than quietly shrinking the gate. If a probed gap starts passing the
 gate **fails**, naming the line to delete — an exclusion that outlives its
 cause is exactly where the next real failure would hide.
 
-The one entry today is `metaeval:js` (pyrex41/yggdrasil#23): ShenScript
-supports `needs-eval=true` only in `--linked` mode and `builders.json` has no
-way to select it, so the js target cannot build any eval-capable program.
-`metaeval` is gated on go, lua and rust.
+The list is empty today. Its one entry, `metaeval:js`, was deleted when #23
+fixed the underlying gap — and it was this check that demanded the deletion:
+the probe started passing and the gate failed with *"stale KNOWN_GAPS entries:
+metaeval:js"* until the line was removed. `metaeval` is now gated on go, lua,
+rust and js like every other fixture.
 
-**This is not run by CI** (pyrex41/yggdrasil#24). `.github/workflows/go.yml`
-builds and unit-tests the Go CLI on three OSes, but a shake needs a Shen
-stage-1 host and each target needs its own port checkout plus toolchain — none
-of which the hosted matrix has. Run the script locally (or from a self-hosted
-runner) before changing `yggdrasil.shen`, `KLambda/`, or a builder.
+### CI
+
+`.github/workflows/parity-gate.yml` runs the gate nightly and on
+`workflow_dispatch`, on `go,js,lua` with `--min-targets 3`. It clones the three
+stage-2 ports, installs LuaJIT, and uses **shen-go as the stage-1 host** — the
+committed goldens mean `--expect` supplies the truth, so no shen-cl/sbcl kernel
+build is needed. `rust` is left out: the eval-capable `metaeval` slice through a
+cargo release build dominates the wall clock.
+
+The job deliberately has no `continue-on-error` and always passes
+`--min-targets`. Both matter: the script exits **3** for "nothing was
+checkable", and a swallowed non-zero status would turn a job that checked zero
+targets into a pass while also removing the prompt to run the gate by hand.
+
+`go.yml` is unchanged — it builds and unit-tests the CLI on three OSes and
+shakes nothing. Run the script locally too before changing `yggdrasil.shen`,
+`KLambda/`, or a builder; the nightly is a backstop, not a pre-merge gate.
 
 ## Writing your own oracle
 
