@@ -71,9 +71,14 @@ jobs:
           git clone --depth 1 -b master https://github.com/pyrex41/ShenScript.git
           git clone --depth 1 -b main   https://github.com/pyrex41/shen-lua.git
 
-      # ShenScript's stage-2 builder imports astring at build time.
+      # Full install, NOT --omit=dev. ShenScript's `prepare` hook renders
+      # lib/kernel.js on a fresh checkout and that renderer needs parsimmon,
+      # which is a devDependency -- so --omit=dev installs, then immediately
+      # fails the hook with "Cannot find package 'parsimmon'".  (Its runtime
+      # dep, astring, is the only prod one, which is what made --omit=dev look
+      # sufficient.)
       - name: ShenScript deps
-        run: npm ci --omit=dev || npm install --omit=dev
+        run: npm ci
         working-directory: ${{ github.workspace }}/../ShenScript
 
       # The stage-1 host. shen-cl would mean an sbcl kernel build; shen-go is a
