@@ -72,8 +72,20 @@
     "run_impl": "ShenScript",
     "dir_env": "YGGDRASIL_SHENSCRIPT_DIR",
     "needs": ["node"],
+    "_comment": [
+      "Two mutually exclusive steps, selected on the manifest's needs-eval.",
+      "ShenScript's default mode is fully self-contained but refuses",
+      "needs-eval=true (an eval-capable slice needs the compiler in the",
+      "artifact); --linked can carry the compiler but imports lib/ from the",
+      "ShenScript checkout, so it is NOT portable off the build machine.",
+      "Passing --linked unconditionally would trade a loud failure on one",
+      "program for a quiet portability regression on every eval-free one."
+    ],
     "build": [
-      {"argv": ["node", "{shenscript}/bin/yggdrasil-build.js", "{outdir}", "{outdir}/app.js"]}
+      {"argv": ["node", "{shenscript}/bin/yggdrasil-build.js", "{outdir}", "{outdir}/app.js"],
+       "when": "needs-eval=false"},
+      {"argv": ["node", "{shenscript}/bin/yggdrasil-build.js", "{outdir}", "{outdir}/app.js", "--linked"],
+       "when": "needs-eval=true"}
     ],
     "run": ["node", "{outdir}/app.js"]
   },

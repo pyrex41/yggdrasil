@@ -1,0 +1,92 @@
+name: parity-gate
+
+# Behavioural parity gate: shake each committed fixture once, build it for
+# several stage-2 targets, and diff every target's stdout against the committed
+# golden (docs/parity.md).  go.yml unit-tests the CLI; nothing there shakes
+# anything, so this is the only automated coverage of the shake path.
+#
+# Not on `push`: a run needs a Shen stage-1 host plus a checkout and toolchain
+# per target, so it is minutes rather than seconds.  Nightly + manual.
+#
+# Two things this job must never do, both of which would make it green while
+# gating nothing (see #24):
+#
+#   * `continue-on-error` on the gate step.  The script exits 3 for "nothing
+#     was checkable" -- every toolchain missing.  Swallowing a non-zero status
+#     turns a job that checked zero targets into a pass, and also removes the
+#     prompt to run the gate by hand.
+#   * drop --min-targets.  Without it a runner that has quietly lost a
+#     toolchain still reports PASS over a smaller set.  The count is asserted
+#     so shrinkage is a failure, not a quieter success.
+#
+# Reference host: none.  The goldens are committed, so the gate runs with
+# --expect and needs no shen-cl/sbcl build; shen-go doubles as the stage-1 host
+# since Go is on the runner anyway.
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: "comma-separated stage-2 targets"
+        default: "go,js,lua"
+      min_targets:
+        description: "fail unless every fixture checks at least this many"
+        default: "3"
+
+concurrency:
+  group: parity-gate
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      TARGETS: ${{ github.event.inputs.targets || 'go,js,lua' }}
+      MIN_TARGETS: ${{ github.event.inputs.min_targets || '3' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.x"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: luajit (lua target)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq luajit
+
+      # Sibling port checkouts. builders.json resolves each target's port via
+      # {yggroot}/../<name>, overridable per target with a YGGDRASIL_SHEN_*_DIR
+      # env var; ../ of the workspace is writable, so plain siblings work.
+      - name: check out the stage-2 ports
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/.."
+          git clone --depth 1 -b master https://github.com/pyrex41/shen-go.git
+          git clone --depth 1 -b master https://github.com/pyrex41/ShenScript.git
+          git clone --depth 1 -b main   https://github.com/pyrex41/shen-lua.git
+
+      # ShenScript's stage-2 builder imports astring at build time.
+      - name: ShenScript deps
+        run: npm ci --omit=dev || npm install --omit=dev
+        working-directory: ${{ github.workspace }}/../ShenScript
+
+      # The stage-1 host. shen-cl would mean an sbcl kernel build; shen-go is a
+      # `go build` we can afford, and the goldens mean no reference host is
+      # needed at all.
+      - name: build the shen-go stage-1 host
+        run: go build -o "$GITHUB_WORKSPACE/../shen-go-host" ./cmd/shen
+        working-directory: ${{ github.workspace }}/../shen-go
+
+      - name: parity gate
+        env:
+          YGGDRASIL_HOST: ${{ github.workspace }}/../shen-go-host
+          YGGDRASIL_SHEN_GO_DIR: ${{ github.workspace }}/../shen-go
+          YGGDRASIL_SHENSCRIPT_DIR: ${{ github.workspace }}/../ShenScript
+          YGGDRASIL_SHEN_LUA_DIR: ${{ github.workspace }}/../shen-lua
+        run: ./scripts/parity-gate.sh --targets "$TARGETS" --min-targets "$MIN_TARGETS"

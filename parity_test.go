@@ -1,6 +1,13 @@
 package main
 
-import "testing"
+import (
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 func TestCanon(t *testing.T) {
 	cases := []struct{ in, want string }{
@@ -60,5 +67,57 @@ func TestFirstDiff(t *testing.T) {
 	ln, xs, ys = firstDiff("a\nb", "a\nb\nc")
 	if ln != 3 || xs != "" || ys != "c" {
 		t.Errorf("firstDiff len-mismatch = (%d, %q, %q)", ln, xs, ys)
+	}
+}
+
+// runCaptureHelper is re-executed as a child process by
+// TestRunCaptureFeedsStdin: it echoes what it reads on stdin, prefixed, so the
+// test can tell "was given the file" from "was given nothing".  Using the test
+// binary itself keeps this portable -- `cat` is not on the Windows runner that
+// go.yml also builds for.
+func TestRunCaptureHelper(t *testing.T) {
+	if os.Getenv("YGG_TEST_HELPER") != "1" {
+		t.Skip("helper process, driven by TestRunCaptureFeedsStdin")
+	}
+	b, _ := io.ReadAll(os.Stdin)
+	fmt.Printf("got:%s", b)
+}
+
+func TestRunCaptureFeedsStdin(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Skip("cannot locate the test binary")
+	}
+	argv := []string{self, "-test.run", "^TestRunCaptureHelper$"}
+	t.Setenv("YGG_TEST_HELPER", "1")
+
+	// No --stdin: the child must see EOF immediately, NOT the parent's stdin.
+	// A program that reads to EOF has to terminate, and both boots have to get
+	// the same bytes, or two-boot means nothing.
+	out, _, err := runCapture(argv, "")
+	if err != nil {
+		t.Fatalf("helper failed: %v (out=%q)", err, out)
+	}
+	if !strings.Contains(out, "got:") || strings.Contains(out, "got:x") {
+		t.Errorf("empty stdin expected, got %q", out)
+	}
+
+	f := filepath.Join(t.TempDir(), "in")
+	if err := os.WriteFile(f, []byte("hello yggdrasil"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, _, err = runCapture(argv, f)
+	if err != nil {
+		t.Fatalf("helper failed: %v (out=%q)", err, out)
+	}
+	if !strings.Contains(out, "got:hello yggdrasil") {
+		t.Errorf("stdin file not delivered, got %q", out)
+	}
+
+	// A missing file is an error, not a silent empty stdin: the latter would
+	// pass the gate against a golden minted with real input only if the
+	// program happened to print the same thing either way.
+	if _, _, err = runCapture(argv, filepath.Join(t.TempDir(), "nope")); err == nil {
+		t.Error("missing --stdin file must error")
 	}
 }

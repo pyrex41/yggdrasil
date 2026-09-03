@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Yggdrasil - behavioural parity gate over every fixture that has a golden.
 #
-#   scripts/parity-gate.sh [--targets a,b] [--fixtures f,g] [--time] [--keep]
+#   scripts/parity-gate.sh [--targets a,b] [--fixtures f,g] [--min-targets N]
+#                          [--time] [--keep]
 #
 # For each fixture in tests/ that has a committed golden (tests/<f>.expected)
 # this shakes the program once and runs `yggdrasil parity` against that golden
@@ -17,9 +18,15 @@
 #   YGGDRASIL_BIN  prebuilt CLI to use (default: build ./ into a temp dir)
 #   plus every YGGDRASIL_SHEN_*_DIR the builders honour (see builders.json)
 #
-# Exit status: 0 all checked fixtures passed, 1 any fixture failed OR a
-#              KNOWN_GAPS entry has gone stale (it now passes and must be
-#              removed), 3 nothing could be checked on any fixture.
+# --min-targets N fails the gate unless every gated fixture actually checked at
+# least N targets.  Without it a runner that has quietly lost a toolchain still
+# reports PASS, just over a smaller set -- a green run that gates less than the
+# last one and says nothing about it.
+#
+# Exit status: 0 all checked fixtures passed; 1 any fixture failed, a fixture
+#              checked fewer than --min-targets, or a KNOWN_GAPS entry has gone
+#              stale (it now passes and must be removed); 3 nothing could be
+#              checked on any fixture.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -29,6 +36,7 @@ TARGETS=""
 FIXTURES=""
 TIME_FLAG=""
 KEEP=0
+MIN_TARGETS=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -36,6 +44,8 @@ while [ $# -gt 0 ]; do
         --targets=*) TARGETS="${1#*=}"; shift ;;
         --fixtures) FIXTURES="$2"; shift 2 ;;
         --fixtures=*) FIXTURES="${1#*=}"; shift ;;
+        --min-targets) MIN_TARGETS="$2"; shift 2 ;;
+        --min-targets=*) MIN_TARGETS="${1#*=}"; shift ;;
         --time)     TIME_FLAG="--time"; shift ;;
         --keep)     KEEP=1; shift ;;
         -h|--help)  sed -n '2,22p' "$0"; exit 0 ;;
@@ -51,7 +61,10 @@ done
 #   * if a probed gap starts PASSING the gate FAILS, demanding the line be
 #     deleted.  An exclusion that outlives its cause is the bug this whole
 #     script exists to catch.
-KNOWN_GAPS='metaeval:js  builders.json cannot select ShenScript --linked, the only mode that supports needs-eval=true (pyrex41/yggdrasil#23)'
+# Currently empty: the one entry that lived here, metaeval:js, was removed when
+# #23 fixed it -- and it was this script's own stale-gap check that demanded the
+# removal, which is the mechanism working as intended rather than a formality.
+KNOWN_GAPS=''
 
 gap_reason() {  # gap_reason <fixture> <target> -> prints reason, or empty
     printf '%s\n' "$KNOWN_GAPS" | while IFS= read -r line; do
@@ -69,6 +82,11 @@ gap_targets_for() {  # gap_targets_for <fixture> -> prints targets, one per line
         case "$key" in "$1:"*) printf '%s\n' "${key#*:}" ;; esac
     done
 }
+
+case "$MIN_TARGETS" in
+    ''|*[!0-9]*) echo "parity-gate: --min-targets wants a non-negative integer, got '$MIN_TARGETS'" >&2
+                 exit 2 ;;
+esac
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/ygg-parity.XXXXXX")"
 cleanup() { [ "$KEEP" -eq 1 ] || rm -rf "$WORK"; }
@@ -97,7 +115,7 @@ else
     done
 fi
 
-declare -a PASSED=() FAILED=() NOGOLD=() UNCHECKED=() RESOLVED=()
+declare -a PASSED=() FAILED=() NOGOLD=() UNCHECKED=() RESOLVED=() THIN=()
 
 # Every known target, for subtracting known gaps when --targets was not given.
 ALL_TARGETS="$("$BIN" targets | awk '{print $1}')"
@@ -138,13 +156,31 @@ for name in "${NAMES[@]}"; do
 
     if [ -n "$keep" ]; then
         args=(parity "$prog" "$WORK/$name" --expect "$gold" --target "$keep")
+        # A fixture may ship its own stdin.  This is what makes an eval-free
+        # CLI gateable: its driver reads bytes, not S-expressions, so it stays
+        # needs-eval=false -- see tests/stdin-sum.shen.
+        [ -f "tests/$name.stdin" ] && args+=(--stdin "tests/$name.stdin")
         [ -n "$TIME_FLAG" ] && args+=("$TIME_FLAG")
-        "$BIN" "${args[@]}"
-        case $? in
+        # tee, not a plain redirect: the run must stay visible in the log AND
+        # be readable back for the --min-targets assertion.
+        "$BIN" "${args[@]}" 2>&1 | tee "$WORK/$name.out"
+        rc=${PIPESTATUS[0]}
+        case $rc in
             0) PASSED+=("$name") ;;
             3) UNCHECKED+=("$name") ;;
             *) FAILED+=("$name") ;;
         esac
+        if [ "$MIN_TARGETS" -gt 0 ] && [ "$rc" -eq 0 ]; then
+            n=$(sed -n 's/^parity: PASS (\([0-9]*\) target(s) checked)$/\1/p' \
+                    "$WORK/$name.out" | tail -1)
+            if [ -z "$n" ]; then
+                echo "    parity-gate: could not read the checked-target count for $name"
+                THIN+=("$name:unreadable")
+            elif [ "$n" -lt "$MIN_TARGETS" ]; then
+                echo "    parity-gate: $name checked $n target(s), --min-targets is $MIN_TARGETS"
+                THIN+=("$name:$n")
+            fi
+        fi
     else
         UNCHECKED+=("$name")
     fi
@@ -172,6 +208,14 @@ printf 'passed:    %s\n' "${PASSED[*]:-(none)}"
 printf 'failed:    %s\n' "${FAILED[*]:-(none)}"
 printf 'unchecked: %s\n' "${UNCHECKED[*]:-(none)}"
 printf 'no golden: %s\n' "${NOGOLD[*]:-(none)}"
+
+if [ ${#THIN[@]} -gt 0 ]; then
+    echo
+    echo "parity-gate: FAIL - fewer than $MIN_TARGETS target(s) checked: ${THIN[*]}"
+    echo "  A toolchain is missing or a target SKIPped.  This is a failure on purpose:"
+    echo "  otherwise the run stays green while gating less than it used to."
+    exit 1
+fi
 
 if [ ${#RESOLVED[@]} -gt 0 ]; then
     echo

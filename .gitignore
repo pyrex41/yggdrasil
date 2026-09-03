@@ -1,5 +1,8 @@
 out*/
 tests/*.kl
+# Derived call-graph cache. Kept OUT of KLambda/ so go:embed cannot sweep
+# it into the binary (see yggdrasil.shen's *callgraph-cache* note).
+/callgraph-cache.shen
 KLambda/callgraph-*.shen
 *.fasl
 

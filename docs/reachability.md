@@ -49,9 +49,26 @@ pairwise answers per shake and then throws away all but one row's worth.
 1. **Build the direct call graph once** (`build-call-graph`): for each
    `defun`, record which kernel-defined names appear in its body. This is
    the only expensive pass (it walks every symbol leaf of ~280 KB of KL),
-   so it is cached to disk (`KLambda/callgraph-s42-20260825.shen`) and reloaded on
-   subsequent shakes. The cache is keyed to the kernel version, which only
-   changes when the kernel does.
+   so it is cached to disk (`callgraph-cache.shen`) and reloaded on
+   subsequent shakes.
+
+   The cache is keyed by **filename**, and `load-call-graph` validates only
+   that the parse was non-empty — so a cache that does not match the kernel
+   loads fine and silently under-shakes. Nothing in the Shen layer can
+   affordably detect that: a content digest means folding over 324 KB of
+   KLambda as a bytelist, measured at ~5 s per pass on the shen-go host
+   against the ~0.24 s the cache saves there.
+
+   Freshness is therefore structural, not checked. The CLI extracts the
+   embedded tree into a directory named for a SHA-256 of that tree
+   (`yggRoot`/`embeddedHash` in `main.go`) and the cache is written *inside*
+   it, so a cache can only ever be read by the same kernel that produced it.
+   What makes that hold is that the cache is not embeddable: the `go:embed`
+   patterns name `KLambda/*.kl` explicitly instead of the directory, because
+   a bare directory pattern sweeps up gitignored build artifacts from the
+   working tree. Measured: with the directory pattern, dropping a stray
+   `KLambda/callgraph-*.shen` in changed the compiled binary; with the
+   explicit patterns it is byte-identical.
 2. **Per shake, traverse from the seeds** (`footprint` / `reach`): a pure
    worklist — pop a function, skip if seen, otherwise mark it and push its
    callees. The visited set *is* the result.

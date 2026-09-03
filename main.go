@@ -44,8 +44,19 @@ import (
 // Embedded shaker source + kernel slice + per-language primitives + in-repo
 // builders + the build recipe table, so the binary is self-contained.
 //
+// The KLambda patterns are deliberately explicit rather than the directory
+// `KLambda`. A bare directory pattern embeds whatever is in the WORKING TREE,
+// gitignored build artifacts included -- and the derived call-graph cache used
+// to land there, so it rode into the binary, into embeddedHash() (which names
+// the extracted root), and into every root. That made the shaker's output
+// depend on untracked files present at `go build` time, and since a cache is
+// keyed by filename alone, a stale one loaded fine and silently under-shook.
+// Naming the file types makes that unrepresentable; portable_test.go's
+// TestEmbeddedTreeHasNoGeneratedCache covers the same property for the other
+// two trees, which have no generator writing into them.
+//
 //go:embed yggdrasil.shen builders.json
-//go:embed KLambda
+//go:embed KLambda/*.kl KLambda/LICENSE KLambda/PROVENANCE.md
 //go:embed Primitives
 //go:embed builders
 var embedded embed.FS
@@ -382,6 +393,15 @@ type step struct {
 	Argv []string          `json:"argv"`
 	Cwd  string            `json:"cwd"`
 	Env  map[string]string `json:"env"`
+	// When, if set, is a "key=value" predicate over the shake manifest: the
+	// step runs only when the manifest carries that pair.  It exists because a
+	// stage-2 builder's correct invocation can depend on what the shake
+	// produced -- ShenScript needs --linked for needs-eval=true and must NOT
+	// have it otherwise (that mode imports from the ShenScript checkout, so an
+	// eval-free artifact built with it silently stops being self-contained).
+	// Two mutually exclusive steps express that without inventing per-flag
+	// conditional-argument syntax.
+	When string `json:"when"`
 }
 
 type builder struct {
@@ -423,6 +443,24 @@ var evalEntryPoints = []string{
 	"read", "read-from-string", "lineread", "input", "input+", "bootstrap",
 }
 
+// manifestPairs reads the shake manifest as a set of "key=value" lines.  Only
+// membership is needed (does the manifest say needs-eval=true?), and repeated
+// keys like fn= are common, so a set of whole lines is the honest shape --
+// a map[key]value would silently drop all but the last fn=.
+func manifestPairs(outdir string) map[string]bool {
+	b, err := os.ReadFile(filepath.Join(outdir, "yggdrasil.manifest.txt"))
+	if err != nil {
+		return nil // no manifest: callers treat this as "cannot tell"
+	}
+	pairs := map[string]bool{}
+	for _, ln := range strings.Split(string(b), "\n") {
+		if ln = strings.TrimSpace(ln); ln != "" {
+			pairs[ln] = true
+		}
+	}
+	return pairs
+}
+
 // webPreflight reports why a --web build cannot proceed, before handing the
 // outdir to ShenScript's stage-2 builder. That builder's own message advises
 // "re-run with --linked", which is not an option here: --web and --linked are
@@ -430,11 +468,11 @@ var evalEntryPoints = []string{
 // user-code calls that actually reach eval instead, since those are what the
 // author has to remove.
 func webPreflight(outdir string) error {
-	m, err := os.ReadFile(filepath.Join(outdir, "yggdrasil.manifest.txt"))
-	if err != nil {
+	pairs := manifestPairs(outdir)
+	if pairs == nil {
 		return nil // no manifest to read: let the builder speak for itself
 	}
-	if !strings.Contains(string(m), "needs-eval=true") {
+	if !pairs["needs-eval=true"] {
 		return nil
 	}
 	msg := fmt.Sprintf("--web cannot be built from this program: the manifest reports needs-eval=true.\n"+
@@ -548,7 +586,22 @@ func build(target, outdir string, web bool) ([]string, error) {
 		"{shen_c}":       siblingDir("c", b),
 		"{shen_forth}":   siblingDir("forth", b),
 	}
+	// Steps can be gated on the manifest (see step.When).  Read it once: if a
+	// builder has any conditional step and the manifest is unreadable, that is
+	// a hard error rather than a silent "run nothing" -- a stage that quietly
+	// skips its only build step would report success and produce no artifact.
+	pairs := manifestPairs(outdir)
 	for _, st := range b.Build {
+		if st.When != "" {
+			if pairs == nil {
+				return nil, fmt.Errorf("target %s has a conditional build step (when=%q) "+
+					"but %s is missing or unreadable", target, st.When,
+					filepath.Join(outdir, "yggdrasil.manifest.txt"))
+			}
+			if !pairs[st.When] {
+				continue
+			}
+		}
 		argv := make([]string, len(st.Argv))
 		for i, a := range st.Argv {
 			argv[i] = subst(a, subs)
@@ -834,12 +887,28 @@ func firstDiff(x, y string) (line int, xs, ys string) {
 }
 
 // runCapture runs an artifact and returns its stdout (stderr passes through, so
-// runtime errors are visible but never part of the comparison).
-func runCapture(argv []string) (string, int64, error) {
+// runtime errors are visible but never part of the comparison).  stdin is the
+// contents of stdinFile, or empty when it is "" -- never the parent's stdin, so
+// a run is reproducible and a program that reads to EOF terminates.
+//
+// Feeding stdin at all is what lets an eval-free CLI be gated: a driver that
+// reads BYTES (read-byte) instead of an S-expression (read, an eval entry
+// point) keeps needs-eval=false, and tests/stdin-sum.shen exercises exactly
+// that.  Both boots get identical bytes, so two-boot and two-pass stay
+// meaningful.
+func runCapture(argv []string, stdinFile string) (string, int64, error) {
 	a := wrapExecutable(argv)
 	cmd := exec.Command(a[0], a[1:]...)
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, os.Stderr
+	if stdinFile != "" {
+		f, err := os.Open(stdinFile)
+		if err != nil {
+			return "", 0, fmt.Errorf("cannot read --stdin file: %w", err)
+		}
+		defer f.Close()
+		cmd.Stdin = f
+	}
 	start := time.Now()
 	err := cmd.Run()
 	return out.String(), time.Since(start).Milliseconds(), err
@@ -863,7 +932,8 @@ func cmdParity(rest []string) int {
 	reference := fs.String("reference", "lisp", "reference target whose output is the truth source")
 	expect := fs.String("expect", "", "golden stdout file; when given it is the authoritative truth")
 	timeFlag := fs.Bool("time", false, "report per-target wall-clock (advisory; never fails the gate)")
-	if err := fs.Parse(reorderArgs(rest, "host", "eval-style", "target", "reference", "expect")); err != nil {
+	stdinFile := fs.String("stdin", "", "file fed to each artifact's stdin (both boots get the same bytes)")
+	if err := fs.Parse(reorderArgs(rest, "host", "eval-style", "target", "reference", "expect", "stdin")); err != nil {
 		return 2
 	}
 	if fs.NArg() < 2 {
@@ -935,8 +1005,8 @@ func cmdParity(rest []string) int {
 			r.status = "skip"
 			continue
 		}
-		outA, ms, ea := runCapture(runArgv)
-		outB, _, eb := runCapture(runArgv)
+		outA, ms, ea := runCapture(runArgv, *stdinFile)
+		outB, _, eb := runCapture(runArgv, *stdinFile)
 		r.outA, r.outB, r.runMs = outA, outB, ms
 		if ea != nil || eb != nil {
 			r.status = "runerr"
