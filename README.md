@@ -88,7 +88,7 @@ yggdrasil targets                              # list stage-2 targets
 | `build … --target js --web` | emit a browser-safe ES module (`import $ from './app.js'; $.caller('fn')(…)`) instead of the Node artifact — no `node:fs`/streams/`process`; passes `--web` to ShenScript's builder |
 | `run PROG OUTDIR --target T` | build, then execute the artifact |
 | `parity PROG OUTDIR` | run the shaken slice on every target and diff outputs against a reference — see [Behavioural parity gate](#behavioural-parity-gate) |
-| `targets` | list available targets (`lisp`/`lua`/`go`/`erlang`/`rust`/`js`/`julia`/`scheme`/`swift`/`truffle`/`truffle-native`/`c`) |
+| `targets` | list available targets (`lisp`/`lua`/`go`/`joy`/`erlang`/`rust`/`js`/`julia`/`scheme`/`swift`/`truffle`/`truffle-native`/`c`) |
 
 The stage-1 **host** defaults to the sibling `../shen-cl/bin/sbcl/shen`
 binary, used as-is. The reference is shen-cl built from its S41.2-refresh
@@ -164,6 +164,7 @@ repo):
 | Common Lisp | `builders/lisp/build.sh <dir> <exe>` (this repo; `LISP_IMPL=sbcl\|clisp\|ecl`) | saved image (SBCL ~36 MB, CLISP ~7.8 MB) or compiled binary (ECL ~620 KB + libecl) |
 | LuaJIT | `shen-lua/bin/yggdrasil-build.lua <dir> <out.lua>` | self-contained .lua (~640 KB, ~25 ms startup) |
 | Go | `shen-go/cmd/yggdrasil-build <dir> <outdir>` then `go build` | static binary (~4.5 MB, ≤10 ms startup, cross-compiles linux/windows) |
+| Joy image | `builders/joy/build.sh <dir> <out.sji>` | deterministic shen-joy image v1, run by the bounded allocation-free device VM |
 | Erlang | `builders/erlang/build.sh <dir> <outdir>` (this repo; `SHEN_ERL=<checkout>`) | shaken KLambda compiled to BEAM plus the small shen-erl runtime and a `run` launcher; requires Erlang/OTP at runtime, but never boots the full kernel. |
 | Rust | `shen-rust/crates/yggdrasil-build <dir> <outdir>` then `cargo build --release` | static binary (~9 MB, ~40 ms startup) |
 | JavaScript | `node ShenScript/bin/yggdrasil-build.js <dir> <out.js>` (`--linked` for needs-eval; `--web` for a browser module) | self-contained ES module (~120 KB, runs on Node 20+ / Bun / Deno 2; `--web` → browser, `import`s the booted env) |
@@ -193,6 +194,23 @@ builders/c/build.sh out out/app-c && out/app-c/app
 (41.2 consolidates all global initialisation there), then run each user
 file's forms in manifest order — user files contain defuns *and* toplevel
 expressions that must execute in source order.
+
+### Bounded Joy target
+
+The `joy` target intentionally does not load the shaken Shen kernel. Its host
+lowerer reads only manifest-listed user KLambda and accepts first-order
+fixnum/boolean code with `cond`/`if`, `let`, `do`, direct calls and tail calls,
+`+ - * = <`, and a single top-level `(output "~A~%" VALUE)`. It emits normalized
+input and invokes `shen-joy compile --profile core`; the resulting `.sji` is the
+deployment artifact. `eval`, closures, exceptions, streams, mutable globals,
+strings, arbitrary formatting, and non-tail recursion are rejected. A rejection
+exits with status 3 so Bifrost/Yggdrasil parity reports a capability SKIP rather
+than a false failure or semantic approximation.
+
+```bash
+nix run ../bifrost#env -- shen-joy yggdrasil -- \
+  go run . run tests/joy-sum.shen out/ --target joy
+```
 
 ## How the shake works
 

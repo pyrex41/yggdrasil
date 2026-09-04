@@ -56,6 +56,16 @@
     "run": ["{outdir}/app-go-bin"]
   },
 
+  "joy": {
+    "run_impl": "shen-joy",
+    "dir_env": "YGGDRASIL_SHEN_JOY_DIR",
+    "needs": ["python3"],
+    "build": [
+      {"argv": ["{yggroot}/builders/joy/build.sh", "{outdir}", "{outdir}/app-joy.sji", "{shen_joy_bin}"]}
+    ],
+    "run": ["{shen_joy_bin}", "run", "{outdir}/app-joy.sji"]
+  },
+
   "rust": {
     "run_impl": "shen-rust",
     "dir_env": "YGGDRASIL_SHEN_RUST_DIR",

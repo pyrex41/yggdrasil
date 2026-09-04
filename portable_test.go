@@ -108,10 +108,62 @@ func TestLoadBuildersEmbedded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"lisp", "lua", "go", "rust", "js", "erlang", "c", "truffle", "truffle-native"} {
+	for _, want := range []string{"lisp", "lua", "go", "joy", "rust", "js", "erlang", "c", "truffle", "truffle-native"} {
 		if _, ok := b[want]; !ok {
 			t.Errorf("missing target %q", want)
 		}
+	}
+}
+
+func TestJoyBuilderRecipe(t *testing.T) {
+	b, err := loadBuilders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bld := b["joy"]
+	if bld.RunImpl != "shen-joy" || bld.DirEnv != "YGGDRASIL_SHEN_JOY_DIR" {
+		t.Fatalf("unexpected joy builder: %#v", bld)
+	}
+	if len(bld.Build) != 1 || !strings.Contains(strings.Join(bld.Build[0].Argv, " "), "builders/joy/build.sh") {
+		t.Fatalf("unexpected joy build steps: %#v", bld.Build)
+	}
+	if got := strings.Join(bld.Run, " "); got != "{shen_joy_bin} run {outdir}/app-joy.sji" {
+		t.Fatalf("joy run recipe = %q", got)
+	}
+}
+
+func TestJoyLowererAndCapabilityExit(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "yggdrasil.manifest.txt"), []byte("user=app.kl\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	good := "(defun sum (A N) (cond ((= 0 N) A) (true (sum (+ A N) (- N 1)))))\n" +
+		"(pr (shen.app (sum 0 8) \"\\n\" shen.a) (stoutput))\n"
+	if err := os.WriteFile(filepath.Join(dir, "app.kl"), []byte(good), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "app.sjk")
+	cmd := exec.Command(python, "builders/joy/lower.py", dir, out)
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("lowering failed: %v\n%s", err, b)
+	}
+	b, err := os.ReadFile(out)
+	if err != nil || !strings.Contains(string(b), "(entry yggdrasil-main)") || !strings.Contains(string(b), "(sum 0 8)") {
+		t.Fatalf("unexpected normalized output: %v\n%s", err, b)
+	}
+	bad := "(defun bad (X) (lambda Y Y))\n(pr (shen.app (bad 1) \"\\n\" shen.a) (stoutput))\n"
+	if err := os.WriteFile(filepath.Join(dir, "app.kl"), []byte(bad), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd = exec.Command(python, "builders/joy/lower.py", dir, out)
+	if b, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("unsupported lambda unexpectedly lowered: %s", b)
+	} else if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 3 {
+		t.Fatalf("unsupported lambda exit = %v, want capability status 3; output=%s", err, b)
 	}
 }
 
@@ -358,9 +410,9 @@ func TestBuildConditionalStepWithoutManifest(t *testing.T) {
 // silently changing what a build shakes.
 func TestEmbeddedTreeHasNoGeneratedCache(t *testing.T) {
 	// Every extension actually present in the tracked tree: KLambda/*.kl,
-	// Primitives/**/*.lsp, builders/**/*.sh, yggdrasil.shen, builders.json,
+	// Primitives/**/*.lsp, builders/**/*.sh, builders/**/*.py, yggdrasil.shen, builders.json,
 	// PROVENANCE.md and two LICENSE files (no extension).
-	allowed := map[string]bool{".kl": true, ".lsp": true, ".sh": true,
+	allowed := map[string]bool{".kl": true, ".lsp": true, ".sh": true, ".py": true,
 		".shen": true, ".json": true, ".md": true, "": true}
 	err := fs.WalkDir(embedded, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {

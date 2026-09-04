@@ -412,6 +412,10 @@ type builder struct {
 	Run     []string `json:"run"`
 }
 
+type capabilityError struct{ message string }
+
+func (e capabilityError) Error() string { return e.message }
+
 func loadBuilders() (map[string]builder, error) {
 	b, err := embedded.ReadFile("builders.json")
 	if err != nil {
@@ -529,7 +533,8 @@ func siblingDir(target string, b builder) string {
 	}
 	name := map[string]string{
 		"lua": "shen-lua", "go": "shen-go", "rust": "shen-rust",
-		"js": "ShenScript", "julia": "shen-julia", "scheme": "shen-scheme",
+		"joy": "shen-joy",
+		"js":  "ShenScript", "julia": "shen-julia", "scheme": "shen-scheme",
 		"swift": "shen-swift", "erlang": "shen-erl", "lisp": "shen-cl", "hvm": "inets/shen-inets",
 		"truffle": "shen-truffle", "truffle-native": "shen-truffle",
 		"c": "shen-c", "forth": "shen-forth",
@@ -544,6 +549,22 @@ func subst(s string, subs map[string]string) string {
 		s = strings.ReplaceAll(s, k, v)
 	}
 	return s
+}
+
+func joyBinary(b builder) string {
+	if value := os.Getenv("SHEN_JOY_BIN"); value != "" {
+		return value
+	}
+	if value, err := exec.LookPath("shen-joy"); err == nil {
+		return value
+	}
+	root := siblingDir("joy", b)
+	for _, candidate := range []string{filepath.Join(root, "build", "shen-joy"), filepath.Join(root, "result", "bin", "shen-joy")} {
+		if hit := findExecutablePath(candidate); hit != "" {
+			return hit
+		}
+	}
+	return "shen-joy"
 }
 
 // build runs a target's stage-2 steps. Returns the run argv, or nil if a needed
@@ -576,7 +597,8 @@ func build(target, outdir string, web bool) ([]string, error) {
 	tmp, _ := os.MkdirTemp("", "yggdrasil_build_")
 	subs := map[string]string{
 		"{yggroot}": root, "{outdir}": outdir, "{tmp}": tmp,
-		"{shen_lua}": siblingDir("lua", b), "{shen_go}": siblingDir("go", b),
+		"{shen_joy_bin}": joyBinary(b),
+		"{shen_lua}":     siblingDir("lua", b), "{shen_go}": siblingDir("go", b),
 		"{shen_rust}": siblingDir("rust", b), "{shenscript}": siblingDir("js", b),
 		"{shen_julia}": siblingDir("julia", b), "{shen_scheme}": siblingDir("scheme", b),
 		"{shen_swift}": siblingDir("swift", b), "{shen_erl}": siblingDir("erlang", b),
@@ -628,6 +650,9 @@ func build(target, outdir string, web bool) ([]string, error) {
 		}
 		cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 		if err := cmd.Run(); err != nil {
+			if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == 3 {
+				return nil, capabilityError{message: fmt.Sprintf("target %s does not support this program", target)}
+			}
 			return nil, fmt.Errorf("build step failed for target %s: %s", target, strings.Join(argv, " "))
 		}
 	}
@@ -688,7 +713,7 @@ func cmdStage(cmd string, rest []string) int {
 	fs.SetOutput(os.Stderr)
 	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: shen-cl`)
 	evalStyle := fs.String("eval-style", "sub", "how the host evaluates the shake expr (sub | positional)")
-	target := fs.String("target", "", "stage-2 target (lisp/lua/go/rust/js/julia/scheme/swift/erlang/truffle/truffle-native/c)")
+	target := fs.String("target", "", "stage-2 target (lisp/lua/go/joy/rust/js/julia/scheme/swift/erlang/truffle/truffle-native/c)")
 	web := fs.Bool("web", false, "with --target js: emit a browser-safe ES module (passes --web to ShenScript's builder)")
 	typecheck := fs.Bool("typecheck", false, "typecheck PROG under (tc +) on the host before shaking; failure aborts with no artifacts, success is recorded as typechecked= in the manifest")
 	// Allow flags after the PROG/OUTDIR positionals (Go's flag stops at the
@@ -769,6 +794,11 @@ func cmdStage(cmd string, rest []string) int {
 	}
 	runArgv, err := build(*target, outdir, *web)
 	if err != nil {
+		var unsupported capabilityError
+		if errors.As(err, &unsupported) {
+			fmt.Fprintln(os.Stderr, "yggdrasil:", err)
+			return 3
+		}
 		fmt.Fprintln(os.Stderr, "yggdrasil:", err)
 		return 1
 	}
