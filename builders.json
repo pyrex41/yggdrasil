@@ -134,16 +134,6 @@
     "run": ["{outdir}/app-erlang/run"]
   },
 
-  "hvm": {
-    "run_impl": "shen-inets",
-    "dir_env": "YGGDRASIL_SHEN_INETS_DIR",
-    "needs": ["python3", "hvm"],
-    "build": [
-      {"argv": ["python3", "{shen_inets}/build_shake.py", "{outdir}", "{outdir}/app.hvml"]}
-    ],
-    "run": ["python3", "{shen_inets}/run_app.py", "{outdir}/app.hvml"]
-  },
-
   "truffle": {
     "run_impl": "shen-truffle",
     "dir_env": "YGGDRASIL_SHEN_TRUFFLE_DIR",
@@ -179,15 +169,5 @@
        "env": {"SHEN_C": "{shen_c}"}}
     ],
     "run": ["{outdir}/app-c/app"]
-  },
-
-  "forth": {
-    "run_impl": "shen-forth",
-    "dir_env": "YGGDRASIL_SHEN_FORTH_DIR",
-    "needs": ["gforth", "shen-forth"],
-    "build": [
-      {"argv": ["shen-forth", "script", "{outdir}/app.shen"], "cwd": "{yggroot}"}
-    ],
-    "run": ["{outdir}/app-forth"]
   }
 }

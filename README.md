@@ -114,10 +114,10 @@ the embedded `builders.json` — on `ubuntu`/`macos`/`windows-latest`. As ever,
 whether a given target's *toolchain* (sbcl/luajit/go/Erlang/cargo/node/julia/chez/swift)
 is available is your environment's call.
 
-**Optional pinned toolchain (Nix).** [`flake.nix`](flake.nix) pins the Go
-toolchain — plus `git`, which `go build` shells out to for VCS stamping — at a
-`flake.lock` revision shared with the sibling [shen-go](https://github.com/pyrex41/shen-go)
-flake, so the two repos resolve to the same nixpkgs:
+**Complete pinned toolchain (Nix).** [`flake.nix`](flake.nix) supplies the Go
+CLI and the host-language dependencies used by every supported stage-2 target
+(Common Lisp, LuaJIT, Go, Rust, JavaScript, Julia, Chez Scheme, Swift, Erlang,
+Truffle/GraalVM, and C):
 
 ```bash
 nix develop                                # shell with the pinned Go
@@ -125,15 +125,12 @@ nix develop --command go test ./... -count=1
 nix develop --command ./yggdrasil_bin targets
 ```
 
-It is purely additive: nothing requires Nix, and the ordinary `go build` /
-`go test` path and the `go` CI job are unchanged. Be clear about what it does
-**not** buy you — **it does not make a shake reproducible.** Stage 1 needs an
-external Shen host, and the reference host is a locally built sibling
-`../shen-cl` checkout, not a nixpkgs package; `yggdrasil shake` still resolves
-its host through `$YGGDRASIL_HOST` / the sibling fallback chain exactly as
-before. The flake pins the *stage-2 Go* toolchain and nothing else — every
-other target's toolchain remains your environment's call, and a missing one
-still SKIPs rather than fails.
+The Shen implementations remain sibling source checkouts (or paths selected by
+the existing `YGGDRASIL_SHEN_*_DIR` variables), while their compilers and
+runtime dependencies come from Nix. Each port has its own locked flake as well,
+so it can be developed independently with `nix develop`. Unfinished Forth,
+HVM/inets, OCaml, and Odin ports intentionally have development flakes without
+being listed as supported Yggdrasil targets.
 
 ## Architecture
 
