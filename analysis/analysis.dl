@@ -1,0 +1,223 @@
+// Yggdrasil stage-1 shake, as a Datalog rule set.
+//
+// This is the oracle half of docs/analysis-rules.md stage 1: it recomputes
+// the shake's footprint from facts dumped by `yggdrasil facts PROG DIR`
+// (yggdrasil.shen, (yggdrasil.facts ...)) and must agree, set for set, with
+// the defuns the shake writes to kernel.kl -- excluding the synthesised
+// shen.initialise, which is manufactured at write time and has no row in the
+// call graph.
+//
+//     yggdrasil facts tests/fib.shen facts
+//     souffle -F facts -D out analysis/analysis.dl
+//     sort out/reach.csv
+//
+// Nothing here runs in a user's shake. Soufflé is a differential oracle in
+// CI; analysis/refeval.py evaluates the same rules in stdlib Python for
+// local runs. Both must produce the same reach set.
+//
+// ---------------------------------------------------------------------
+// DEVIATIONS FROM THE NOTE
+// ---------------------------------------------------------------------
+// docs/analysis-rules.md was written from the design of the shake; these
+// rules are written from `called-fns`, `prepare-tops`, `strip-f-error-row`
+// and `trim-top` as they actually stand in yggdrasil.shen. Where the two
+// disagree, the code wins and the divergence is recorded here.
+//
+// D1. The note's edge rules are position-sensitive:
+//         edge(F,G) :- callpos(F,G), kernel(G).
+//         edge(F,G) :- argpos(F,G,C), kernel(G), C != cons.
+//     The code is not. `called-fns` is a plain cons walk that collects EVERY
+//     kernel-defined symbol leaf of a body, in any position, cons arguments
+//     included (docs/reachability.md calls this out as a deliberate
+//     over-approximation). So the `C != cons` side condition is dropped:
+//     argpos yields an edge unconditionally, exactly like callpos. The
+//     callpos/argpos split is kept in the facts because it is what makes the
+//     rules legible, and because stage 3 may want to narrow the edge rule --
+//     but narrowing it today would shrink the footprint, which stage 1 is
+//     not allowed to do.
+//
+// D2. The note gates data-literal symbols on eval-capability:
+//         edge(F,G) :- datasym(F,G), kernel(G), evalcapable.
+//     The code has no such gate. `called-fns`'s four exceptions -- the arity
+//     table literal, the `put P shen.external-symbols` registration, a
+//     toplevel `(declare F Type)`, and the `shen.*special*` /
+//     `shen.*extraspecial*` lists, plus the `shen.assoc-> K` key -- drop
+//     those symbols in BOTH modes. (What is eval-gated is what happens to
+//     the surviving literals at write time: `trim-top` filters them to the
+//     footprint, which cannot change the footprint.) So `datasym` derives no
+//     edge at all. It is dumped and declared anyway: it is the exact record
+//     of what the shake decided not to follow, which is the thing a reader
+//     of the rule set most wants to see, and stage 3 will need it to prove
+//     the exceptions are what the rules say they are.
+//
+// D3. The note has a fourth edge rule for shen.f-error:
+//         edge(shen.f-error, G) :- callpos(shen.f-error, G), evalcapable.
+//     That is right in spirit but incomplete: `strip-f-error-row` empties
+//     shen.f-error's row wholesale in eval-free mode, so the argpos edges
+//     have to go too. Both rules below carry the mode guard.
+//
+// D4. The note's `seed`/`floorseed` read `form-mentions(N, G)` from a single
+//     set of toplevel forms. `prepare-tops` makes the toplevel forms
+//     themselves mode-dependent: in eval-free mode it deletes every
+//     `(declare F Type)` form and rewrites two more (`(set *macros* ...)` is
+//     blanked, `(shen.build-lambda-table ...)` becomes a placeholder). The
+//     dump therefore carries both readings, `formmentions` (raw) and
+//     `formmentionsef` (post-prepare-tops), indexed by the same raw form
+//     number, and the rules pick between them on the mode.
+//
+// D5. Likewise `usersym`. `strip-user-declares` drops user `(declare ...)`
+//     forms in eval-free mode only, so the dump carries `usersym` (the
+//     symbols of the user KL as the shake sees it in eval-free mode) and
+//     `rawsym` (as it sees it in eval-capable mode). `evalcapable` is
+//     derived from `rawsym`, because `eval-free?` is tested against the
+//     UNstripped user KL.
+//
+// D6. `reach` is restricted to `kernel`. The Shen `footprint` puts every
+//     seed in its visited set, kernel-defined or not; `footcode` then keeps
+//     only the kernel defuns. Restricting the recursion is the same answer
+//     one step earlier.
+//
+// D7. `initprim` is handed over as a fact rather than derived. `trim-top`
+//     rewrites the arity table, the external-symbols list and the lambda
+//     table against the FOOTPRINT, so the primitives the emitted initialiser
+//     mentions depend on the answer this rule set computes. Deriving it
+//     would mean restating `trim-arity-pairs`, `keep-set` and
+//     `lambdatable-entries` in Datalog for no gain: `reach` is the stage-1
+//     acceptance criterion, and `needsEval`/`reaches` ride along with it.
+//     Note that `initprim` is consequently dumped for the mode the program
+//     is actually in, unlike the other relations.
+
+// ============================== facts ==================================
+
+.decl kernel(f:symbol)                       // F is a kernel defun (a call-graph row head)
+.input kernel
+
+.decl callpos(f:symbol, g:symbol)            // G is the head cell of a cons inside F's body
+.input callpos
+
+.decl argpos(f:symbol, g:symbol, c:symbol)   // G is a later cell of a call whose head is C
+.input argpos
+
+.decl datasym(f:symbol, g:symbol)            // G sits in a subtree called-fns discards (D2)
+.input datasym
+
+.decl mentionsprim(f:symbol, p:symbol)       // primitive P occurs in kernel defun F's body
+.input mentionsprim
+
+.decl top(n:number, name:symbol)             // the N-th raw kernel toplevel init form
+.input top
+
+.decl formmentions(n:number, g:symbol)       // called-fns of raw form N
+.input formmentions
+
+.decl formmentionsef(n:number, g:symbol)     // called-fns of form N after prepare-tops (D4)
+.input formmentionsef
+
+.decl rawsym(s:symbol)                       // every symbol of the unstripped user KL
+.input rawsym
+
+.decl usersym(s:symbol)                      // every symbol of the declare-stripped user KL (D5)
+.input usersym
+
+.decl entry(s:symbol)                        // S is in *eval-entry-points*
+.input entry
+
+.decl prim(p:symbol)                         // P is in *primitives*
+.input prim
+
+.decl cap(c:symbol, p:symbol)                // capability C is gated by primitive P
+.input cap
+
+.decl portGlobal(v:symbol)                   // V is supplied by the port (*stinput*, *stoutput*)
+.input portGlobal
+
+.decl initprim(p:symbol)                     // primitives of the emitted initialiser (D7)
+.input initprim
+
+// ================================ mode =================================
+// eval-free? tests the user KL's symbols against *eval-entry-points*. One
+// hit is enough; evalcapable names every hit, which is what the
+// "eval-capable because the program mentions:" line of `yggdrasil why`
+// prints.
+
+.decl evalcapable(s:symbol)
+.output evalcapable
+evalcapable(S) :- rawsym(S), entry(S).
+
+// anyeval/evalfree are the boolean the rest of the rules branch on. They are
+// one-column so that the negation below is over a ground atom.
+.decl anyeval(x:number)
+anyeval(1) :- evalcapable(_).
+
+.decl evalfree(x:number)
+evalfree(1) :- !anyeval(1).
+
+// =============================== edges =================================
+// One edge per kernel-defined symbol leaf of a body, in any position (D1),
+// minus shen.f-error's whole row when the program is eval-free (D3).
+
+.decl edge(f:symbol, g:symbol)
+edge(F, G) :- callpos(F, G), kernel(G), F != "shen.f-error".
+edge(F, G) :- argpos(F, G, _), kernel(G), F != "shen.f-error".
+edge("shen.f-error", G) :- callpos("shen.f-error", G), kernel(G), anyeval(1).
+edge("shen.f-error", G) :- argpos("shen.f-error", G, _), kernel(G), anyeval(1).
+
+// =============================== seeds =================================
+// The kernel's own toplevel init forms seed the floor; the user KL seeds the
+// rest. Both readings of each are in the facts; the mode picks one (D4, D5).
+
+.decl floorseed(g:symbol)
+floorseed(G) :- formmentionsef(_, G), kernel(G), evalfree(1).
+floorseed(G) :- formmentions(_, G), kernel(G), anyeval(1).
+
+.decl seed(g:symbol)
+seed(G) :- floorseed(G).
+seed(G) :- usersym(G), kernel(G), evalfree(1).
+seed(G) :- rawsym(G), kernel(G), anyeval(1).
+
+// ============================== reach ==================================
+// The worklist traversal of yggdrasil.shen's `reach`, as least fixpoint.
+// `reach` IS the acceptance criterion: it must equal kernel.kl's defun list
+// minus shen.initialise. `floor` is the same traversal from the init forms
+// alone -- what every program pays, the floor= figure of `yggdrasil why`.
+
+.decl reach(g:symbol)
+.output reach
+reach(G) :- seed(G).
+reach(G) :- reach(F), edge(F, G).
+
+.decl floor(g:symbol)
+.output floor
+floor(G) :- floorseed(G).
+floor(G) :- floor(F), edge(F, G).
+
+// ====================== primitives and capabilities ====================
+// find-primitives runs over the emitted code: the reachable defuns (after
+// rewrite-f-error), the synthesised initialiser, and the user KL.
+
+.decl usedprim(p:symbol)
+usedprim(P) :- prim(P), reach(F), mentionsprim(F, P), F != "shen.f-error".
+usedprim(P) :- prim(P), reach("shen.f-error"), mentionsprim("shen.f-error", P), anyeval(1).
+// rewrite-f-error swaps the eval-free shen.f-error body for
+// (simple-error (cn (str V) "...")), so those two primitives replace its own.
+usedprim("simple-error") :- reach("shen.f-error"), evalfree(1).
+usedprim("cn") :- reach("shen.f-error"), evalfree(1).
+usedprim(P) :- initprim(P).
+usedprim(P) :- prim(P), usersym(P), evalfree(1).
+usedprim(P) :- prim(P), rawsym(P), anyeval(1).
+
+// A capability is reachable exactly when the emitted KL mentions one of its
+// gateway primitives -- the manifest's reaches= line.
+.decl reaches(c:symbol)
+.output reaches
+reaches(C) :- cap(C, P), usedprim(P).
+
+.decl needsEval(x:number)
+.output needsEval
+needsEval(1) :- usedprim("eval-kl").
+
+// portGlobal is declared and read but unused by the stage-1 rules: it is the
+// input the stage-2 initialisation-order check (readBeforeWrite) needs, and
+// dumping it now keeps the fact set stable across that change.
+.decl portGlobalUnused(v:symbol)
+portGlobalUnused(V) :- portGlobal(V), V = "never".

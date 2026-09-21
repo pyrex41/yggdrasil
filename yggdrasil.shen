@@ -1164,3 +1164,203 @@
 (define ygg.chain-sp
   [] -> ""
   [F | Fs] -> (cn " " (cn (str F) (ygg.chain-sp Fs))))
+
+\\ ===================== fact dump for the Datalog oracle =================
+\\ (yggdrasil.facts ["prog.shen"] "dir") writes the shake's decisions out as
+\\ TSV fact files, one per relation in analysis/analysis.dl, so an external
+\\ Datalog engine (Souffle in CI, analysis/refeval.py locally) can recompute
+\\ the footprint from the rules and be diffed against the kernel.kl this
+\\ same pipeline would write.  See docs/analysis-rules.md, stage 1.
+\\
+\\ It is a SIBLING of yggdrasil.shake, not a hook inside it: the shake's
+\\ behaviour, and every byte it emits, is untouched.  The pipeline below is
+\\ shake's, verbatim, up to the footprint; everything after that is
+\\ extraction.  Nothing here is called during a normal shake.
+\\
+\\ Extraction is deliberately mode-agnostic where it can be.  The kernel's
+\\ own edge facts (callpos/argpos/datasym) are taken from the RAW kernel, and
+\\ each toplevel init form is dumped twice - raw (formmentions) and as
+\\ prepare-tops would leave it for an eval-free program (formmentionsef) -
+\\ so the eval-free/eval-capable choice is made by the RULES, from
+\\ entry + rawsym, exactly as eval-free? makes it here.  The two relations
+\\ that cannot be mode-agnostic are initprim (trim-top's output depends on
+\\ the footprint, which depends on the mode) and usersym (strip-user-declares
+\\ is mode-gated); both are dumped for the mode this program is actually in,
+\\ with rawsym carrying the unstripped user symbols alongside.
+
+(define yggdrasil.facts
+  Files Dir
+   -> (let MaxPrint (value *maximum-print-sequence-size*)
+           Unlimit  (set *maximum-print-sequence-size* 1000000000)
+           Kernel   (kernel-code)
+           Graph    (call-graph Kernel)
+           KLFiles  (map (fn bootstrap) Files)
+           RawKL    (map (fn read-file) KLFiles)
+           RawFs    (function-calls RawKL)
+           EvalFree (eval-free? RawFs)
+           KL       (strip-user-declares RawKL EvalFree)
+           AllTops  (toplevel-forms Kernel)
+           Tops     (prepare-tops AllTops EvalFree)
+           Graph2   (if EvalFree (strip-f-error-row Graph) Graph)
+           Seeds    (append (mapcan (fn called-fns) Tops) (function-calls KL))
+           Foot     (footprint Seeds Graph2)
+           Arities  (arity-literal Tops)
+           TopsOut  (map (/. T (trim-top T Foot EvalFree Arities)) Tops)
+           Cls      (ygg.cls-defuns Kernel)
+           W1  (ygg.facts-file Dir "kernel"   (map (/. R [(row-head R)]) Graph))
+           W2  (ygg.facts-file Dir "callpos"  (ygg.rows-of callpos Cls))
+           W3  (ygg.facts-file Dir "argpos"   (ygg.rows-of argpos Cls))
+           W4  (ygg.facts-file Dir "datasym"  (ygg.rows-of datasym Cls))
+           W5  (ygg.facts-file Dir "mentionsprim" (ygg.prim-rows Kernel))
+           W6  (ygg.facts-file Dir "top"      (ygg.top-rows AllTops 1))
+           W7  (ygg.facts-file Dir "formmentions"   (ygg.mention-rows AllTops 1 false))
+           W8  (ygg.facts-file Dir "formmentionsef" (ygg.mention-rows AllTops 1 true))
+           W9  (ygg.facts-file Dir "rawsym"   (map (/. S [S]) (ygg.remove-dups RawFs)))
+           W10 (ygg.facts-file Dir "usersym"  (map (/. S [S])
+                                                   (ygg.remove-dups (function-calls KL))))
+           W11 (ygg.facts-file Dir "entry"    (map (/. S [S]) (value *eval-entry-points*)))
+           W12 (ygg.facts-file Dir "prim"     (map (/. P [P]) (value *primitives*)))
+           W13 (ygg.facts-file Dir "cap"      (mapcan (fn ygg.cap-rows) (value *capabilities*)))
+           W14 (ygg.facts-file Dir "portGlobal" (map (/. V [V]) (value *global-primitives*)))
+           W15 (ygg.facts-file Dir "initprim" (map (/. P [P]) (find-primitives TopsOut)))
+           Restore (set *maximum-print-sequence-size* MaxPrint)
+           Report  (pr (make-string "yggdrasil-facts: mode=~A dir=~A kernel=~A~%"
+                                    (if EvalFree "eval-free" "eval-capable")
+                                    Dir (ygg.len Graph))
+                       (stoutput))
+           done))
+
+(define ygg.cap-rows
+  [C | Sinks] -> (map (/. P [C P]) Sinks))
+
+\\ ---------------------------- edge facts --------------------------------
+\\ ygg.cls is a structural mirror of called-fns: same clause order, same
+\\ cons walk, same four data-table exceptions.  The only thing it adds is a
+\\ position, so that the one set of symbols called-fns returns can be split
+\\ into callpos (a cons's head cell) and argpos (any later cell, tagged with
+\\ the head it sits under), and so that the symbols called-fns THROWS AWAY
+\\ at an exception are still recorded, as datasym.  The split is for the
+\\ rules' legibility only - analysis.dl derives an edge from callpos and
+\\ argpos alike, because called-fns does (see the deviation notes there).
+\\
+\\ Position is one of: form (this node is an expression), args (a cons that
+\\ is the tail of an argument list), arg (one argument), call (a head cell).
+\\ Caller is the head symbol the current argument list belongs to.
+\\
+\\ The exception clauses come first, as they do in called-fns, so that they
+\\ fire in argument-list tails too - which is where the kernel's own
+\\ (put P shen.external-symbols ...) and (declare F T) forms actually sit.
+
+(define ygg.cls
+  [shen.initialise-arity-table Lit] _ _
+      -> [[callpos shen.initialise-arity-table] | (ygg.data Lit)]
+  [declare F Ty] _ _ -> (append (ygg.cls-sym declare) (ygg.data [F Ty]))
+      where (symbol? F)
+  [put P shen.external-symbols Lit | Rest] _ _
+      -> (append (ygg.cls-sym put)
+                 (append (ygg.data [P shen.external-symbols Lit])
+                         (ygg.cls Rest form put)))
+      where (symbol? P)
+  [set shen.*special* Lit] _ _
+      -> (append (ygg.cls-sym set) (ygg.data [shen.*special* Lit]))
+  [set shen.*extraspecial* Lit] _ _
+      -> (append (ygg.cls-sym set) (ygg.data [shen.*extraspecial* Lit]))
+  [shen.assoc-> K | R] _ _
+      -> (append (ygg.cls-sym shen.assoc->)
+                 (append (ygg.data [K]) (ygg.cls R form shen.assoc->)))
+      where (symbol? K)
+  [X | Y] form _      -> (append (ygg.cls X call (ygg.caller X))
+                                 (ygg.cls Y args (ygg.caller X)))
+  [X | Y] args Caller -> (append (ygg.cls X arg Caller) (ygg.cls Y args Caller))
+  [X | Y] arg Caller  -> (ygg.cls [X | Y] form Caller)
+  [X | Y] call Caller -> (ygg.cls [X | Y] form Caller)
+  F call _ -> [[callpos F]] where (and (symbol? F) (kernel-defun? F))
+  F form _ -> [[callpos F]] where (and (symbol? F) (kernel-defun? F))
+  F _ Caller -> [[argpos F Caller]] where (and (symbol? F) (kernel-defun? F))
+  _ _ _ -> [])
+
+\\ A cons in head position - ((lambda X ...) Y) and friends - has no name
+\\ to attribute its arguments to; argpos's third column says so rather than
+\\ carrying a whole form.
+(define ygg.caller
+  X -> X where (symbol? X)
+  _ -> ygg.nonsymbolic-head)
+
+(define ygg.cls-sym
+  F -> [[callpos F]] where (and (symbol? F) (kernel-defun? F))
+  _ -> [])
+
+\\ Every kernel name inside a subtree called-fns discards at an exception.
+(define ygg.data
+  [X | Y] -> (append (ygg.data X) (ygg.data Y))
+  F -> [[datasym F]] where (and (symbol? F) (kernel-defun? F))
+  _ -> [])
+
+(define ygg.cls-defuns
+  [] -> []
+  [[defun F _ Body] | Code] -> (append (ygg.tag-with F (ygg.cls Body form F))
+                                       (ygg.cls-defuns Code))
+  [_ | Code] -> (ygg.cls-defuns Code))
+
+(define ygg.tag-with
+  _ [] -> []
+  F [[Tag | Cols] | Ts] -> [[Tag F | Cols] | (ygg.tag-with F Ts)])
+
+(define ygg.rows-of
+  _ [] -> []
+  Tag [[Tag | Cols] | Ts] -> [Cols | (ygg.rows-of Tag Ts)]
+  Tag [_ | Ts] -> (ygg.rows-of Tag Ts))
+
+\\ Primitives per kernel defun, so the rules can compute the manifest's
+\\ primitive set over the reachable defuns rather than being handed it.
+(define ygg.prim-rows
+  [] -> []
+  [[defun F _ Body] | Code] -> (append (map (/. P [F P]) (find-primitives Body))
+                                       (ygg.prim-rows Code))
+  [_ | Code] -> (ygg.prim-rows Code))
+
+\\ ------------------------- toplevel init forms --------------------------
+\\ Indices are over the RAW toplevel forms, so the two mention relations
+\\ line up form for form.  prepare-tops in eval-free mode drops declare
+\\ forms outright (no formmentionsef row at all) and rewrites the *macros*
+\\ registration and the lambda-table builder (strip-eval-top), which is why
+\\ the ef row of those two forms is shorter than the raw one.
+
+(define ygg.top-rows
+  [] _ -> []
+  [T | Ts] N -> [[N (ygg.top-name T)] | (ygg.top-rows Ts (+ N 1))])
+
+(define ygg.top-name
+  [F | _] -> F where (symbol? F)
+  _ -> top)
+
+(define ygg.mention-rows
+  [] _ _ -> []
+  [T | Ts] N true -> (ygg.mention-rows Ts (+ N 1) true) where (declare-form? T)
+  [T | Ts] N true -> (append (map (/. G [N G]) (called-fns (strip-eval-top T)))
+                             (ygg.mention-rows Ts (+ N 1) true))
+  [T | Ts] N false -> (append (map (/. G [N G]) (called-fns T))
+                              (ygg.mention-rows Ts (+ N 1) false)))
+
+\\ ------------------------------ TSV writer ------------------------------
+\\ Tab-separated, newline-terminated, no header: Souffle's default .input
+\\ format, and trivial for the Python reference evaluator to read.
+
+(define ygg.facts-file
+  Dir Name Rows -> (let Sink  (open (cn (cn Dir "/") (cn Name ".facts")) out)
+                        Write (ygg.mapc (/. R (ygg.pr-fact R Sink)) Rows)
+                        Close (close Sink)
+                        done))
+
+(define ygg.pr-fact
+  Cols Sink -> (do (ygg.pr-cols Cols Sink true) (pr (n->string 10) Sink)))
+
+(define ygg.pr-cols
+  [] _ _ -> done
+  [C | Cs] Sink true  -> (do (pr (ygg.fact-str C) Sink) (ygg.pr-cols Cs Sink false))
+  [C | Cs] Sink false -> (do (pr (cn (n->string 9) (ygg.fact-str C)) Sink)
+                             (ygg.pr-cols Cs Sink false)))
+
+(define ygg.fact-str
+  X -> X where (string? X)
+  X -> (str X))

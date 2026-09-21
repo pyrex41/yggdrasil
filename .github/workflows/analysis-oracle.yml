@@ -1,0 +1,140 @@
+name: analysis-oracle
+
+# Stage 1 of docs/analysis-rules.md: the shake restated as a Datalog rule set,
+# checked against the shake itself.
+#
+# For every fixture, in whichever eval mode it lands in, this job dumps the
+# shake's facts (`yggdrasil facts`), evaluates analysis/analysis.dl over them
+# with real Soufflé, and diffs `reach` against the defun list of the kernel.kl
+# the same shake wrote. Equality is the whole claim: the rules describe THIS
+# shaker, not a nicer one. A difference is a bug in the rules or in the shake,
+# and the job says which names moved.
+#
+# Soufflé is an ORACLE, never a dependency. It runs here and nowhere else; a
+# user's shake is pure Shen on a certified kernel, which is the property the
+# tool exists to provide (docs/reachability.md). The same relationship the
+# Warshall closure has to the worklist traversal.
+#
+# analysis/refeval.py evaluates the same rules in stdlib Python for developers
+# without Soufflé, and go test uses it when `souffle` is off PATH. This job
+# runs both and diffs them, so the two readings of analysis.dl cannot drift.
+#
+# Not on `push`: it needs a shen-go build plus a shake per fixture, so it is
+# minutes. Nightly + manual, like parity-gate.yml.
+
+on:
+  schedule:
+    - cron: "41 5 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "analysis/**"
+      - "yggdrasil.shen"
+      - "main.go"
+      - "KLambda/**"
+      - ".github/workflows/analysis-oracle.yml"
+
+concurrency:
+  group: analysis-oracle-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  oracle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.x"
+
+      # Soufflé ships a .deb per release; prefer it, pinned, because a rule
+      # set that only evaluates on "whatever is latest" is not an oracle.
+      # Their apt repo is the fallback, for when the release asset naming
+      # changes under us (it has) or the runner image moves to a newer
+      # Ubuntu than the pinned .deb was built for.
+      - name: install souffle
+        env:
+          SOUFFLE_VERSION: "2.4.1"
+        run: |
+          set -euo pipefail
+          deb="x86_64-ubuntu-2204-souffle-${SOUFFLE_VERSION}-Linux.deb"
+          url="https://github.com/souffle-lang/souffle/releases/download/${SOUFFLE_VERSION}/${deb}"
+          sudo apt-get update -qq
+          if curl -fsSL -o /tmp/souffle.deb "$url"; then
+            sudo apt-get install -y -qq /tmp/souffle.deb
+          else
+            echo "release asset $deb not available; falling back to the souffle apt repo"
+            sudo wget -q https://souffle-lang.github.io/ppa/souffle-key.public \
+              -O /usr/share/keyrings/souffle-archive-keyring.gpg
+            echo "deb [signed-by=/usr/share/keyrings/souffle-archive-keyring.gpg] https://souffle-lang.github.io/ppa/ubuntu/ stable main" \
+              | sudo tee /etc/apt/sources.list.d/souffle.list
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq souffle
+          fi
+          souffle --version
+
+      # The stage-1 host, built the same way parity-gate.yml builds it.
+      - name: check out and build the shen-go stage-1 host
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/.."
+          git clone --depth 1 -b master https://github.com/pyrex41/shen-go.git
+          cd shen-go
+          make shen
+          ls -l shen || ls -l bin/shen
+
+      - name: build the CLI
+        run: go build -o yggdrasil_bin .
+
+      - name: rules vs shake, every fixture
+        env:
+          YGGDRASIL_HOST: ${{ github.workspace }}/../shen-go/shen
+        run: |
+          set -euo pipefail
+          # The host may land at ./shen or ./bin/shen depending on the
+          # makefile's era; take whichever exists.
+          if [ ! -x "$YGGDRASIL_HOST" ]; then
+            YGGDRASIL_HOST="$GITHUB_WORKSPACE/../shen-go/bin/shen"
+            export YGGDRASIL_HOST
+          fi
+          fail=0
+          checked=0
+          for prog in tests/*.shen; do
+            name="$(basename "$prog" .shen)"
+            work="$RUNNER_TEMP/$name"
+            rm -rf "$work"; mkdir -p "$work/shake" "$work/facts" "$work/out"
+
+            ./yggdrasil_bin shake "$prog" "$work/shake" >/dev/null
+            ./yggdrasil_bin facts "$prog" "$work/facts" >/dev/null
+            souffle -F "$work/facts" -D "$work/out" analysis/analysis.dl
+
+            # kernel.kl's defun list, minus the initialiser the shake
+            # synthesises at write time (no call-graph row, so no rule can
+            # derive it).
+            grep -o '^(defun [^ )]*' "$work/shake/kernel.kl" \
+              | sed 's/^(defun //' | grep -vx 'shen.initialise' | sort -u > "$work/want.txt"
+            sort -u "$work/out/reach.csv" > "$work/got-souffle.txt"
+            python3 analysis/refeval.py "$work/facts" | sort -u > "$work/got-refeval.txt"
+
+            mode=eval-free
+            [ -s "$work/out/evalcapable.csv" ] && mode=eval-capable
+
+            if ! diff -u "$work/want.txt" "$work/got-souffle.txt" > "$work/diff-souffle.txt"; then
+              echo "::error::$name ($mode): souffle reach != kernel.kl defuns"
+              head -40 "$work/diff-souffle.txt"
+              fail=1
+            elif ! diff -u "$work/got-souffle.txt" "$work/got-refeval.txt" > "$work/diff-engines.txt"; then
+              echo "::error::$name ($mode): souffle and analysis/refeval.py disagree"
+              head -40 "$work/diff-engines.txt"
+              fail=1
+            else
+              echo "ok  $name ($mode): $(wc -l < "$work/want.txt") defuns"
+            fi
+            checked=$((checked + 1))
+          done
+          echo "checked $checked fixtures"
+          # A run that checked nothing is not a pass.
+          [ "$checked" -ge 10 ] || { echo "::error::only $checked fixtures checked"; fail=1; }
+          exit "$fail"

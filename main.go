@@ -706,7 +706,7 @@ func main() { os.Exit(run(os.Args[1:])) }
 
 func run(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: yggdrasil <shake|build|run|check|why|parity|targets> ...")
+		fmt.Fprintln(os.Stderr, "usage: yggdrasil <shake|build|run|check|why|facts|parity|targets> ...")
 		return 2
 	}
 	cmd, rest := args[0], args[1:]
@@ -733,6 +733,8 @@ func run(args []string) int {
 		return cmdCheck(rest)
 	case "why":
 		return cmdWhy(rest)
+	case "facts":
+		return cmdFacts(rest)
 	case "parity":
 		return cmdParity(rest)
 	default:
@@ -977,6 +979,104 @@ func cmdWhy(rest []string) int {
 		return 1
 	}
 	os.Stdout.WriteString(report)
+	return 0
+}
+
+// ---- facts: the Datalog oracle's input ----
+//
+// `yggdrasil facts PROG OUTDIR` runs (yggdrasil.facts ...) on the host,
+// which writes one TSV file per relation in analysis/analysis.dl. Nothing
+// about the shake changes: the fact dump is a sibling entry point that
+// reuses the same pipeline and writes no artifact. The relations are the
+// input to Souffle (`souffle -F OUTDIR -D out analysis/analysis.dl`) in CI
+// and to analysis/refeval.py locally; both must compute a `reach` set equal
+// to kernel.kl's defun list minus the synthesised shen.initialise. See
+// docs/analysis-rules.md.
+//
+// Same trust model as shake and why: success is the sentinel line plus the
+// fact files existing on disk, never the host's exit code.
+func facts(prog, outdir string, host []string, evalStyle string, quiet bool) (string, error) {
+	if host == nil {
+		host = defaultHost()
+	}
+	if host == nil {
+		return "", fmt.Errorf("no Shen host launcher found. Set $YGGDRASIL_HOST (or $BIFROST_SHEN_CL) to a Shen launcher, e.g.\n  YGGDRASIL_HOST=/path/to/shen-cl/bin/sbcl/shen yggdrasil facts ...")
+	}
+	prog, _ = filepath.Abs(prog)
+	outdir, _ = filepath.Abs(outdir)
+	if _, err := os.Stat(prog); err != nil {
+		return "", fmt.Errorf("program not found: %s", prog)
+	}
+	if err := os.MkdirAll(outdir, 0o755); err != nil {
+		return "", err
+	}
+	root, err := yggRoot()
+	if err != nil {
+		return "", fmt.Errorf("materialising shaker: %w", err)
+	}
+	expr := fmt.Sprintf(`(yggdrasil.facts ["%s"] "%s")`, prog, outdir)
+
+	var argv []string
+	if evalStyle == "positional" {
+		drv := filepath.Join(outdir, "_facts_driver.shen")
+		os.WriteFile(drv, []byte("(load \"yggdrasil.shen\")\n"+expr+"\n"), 0o644)
+		argv = append(append([]string{}, host...), drv)
+	} else {
+		argv = append(append([]string{}, host...), "eval", "-q", "-l", "yggdrasil.shen", "-e", expr)
+	}
+
+	out, _ := runAt(wrapExecutable(argv), root)
+	if !strings.Contains(out, "yggdrasil-facts:") {
+		os.Stderr.WriteString(out)
+		return "", fmt.Errorf("facts produced no dump (host=%s)\n  did the program load cleanly on the host?", strings.Join(host, " "))
+	}
+	// Every relation analysis.dl declares .input for must exist, even when
+	// empty: Souffle errors on a missing fact file, and a silently absent
+	// relation would quietly shrink reach.
+	for _, rel := range factRelations {
+		if _, err := os.Stat(filepath.Join(outdir, rel+".facts")); err != nil {
+			os.Stderr.WriteString(out)
+			return "", fmt.Errorf("facts dump is missing %s.facts", rel)
+		}
+	}
+	if !quiet {
+		os.Stderr.WriteString(out)
+	}
+	return outdir, nil
+}
+
+// factRelations is the .input set of analysis/analysis.dl, in declaration
+// order. Keep the two in step.
+var factRelations = []string{
+	"kernel", "callpos", "argpos", "datasym", "mentionsprim",
+	"top", "formmentions", "formmentionsef",
+	"rawsym", "usersym", "entry", "prim", "cap", "portGlobal", "initprim",
+}
+
+func cmdFacts(rest []string) int {
+	fs := flag.NewFlagSet("yggdrasil facts", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: shen-cl`)
+	evalStyle := fs.String("eval-style", "sub", "how the host evaluates the facts expr (sub | positional)")
+	if err := fs.Parse(reorderArgs(rest, "host", "eval-style")); err != nil {
+		return 2
+	}
+	if fs.NArg() < 2 {
+		fmt.Fprintln(os.Stderr, "usage: yggdrasil facts PROG OUTDIR [--host ...] [--eval-style ...]")
+		return 2
+	}
+	prog, outdir := fs.Arg(0), fs.Arg(1)
+	var host []string
+	if *hostFlag != "" {
+		host = strings.Fields(*hostFlag)
+		if hit := findExecutablePath(host[0]); hit != "" {
+			host[0] = hit
+		}
+	}
+	if _, err := facts(prog, outdir, host, *evalStyle, false); err != nil {
+		fmt.Fprintln(os.Stderr, "yggdrasil:", err)
+		return 1
+	}
 	return 0
 }
 
