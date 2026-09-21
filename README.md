@@ -158,6 +158,15 @@ derived from the emitted primitive set. `cannot-reach=eval` is a static,
 certifiable "this program can never evaluate code at runtime". See
 `docs/reachability.md`.
 
+A successful shake also records `init-order=checked` (`("init-order"
+checked)` in the s-expression manifest) after `needs-eval`: every
+toplevel form in the emitted boot sequence — the kernel's init forms,
+then the user files' toplevel forms in manifest order — reads a global
+only after an earlier form set it, or because the port supplies it
+(`*stinput*`, `*stoutput*`). A program that violates the rule is refused
+with no artifacts written (see `docs/analysis-rules.md`). Builders must
+ignore manifest keys they do not recognise, so the key is contract-safe.
+
 **Stage 2 — build** (one builder per target port, living in that port's
 repo):
 

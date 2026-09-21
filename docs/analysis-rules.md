@@ -147,13 +147,20 @@ runs in a user's shake.
    modes. This proves the rules describe the current shake before anything
    is rewritten. Acceptance: green on every fixture, no change to any
    emitted byte.
-2. **Init-order check in Shen.** Implement `reads`/`writes` extraction and
-   `readBeforeWrite` in Shen, run it after `trim-top` and before writing,
-   fail the shake on a violation, and add `init-order=checked` to the
-   manifest. Add a fixture that violates it on purpose (a user toplevel
-   that reads a global it sets on the next line) and a test that the shake
-   refuses it. Acceptance: fixture fails, all existing fixtures still
-   byte-identical.
+2. **Init-order check in Shen.** *Done.* `ygg.init-order-check` in
+   `yggdrasil.shen` scans the final form sequence — the kept toplevel
+   forms as `trim-top` leaves them, then the user files' toplevel forms
+   in manifest order — for `(value V)` and `(set V _)` at any depth
+   except inside a `defun`, `lambda` or `freeze` (those bodies do not run
+   while the artifact boots). A read with no earlier write, and no port
+   global to explain it, prints
+   `yggdrasil-shake: FAIL init-order form=N reads=V` and aborts before
+   `kernel.kl` is written; the Go driver surfaces that line. A clean run
+   records `init-order=checked` in both manifests, after `needs-eval`.
+   Fixtures: `tests/init-order-bad.shen` (refused) and
+   `tests/init-order-ok.shen` (same reads, boot order); `initorder_test.go`
+   is the host-gated test. Measured: `kernel.kl` byte-identical on every
+   existing fixture, manifests differing only by the new line.
 3. **Rules as the implementation.** Replace `called-fns`'s exceptions,
    `strip-f-error-row` and the lambda-table filter with the Shen
    evaluator over the same rules. Acceptance: byte-identical `kernel.kl`

@@ -111,7 +111,12 @@ if [ -n "$FIXTURES" ]; then
 else
     NAMES=()
     for f in tests/*.shen; do
-        NAMES+=("$(basename "$f" .shen)")
+        name="$(basename "$f" .shen)"
+        # Fixtures the shaker is meant to REFUSE never produce an artifact,
+        # so they are not parity material.  (They have no golden either,
+        # which would skip them anyway; this says why.)
+        case "$name" in init-order-bad) continue ;; esac
+        NAMES+=("$name")
     done
 fi
 

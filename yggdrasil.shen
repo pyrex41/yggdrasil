@@ -128,6 +128,7 @@
                                     (footcode Foot Kernel))
                     Arities    (arity-literal Tops)
                     TopsOut    (map (/. T (trim-top T Foot EvalFree Arities)) Tops)
+                    InitOrder  (ygg.init-order-check TopsOut KL)
                     InitDefun  (synthesize-initialise TopsOut)
                     OutCode    (append FootCode [InitDefun])
                     Prims      (find-primitives (append OutCode KL))
@@ -897,6 +898,7 @@
          W8 (pr-kl-line ["primitives-optional" | Optional] Sink)
          W9 (pr-kl-line ["globals" | Globals] Sink)
          WA (pr-kl-line ["needs-eval" NeedsEval] Sink)
+         WA2 (pr-kl-line ["init-order" checked] Sink)
          WB (pr-kl-line ["reaches" | Reaches] Sink)
          WC (pr-kl-line ["cannot-reach" | Cannot] Sink)
          (close Sink)))
@@ -914,9 +916,79 @@
          W8 (ygg.mapc (/. P (pr (make-string "primitive-optional=~A~%" P) Sink)) Optional)
          W9 (ygg.mapc (/. P (pr (make-string "global=~A~%" P) Sink)) Globals)
          WA (pr (make-string "needs-eval=~A~%" NeedsEval) Sink)
+         WA2 (pr (make-string "init-order=checked~%") Sink)
          WB (ygg.mapc (/. C (pr (make-string "reaches=~A~%" C) Sink)) Reaches)
          WC (ygg.mapc (/. C (pr (make-string "cannot-reach=~A~%" C) Sink)) Cannot)
          (close Sink)))
+
+\\ ======================= initialisation order check =====================
+\\ Stage 2 of docs/analysis-rules.md.  The kept toplevel forms are the
+\\ program's initialisation, in order: the kernel's own init forms first
+\\ (as trim-top leaves them), then, after the synthesised initialiser, the
+\\ user files' toplevel forms in manifest order.  A form may evaluate
+\\ (value V) only if an earlier form evaluated (set V _), or V is a port
+\\ global (*stinput*, *stoutput* - the port supplies those before any
+\\ Shen code runs).  Reads inside a defun do not count: a defun body runs
+\\ when it is called, not while the artifact boots.
+\\
+\\ The check is syntactic and runs after trim-top and before anything is
+\\ written, so a violation aborts the shake with no kernel.kl - the Go
+\\ driver's "missing or empty kernel.kl means failure" contract.  On a
+\\ violation it prints the sentinel
+\\   yggdrasil-shake: FAIL init-order form=N reads=V
+\\ (N is the 1-based index in the final form sequence) and errors out.
+\\ Success is recorded in both manifests as init-order=checked.
+
+(define ygg.init-order-check
+  Tops UserKL -> (ygg.io-scan (append Tops (ygg.user-tops UserKL)) 1 []))
+
+\\ The user files' toplevel (non-defun) forms, in manifest order.
+(define ygg.user-tops
+  [] -> []
+  [Forms | Files] -> (append (toplevel-forms Forms) (ygg.user-tops Files)))
+
+(define ygg.io-scan
+  [] _ _ -> checked
+  [F | Fs] N Written
+   -> (let Unwritten (ygg.filter (/. V (not (ygg.io-available? V Written)))
+                                 (ygg.io-reads F))
+           Report    (ygg.io-report Unwritten N)
+           (ygg.io-scan Fs (+ N 1) (append Written (ygg.io-writes F)))))
+
+(define ygg.io-available?
+  V Written -> (or (element? V Written)
+                   (element? V (value *global-primitives*))))
+
+(define ygg.io-report
+  [] _ -> done
+  [V | _] N -> (do (pr (make-string "yggdrasil-shake: FAIL init-order form=~A reads=~A~%"
+                                    N V)
+                       (stoutput))
+                   (simple-error
+                    (make-string "init-order: form ~A reads ~A before any form sets it"
+                                 N V))))
+
+\\ (value V) / (set V _) occurrences in a form's own expression, at any
+\\ depth (let, do, if, ...), but never inside a defun, a lambda or a
+\\ freeze: those bodies run when they are applied or forced, not while the
+\\ form itself is evaluated.  Skipping lambdas also keeps the eta-wrapper
+\\ literal trim-top builds for shen.*lambdatable* out of the scan - its
+\\ entry for the `value` primitive is literally (lambda X1 (value X1)).
+(define ygg.io-reads
+  [defun | _] -> []
+  [lambda | _] -> []
+  [freeze | _] -> []
+  [value V] -> [V]  where (symbol? V)
+  [X | Y] -> (append (ygg.io-reads X) (ygg.io-reads Y))
+  _ -> [])
+
+(define ygg.io-writes
+  [defun | _] -> []
+  [lambda | _] -> []
+  [freeze | _] -> []
+  [set V Val] -> [V | (ygg.io-writes Val)]  where (symbol? V)
+  [X | Y] -> (append (ygg.io-writes X) (ygg.io-writes Y))
+  _ -> [])
 
 \\ ======================= footprint attribution (why) ====================
 \\ The device Tarver asked for on the Shen group (The Future of Shen,

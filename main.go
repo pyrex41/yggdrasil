@@ -247,6 +247,10 @@ func shake(prog, outdir string, host []string, evalStyle string, quiet bool) (st
 	out, _ := runAt(wrapExecutable(argv), root)
 	kernel := filepath.Join(outdir, "kernel.kl")
 	if fi, err := os.Stat(kernel); err != nil || fi.Size() == 0 {
+		if sentinel, ok := shakeFailReport(out); ok {
+			os.Stderr.WriteString(out)
+			return "", fmt.Errorf("%s\n  %s", sentinel, shakeFailHint(sentinel))
+		}
 		os.Stderr.WriteString(out)
 		return "", fmt.Errorf("shake produced no kernel.kl (host=%s)\n  did the program load cleanly on the host?", strings.Join(host, " "))
 	}
@@ -254,6 +258,33 @@ func shake(prog, outdir string, host []string, evalStyle string, quiet bool) (st
 		os.Stderr.WriteString(out)
 	}
 	return outdir, nil
+}
+
+// shakeFailReport picks the shake's own FAIL sentinel out of the host
+// output, the way failReport does for the typecheck gate. The shaker
+// prints "yggdrasil-shake: FAIL <what> ..." and then aborts before writing
+// kernel.kl, so a refused shake reads as a named analysis failure rather
+// than as "the program did not load".
+func shakeFailReport(out string) (string, bool) {
+	i := strings.Index(out, "yggdrasil-shake: FAIL")
+	if i < 0 {
+		return "", false
+	}
+	line := out[i:]
+	if j := strings.IndexByte(line, '\n'); j >= 0 {
+		line = line[:j]
+	}
+	return strings.TrimRight(line, "\r"), true
+}
+
+// shakeFailHint explains a sentinel in one line; unknown checks get a
+// generic line, so a new check in the shaker needs no Go change to be
+// reported usefully.
+func shakeFailHint(sentinel string) string {
+	if strings.Contains(sentinel, "init-order") {
+		return "a toplevel form reads a global before any earlier form sets it; reorder the program (see docs/analysis-rules.md)"
+	}
+	return "the shaker refused this program; no artifacts were written"
 }
 
 // check runs the build-time typecheck gate: a separate host process loads
