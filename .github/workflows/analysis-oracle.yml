@@ -103,6 +103,8 @@ jobs:
           checked=0
           for prog in tests/*.shen; do
             name="$(basename "$prog" .shen)"
+            # Refused by the init-order check on purpose; nothing to compare.
+            [ "$name" = init-order-bad ] && continue
             work="$RUNNER_TEMP/$name"
             rm -rf "$work"; mkdir -p "$work/shake" "$work/facts" "$work/out"
 

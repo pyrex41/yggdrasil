@@ -143,6 +143,11 @@ func TestAnalysisOracleMatchesShake(t *testing.T) {
 	for _, prog := range fixtures {
 		prog := prog
 		name := strings.TrimSuffix(filepath.Base(prog), ".shen")
+		if name == "init-order-bad" {
+			// Refused by the stage-2 init-order check on purpose; there is
+			// no kernel.kl for the oracle to agree with.
+			continue
+		}
 		t.Run(name, func(t *testing.T) {
 			shakeDir, factsDir := t.TempDir(), t.TempDir()
 			if _, err := shake(prog, shakeDir, host, "sub", true); err != nil {
