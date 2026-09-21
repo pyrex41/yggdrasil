@@ -90,6 +90,7 @@ yggdrasil targets                              # list stage-2 targets
 | `run PROG OUTDIR --target T` | build, then execute the artifact |
 | `parity PROG OUTDIR` | run the shaken slice on every target and diff outputs against a reference — see [Behavioural parity gate](#behavioural-parity-gate) |
 | `why PROG [--trace FN]` | footprint attribution: the kernel floor, what each user defun / toplevel / kernel seed adds over it, and the shortest call chain to `FN` — see [`docs/why.md`](docs/why.md) |
+| `facts PROG OUTDIR` | dump the shake's call-graph, seed and mode facts as TSV, one file per relation in [`analysis/analysis.dl`](analysis/analysis.dl), for the Datalog oracle — `souffle -F OUTDIR -D out analysis/analysis.dl`, or `python3 analysis/refeval.py OUTDIR`; the computed `reach` must equal `kernel.kl`'s defun list, see [`docs/analysis-rules.md`](docs/analysis-rules.md) |
 | `targets` | list available targets (`lisp`/`lua`/`go`/`joy`/`erlang`/`rust`/`js`/`julia`/`scheme`/`swift`/`truffle`/`truffle-native`/`c`) |
 
 The stage-1 **host** defaults to the sibling `../shen-cl/bin/sbcl/shen`

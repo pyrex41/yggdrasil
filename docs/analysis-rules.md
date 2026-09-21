@@ -1,6 +1,9 @@
 # Design note: the shake as a rule set
 
-**Status**: proposed (Yggdrasil, September 2026)
+**Status**: stage 1 shipped, stages 2–5 proposed (Yggdrasil, September 2026)
+**Code**: `analysis/analysis.dl`, `analysis/refeval.py`; `yggdrasil.shen` —
+`yggdrasil.facts`; `main.go` — `cmdFacts`; `analysis_test.go`
+
 **Motivation**: Mark Tarver, *The Future of Shen* (Shen group): Yggdrasil
 enters the core of trust next to the kernel and the backend, so it should be
 small and legible. Today the shake is correct but its decisions are spread
@@ -46,6 +49,15 @@ portReads(V)                 the port's runtime reads V natively (*hush* ...);
 prim(P)                      P in *primitives*
 cap(C, P)                    capability C is gated by primitive P
 ```
+
+The relations above are the sketch. What `yggdrasil facts` actually dumps
+is that list with `form-mentions` split into `formmentions` (raw) and
+`formmentionsef` (after `prepare-tops`), `usersym` joined by `rawsym` (the
+user KL before `strip-user-declares`), `mentions` narrowed to
+`mentionsprim`, and `initprim` added; `reads`/`writes`/`readsIn`/
+`portReads` are stage 2 and 4 and are not dumped yet. `portGlobal` is
+dumped and declared now so the fact set does not move under stage 2. See
+the declarations at the top of `analysis/analysis.dl`.
 
 ## Rules
 
@@ -140,13 +152,31 @@ runs in a user's shake.
 
 ## Staging
 
-1. **Rules on paper, oracle first.** Write `analysis.dl` from this note.
-   Add a `--dump-facts DIR` flag to `shake` that writes the fact relations
-   as TSV. A CI job runs Soufflé over them and asserts the computed
-   footprint equals the `defun` set in `kernel.kl`, for all fixtures, both
-   modes. This proves the rules describe the current shake before anything
-   is rewritten. Acceptance: green on every fixture, no change to any
-   emitted byte.
+1. **Rules on paper, oracle first.** — **done.**
+   `analysis/analysis.dl` is the rule set as Soufflé Datalog; `yggdrasil
+   facts PROG DIR` (`yggdrasil.facts` in `yggdrasil.shen`, a sibling of
+   `yggdrasil.shake` that reuses its pipeline and writes no artifact) dumps
+   fifteen TSV relations; `analysis/refeval.py` is a stdlib-Python
+   semi-naive evaluator of the same rules for developers without Soufflé,
+   and `analysis_test.go` runs whichever is available — both, when both
+   are — over every fixture in `tests/`, in whichever mode it lands in.
+   `.github/workflows/analysis-oracle.yml` does the same with real Soufflé
+   in CI and diffs the two engines against each other. On all fourteen
+   fixtures, eleven eval-free and three eval-capable, `reach` equals
+   `kernel.kl`'s defun set exactly (48–66 defuns eval-free, 548–567
+   eval-capable), `needsEval` and `reaches` equal the manifest's
+   `needs-eval=` and `reaches=`, and `kernel.kl` is byte-identical to
+   what the pre-change binary wrote. The rules as written above needed
+   four corrections to describe the shake that exists rather than the one
+   this note imagined — `called-fns` is position-insensitive and follows
+   `cons` arguments; its four data-table exceptions drop their symbols in
+   *both* modes, not only eval-free; `strip-f-error-row` empties
+   `shen.f-error`'s whole row, argument edges included; and `prepare-tops`
+   and `strip-user-declares` make the toplevel forms and the user symbol
+   set themselves mode-dependent, so the dump carries both readings and
+   the rules choose. Each is recorded as a numbered deviation (D1–D7) in
+   the header of `analysis.dl`; stage 3 has to reconcile them the other
+   way, by changing the code.
 2. **Init-order check in Shen.** Implement `reads`/`writes` extraction and
    `readBeforeWrite` in Shen, run it after `trim-top` and before writing,
    fail the shake on a violation, and add `init-order=checked` to the
