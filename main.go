@@ -675,7 +675,7 @@ func main() { os.Exit(run(os.Args[1:])) }
 
 func run(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: yggdrasil <shake|build|run|check|parity|targets> ...")
+		fmt.Fprintln(os.Stderr, "usage: yggdrasil <shake|build|run|check|why|parity|targets> ...")
 		return 2
 	}
 	cmd, rest := args[0], args[1:]
@@ -700,6 +700,8 @@ func run(args []string) int {
 		return cmdStage(cmd, rest)
 	case "check":
 		return cmdCheck(rest)
+	case "why":
+		return cmdWhy(rest)
 	case "parity":
 		return cmdParity(rest)
 	default:
@@ -855,6 +857,95 @@ func cmdCheck(rest []string) int {
 		ver = "?"
 	}
 	fmt.Printf("typechecked %s (kernel %s)\n", prog, ver)
+	return 0
+}
+
+// ---- footprint attribution (why) ----
+
+// runWhy drives the host through (yggdrasil.why ["prog"]) - or why-trace
+// when target is non-empty - and returns the report: host output from the
+// first sentinel line on. Like check it runs in its own host process, and
+// like check the sentinel, not the exit code, decides whether it worked.
+func runWhy(prog string, target string, host []string, evalStyle string) (string, error) {
+	if host == nil {
+		host = defaultHost()
+	}
+	if host == nil {
+		return "", fmt.Errorf("no Shen host launcher found. Set $YGGDRASIL_HOST (or $BIFROST_SHEN_CL) to a Shen launcher, e.g.\n  YGGDRASIL_HOST=/path/to/shen-cl/bin/sbcl/shen yggdrasil why ...")
+	}
+	prog, _ = filepath.Abs(prog)
+	if _, statErr := os.Stat(prog); statErr != nil {
+		return "", fmt.Errorf("program not found: %s", prog)
+	}
+	root, err := yggRoot()
+	if err != nil {
+		return "", fmt.Errorf("materialising shaker: %w", err)
+	}
+	expr := fmt.Sprintf(`(yggdrasil.why ["%s"])`, prog)
+	if target != "" {
+		expr = fmt.Sprintf(`(yggdrasil.why-trace ["%s"] %s)`, prog, target)
+	}
+
+	var argv []string
+	if evalStyle == "positional" {
+		tmp, _ := os.MkdirTemp("", "yggdrasil_why_")
+		drv := filepath.Join(tmp, "_why_driver.shen")
+		os.WriteFile(drv, []byte("(load \"yggdrasil.shen\")\n"+expr+"\n"), 0o644)
+		argv = append(append([]string{}, host...), drv)
+	} else {
+		argv = append(append([]string{}, host...), "eval", "-q", "-l", "yggdrasil.shen", "-e", expr)
+	}
+
+	out, _ := runAt(wrapExecutable(argv), root)
+	report, ok := whyReport(out)
+	if !ok {
+		os.Stderr.WriteString(out)
+		return "", fmt.Errorf("why produced no report (host=%s)\n  did the program load cleanly on the host?", strings.Join(host, " "))
+	}
+	return report, nil
+}
+
+// whyReport cuts host output down to the report: the sentinel line and
+// every line after it, minus the host's trailing "done" echo.
+func whyReport(out string) (string, bool) {
+	i := strings.Index(out, "yggdrasil-why:")
+	if i < 0 {
+		return "", false
+	}
+	lines := strings.Split(strings.TrimRight(out[i:], "\n"), "\n")
+	if n := len(lines); n > 0 && strings.TrimSpace(lines[n-1]) == "done" {
+		lines = lines[:n-1]
+	}
+	return strings.Join(lines, "\n") + "\n", true
+}
+
+func cmdWhy(rest []string) int {
+	fs := flag.NewFlagSet("yggdrasil why", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: shen-cl`)
+	evalStyle := fs.String("eval-style", "sub", "how the host evaluates the why expr (sub | positional)")
+	trace := fs.String("trace", "", "also print the shortest call chain from the program to this kernel function")
+	if err := fs.Parse(reorderArgs(rest, "host", "eval-style", "trace")); err != nil {
+		return 2
+	}
+	if fs.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "usage: yggdrasil why PROG [--trace FN] [--host ...] [--eval-style ...]")
+		return 2
+	}
+	prog := fs.Arg(0)
+	var host []string
+	if *hostFlag != "" {
+		host = strings.Fields(*hostFlag)
+		if hit := findExecutablePath(host[0]); hit != "" {
+			host[0] = hit
+		}
+	}
+	report, err := runWhy(prog, *trace, host, *evalStyle)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "yggdrasil:", err)
+		return 1
+	}
+	os.Stdout.WriteString(report)
 	return 0
 }
 

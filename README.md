@@ -78,6 +78,7 @@ yggdrasil build prog.shen out/ --target go     # stage 1 + build a Go artifact
 yggdrasil build prog.shen out/ --target js --web  # a BROWSER-safe ES module
 yggdrasil run   prog.shen out/ --target js     # build, then run it (prints stdout)
 yggdrasil parity prog.shen out/                # behavioural parity gate across targets
+yggdrasil why    prog.shen --trace read        # what each part of the program costs in kernel defuns
 yggdrasil targets                              # list stage-2 targets
 ```
 
@@ -88,6 +89,7 @@ yggdrasil targets                              # list stage-2 targets
 | `build … --target js --web` | emit a browser-safe ES module (`import $ from './app.js'; $.caller('fn')(…)`) instead of the Node artifact — no `node:fs`/streams/`process`; passes `--web` to ShenScript's builder |
 | `run PROG OUTDIR --target T` | build, then execute the artifact |
 | `parity PROG OUTDIR` | run the shaken slice on every target and diff outputs against a reference — see [Behavioural parity gate](#behavioural-parity-gate) |
+| `why PROG [--trace FN]` | footprint attribution: the kernel floor, what each user defun / toplevel / kernel seed adds over it, and the shortest call chain to `FN` — see [`docs/why.md`](docs/why.md) |
 | `targets` | list available targets (`lisp`/`lua`/`go`/`joy`/`erlang`/`rust`/`js`/`julia`/`scheme`/`swift`/`truffle`/`truffle-native`/`c`) |
 
 The stage-1 **host** defaults to the sibling `../shen-cl/bin/sbcl/shen`

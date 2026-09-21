@@ -917,3 +917,178 @@
          WB (ygg.mapc (/. C (pr (make-string "reaches=~A~%" C) Sink)) Reaches)
          WC (ygg.mapc (/. C (pr (make-string "cannot-reach=~A~%" C) Sink)) Cannot)
          (close Sink)))
+
+\\ ======================= footprint attribution (why) ====================
+\\ The device Tarver asked for on the Shen group (The Future of Shen,
+\\ 2026-09): something that scans a program and highlights the parts that
+\\ drag kernel in - "code creep", his example being a partial function
+\\ pulling the whole tracker in through shen.f-error.  The shake already
+\\ knows the answer (the footprint is a reachability set over a graph it
+\\ owns); this reports it instead of just emitting it.
+\\
+\\   (yggdrasil.why ["prog.shen"])            attribution report
+\\   (yggdrasil.why-trace ["prog.shen"] F)    ... plus the shortest call
+\\                                            chain from the program to
+\\                                            kernel function F
+\\
+\\ Numbers are all in kernel defuns.  The FLOOR is what the kernel's own
+\\ toplevel init forms reach with no user code at all - every program pays
+\\ it.  For each user defun (and the file's toplevel forms as one row) and
+\\ for each kernel function the user KL mentions directly (a "seed"):
+\\   adds       = |reach(floor-seeds + this)| - |floor|
+\\                what this costs on top of the floor, alone
+\\   exclusive  = |total| - |reach(everything except this)|
+\\                what disappears from kernel.kl if this went away
+\\ adds > exclusive means the cost is shared with other rows.  Rows print
+\\ sorted by adds, descending; a row that adds nothing is still listed so
+\\ the report is a complete map of the program.
+\\
+\\ It runs under the same mode the shake would (eval-free stripping on or
+\\ off, decided by the same eval-free? test), so the report is about the
+\\ kernel.kl that shake would actually write.  Compare an eval-free and an
+\\ eval-capable program to see the stripping at work: shen.f-error is a
+\\ 1-defun row in the first and a ~300-defun row in the second.
+\\
+\\ Output contract (the Go driver prints from the first sentinel line on):
+\\   yggdrasil-why: mode=M floor=N total=N kernel=N
+\\   eval-capable because the program mentions: F G   (eval-capable only)
+\\   defun NAME adds=N exclusive=N
+\\   top NAME adds=N exclusive=N
+\\   seed NAME adds=N exclusive=N
+\\   trace F: A -> B -> F           (or "trace F: not in footprint")
+
+(define yggdrasil.why
+  Files -> (ygg.why-h Files []))
+
+(define yggdrasil.why-trace
+  Files Target -> (ygg.why-h Files [Target]))
+
+(define ygg.why-h
+  Files Targets
+   -> (let MaxPrint  (value *maximum-print-sequence-size*)
+           Unlimit   (set *maximum-print-sequence-size* 1000000000)
+           Kernel    (kernel-code)
+           Graph     (call-graph Kernel)
+           KLFiles   (map (fn bootstrap) Files)
+           RawKL     (map (fn read-file) KLFiles)
+           RawFs     (function-calls RawKL)
+           EvalFree  (eval-free? RawFs)
+           EvalBy    (ygg.filter (/. F (element? F (value *eval-entry-points*))) RawFs)
+           KL        (strip-user-declares RawKL EvalFree)
+           Tops      (prepare-tops (toplevel-forms Kernel) EvalFree)
+           Graph2    (if EvalFree (strip-f-error-row Graph) Graph)
+           InitSeeds (ygg.remove-dups (mapcan (fn called-fns) Tops))
+           UserSeeds (ygg.kernel-seeds (function-calls KL))
+           Floor     (footprint InitSeeds Graph2)
+           Total     (footprint (append InitSeeds UserSeeds) Graph2)
+           Rows      (ygg.why-rows KL InitSeeds UserSeeds Floor Total Graph2)
+           Header    (pr (make-string "yggdrasil-why: mode=~A floor=~A total=~A kernel=~A~%"
+                                      (if EvalFree "eval-free" "eval-capable")
+                                      (ygg.len Floor) (ygg.len Total)
+                                      (ygg.len Graph))
+                         (stoutput))
+           Cause     (if EvalFree done
+                         (pr (make-string "eval-capable because the program mentions:~A~%"
+                                          (ygg.chain-sp EvalBy))
+                             (stoutput)))
+           Print     (ygg.mapc (fn ygg.pr-why-row) (ygg.sort-desc Rows))
+           Traces    (ygg.mapc (/. T (ygg.pr-trace T UserSeeds InitSeeds Graph2))
+                               Targets)
+           Restore   (set *maximum-print-sequence-size* MaxPrint)
+           done))
+
+(define ygg.kernel-seeds
+  Fs -> (ygg.filter (fn kernel-defun?) (ygg.remove-dups Fs)))
+
+\\ One row per user defun, one per file's toplevel forms, one per kernel
+\\ seed.  Each row is [Kind Name Adds Exclusive]; Adds and Exclusive are
+\\ two footprint traversals, O(V+E) each, so the report costs a few dozen
+\\ shakes' worth of graph work - cheap.
+(define ygg.why-rows
+  KL Init Seeds Floor Total Graph
+   -> (append (ygg.user-rows KL Init Seeds Floor Total Graph)
+              (map (/. S (ygg.why-row seed S [S] Init Seeds Floor Total Graph))
+                   Seeds)))
+
+(define ygg.user-rows
+  [] _ _ _ _ _ -> []
+  [Forms | Files] Init Seeds Floor Total Graph
+   -> (append (ygg.form-rows Forms [] Init Seeds Floor Total Graph)
+              (ygg.user-rows Files Init Seeds Floor Total Graph)))
+
+\\ Tops accumulates the non-defun forms of one file; they are reported as
+\\ a single "top" row because they run in source order as one unit.
+(define ygg.form-rows
+  [] [] _ _ _ _ _ -> []
+  [] Tops Init Seeds Floor Total Graph
+   -> [(ygg.why-row top toplevel (ygg.kernel-seeds (function-calls Tops))
+                    Init Seeds Floor Total Graph)]
+  [[defun F _ Body] | Forms] Tops Init Seeds Floor Total Graph
+   -> [(ygg.why-row defun F (ygg.kernel-seeds (function-calls Body))
+                    Init Seeds Floor Total Graph)
+       | (ygg.form-rows Forms Tops Init Seeds Floor Total Graph)]
+  [Form | Forms] Tops Init Seeds Floor Total Graph
+   -> (ygg.form-rows Forms [Form | Tops] Init Seeds Floor Total Graph))
+
+(define ygg.why-row
+  Kind Name Mine Init Seeds Floor Total Graph
+   -> (let Alone  (footprint (append Init Mine) Graph)
+           Others (ygg.filter (/. S (not (element? S Mine))) Seeds)
+           Rest   (footprint (append Init Others) Graph)
+           [Kind Name (- (ygg.len Alone) (ygg.len Floor))
+                      (- (ygg.len Total) (ygg.len Rest))]))
+
+(define ygg.pr-why-row
+  [Kind Name Adds Excl] -> (pr (make-string "~A ~A adds=~A exclusive=~A~%"
+                                            Kind Name Adds Excl)
+                               (stoutput)))
+
+\\ Insertion sort on the Adds field, descending, stable.
+(define ygg.sort-desc
+  [] -> []
+  [R | Rs] -> (ygg.insert-desc R (ygg.sort-desc Rs)))
+
+(define ygg.insert-desc
+  R [] -> [R]
+  R [S | Ss] -> [R S | Ss]  where (>= (ygg.row-adds R) (ygg.row-adds S))
+  R [S | Ss] -> [S | (ygg.insert-desc R Ss)])
+
+(define ygg.row-adds
+  [_ _ Adds _] -> Adds)
+
+\\ Shortest chain to Target, breadth-first over the same graph the shake
+\\ uses.  User seeds are searched first so the chain starts at something
+\\ the program wrote; the init forms are tried only if the user code
+\\ cannot reach Target on its own.
+(define ygg.pr-trace
+  Target UserSeeds InitSeeds Graph
+   -> (let Path (ygg.first-path Target [UserSeeds InitSeeds] Graph)
+           (pr (if (empty? Path)
+                   (make-string "trace ~A: not in footprint~%" Target)
+                   (make-string "trace ~A: ~A~%" Target (ygg.chain Path)))
+               (stoutput))))
+
+(define ygg.first-path
+  _ [] _ -> []
+  Target [Seeds | More] Graph
+   -> (let Path (ygg.path Target (map (/. S [S]) Seeds) [] Graph)
+           (if (empty? Path) (ygg.first-path Target More Graph) Path)))
+
+\\ Queue entries are reversed paths, head = the node to expand.
+(define ygg.path
+  _ [] _ _ -> []
+  Target [[Target | Path] | _] _ _ -> (reverse [Target | Path])
+  Target [[N | _] | Q] Seen Graph -> (ygg.path Target Q Seen Graph)
+      where (element? N Seen)
+  Target [[N | Path] | Q] Seen Graph
+   -> (ygg.path Target
+                (append Q (map (/. C [C N | Path]) (row-calls N Graph)))
+                [N | Seen] Graph))
+
+(define ygg.chain
+  [F] -> (str F)
+  [F | Fs] -> (cn (str F) (cn " -> " (ygg.chain Fs))))
+
+(define ygg.chain-sp
+  [] -> ""
+  [F | Fs] -> (cn " " (cn (str F) (ygg.chain-sp Fs))))
