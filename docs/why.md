@@ -103,6 +103,21 @@ Two things this shows that the shake alone does not:
 So the "device" has two halves: tell the programmer which side of the step
 they are on and why, then attribute the remainder per defun.
 
+Two further things from the same message, and where they stand:
+
+- **Colour banding in an editor** (green for light through red for heavy).
+  The `adds` column is that signal; an editor integration would band on it.
+  On the eval-free side the bands are meaningful; on the eval-capable side
+  every row is red for the same reason, which is why the report names the
+  cause instead of colouring every line.
+- **Lightweight substitutes**, e.g. `(simple-error "partial application
+  wrt f")` in place of `shen.f-error`. S42 already ships this substitute
+  for user code (`shen.partial` in `bootstrap`), and the shake applies the
+  same one to the kernel's internal callers (`*static-f-error*` in
+  `yggdrasil.shen`) when the program is eval-free. The report is how you
+  find the next candidate: `--trace` a heavy kernel function and the chain
+  names the edge a substitute would cut.
+
 ## Cost
 
 Each row is two worklist traversals (`footprint`), O(V+E) each over a
