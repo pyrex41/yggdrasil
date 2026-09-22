@@ -19,6 +19,9 @@
 //	                               in the manifest
 //	parity PROG OUTDIR             behavioural parity gate: run the shaken slice on
 //	                               every target and diff outputs against a reference
+//	scip-check PROG OUTDIR         stage-5 level-2 oracle: build the shaken and the
+//	                               full program with one builder and compare their
+//	                               indexes node for node (see scip.go)
 //	targets                        list available stage-2 targets
 package main
 
@@ -215,6 +218,16 @@ func defaultHost() []string {
 
 // shake runs stage 1: shake prog into outdir. Returns outdir.
 func shake(prog, outdir string, host []string, evalStyle string, quiet bool) (string, error) {
+	return shakeMode(prog, outdir, host, evalStyle, quiet, false)
+}
+
+// shakeMode is shake with the stage-5 --no-shake switch. With full set it
+// calls (yggdrasil.shake-full ...) instead of (yggdrasil.shake ...): every
+// kernel defun and the eval-capable initialiser, so the same stage-2 builder
+// can build the full program A alongside the shaken A*. Everything else --
+// the host launcher, the driver file, the failure contract -- is shared, so
+// the two artifacts differ by the shake and by nothing else.
+func shakeMode(prog, outdir string, host []string, evalStyle string, quiet, full bool) (string, error) {
 	if host == nil {
 		host = defaultHost()
 	}
@@ -233,7 +246,11 @@ func shake(prog, outdir string, host []string, evalStyle string, quiet bool) (st
 	if err != nil {
 		return "", fmt.Errorf("materialising shaker: %w", err)
 	}
-	expr := fmt.Sprintf(`(yggdrasil.shake ["%s"] "%s")`, prog, outdir)
+	entry := "yggdrasil.shake"
+	if full {
+		entry = "yggdrasil.shake-full"
+	}
+	expr := fmt.Sprintf(`(%s ["%s"] "%s")`, entry, prog, outdir)
 
 	var argv []string
 	if evalStyle == "positional" {
@@ -706,7 +723,7 @@ func main() { os.Exit(run(os.Args[1:])) }
 
 func run(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: yggdrasil <shake|build|run|check|why|facts|parity|targets> ...")
+		fmt.Fprintln(os.Stderr, "usage: yggdrasil <shake|build|run|check|why|facts|parity|scip-check|targets> ...")
 		return 2
 	}
 	cmd, rest := args[0], args[1:]
@@ -737,6 +754,8 @@ func run(args []string) int {
 		return cmdFacts(rest)
 	case "parity":
 		return cmdParity(rest)
+	case "scip-check":
+		return cmdScipCheck(rest)
 	default:
 		fmt.Fprintf(os.Stderr, "yggdrasil: unknown subcommand %q\n", cmd)
 		return 2
@@ -751,6 +770,7 @@ func cmdStage(cmd string, rest []string) int {
 	target := fs.String("target", "", "stage-2 target (lisp/lua/go/joy/rust/js/julia/scheme/swift/erlang/truffle/truffle-native/c)")
 	web := fs.Bool("web", false, "with --target js: emit a browser-safe ES module (passes --web to ShenScript's builder)")
 	typecheck := fs.Bool("typecheck", false, "typecheck PROG under (tc +) on the host before shaking; failure aborts with no artifacts, success is recorded as typechecked= in the manifest")
+	noShake := fs.Bool("no-shake", false, "emit the FULL program (every kernel defun, the eval-capable initialiser, no trimming) instead of the shaken slice; the manifest records shaken=false. The reference build for scip-check")
 	// Allow flags after the PROG/OUTDIR positionals (Go's flag stops at the
 	// first non-flag token otherwise).
 	if err := fs.Parse(reorderArgs(rest, "host", "eval-style", "target")); err != nil {
@@ -782,7 +802,7 @@ func cmdStage(cmd string, rest []string) int {
 	}
 
 	if cmd == "shake" {
-		out, err := shake(prog, outdir, host, *evalStyle, false)
+		out, err := shakeMode(prog, outdir, host, *evalStyle, false, *noShake)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "yggdrasil:", err)
 			return 1
@@ -810,7 +830,7 @@ func cmdStage(cmd string, rest []string) int {
 		fmt.Fprintf(os.Stderr, "yggdrasil %s: --web only applies to --target js\n", cmd)
 		return 2
 	}
-	if _, err := shake(prog, outdir, host, *evalStyle, true); err != nil {
+	if _, err := shakeMode(prog, outdir, host, *evalStyle, true, *noShake); err != nil {
 		fmt.Fprintln(os.Stderr, "yggdrasil:", err)
 		return 1
 	}

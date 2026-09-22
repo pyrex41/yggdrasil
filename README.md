@@ -78,6 +78,7 @@ yggdrasil build prog.shen out/ --target go     # stage 1 + build a Go artifact
 yggdrasil build prog.shen out/ --target js --web  # a BROWSER-safe ES module
 yggdrasil run   prog.shen out/ --target js     # build, then run it (prints stdout)
 yggdrasil parity prog.shen out/                # behavioural parity gate across targets
+yggdrasil scip-check prog.shen out/ --target go # stage-5 oracle: shaken vs full, node for node
 yggdrasil why    prog.shen --trace read        # what each part of the program costs in kernel defuns
 yggdrasil targets                              # list stage-2 targets
 ```
@@ -91,6 +92,8 @@ yggdrasil targets                              # list stage-2 targets
 | `parity PROG OUTDIR` | run the shaken slice on every target and diff outputs against a reference — see [Behavioural parity gate](#behavioural-parity-gate) |
 | `why PROG [--trace FN]` | footprint attribution: the kernel floor, what each user defun / toplevel / kernel seed adds over it, and the shortest call chain to `FN` — see [`docs/why.md`](docs/why.md) |
 | `facts PROG OUTDIR` | dump the shake's call-graph, seed and mode facts as TSV, one file per relation in [`analysis/analysis.dl`](analysis/analysis.dl), for the Datalog oracle — `souffle -F OUTDIR -D out analysis/analysis.dl`, or `python3 analysis/refeval.py OUTDIR`; the computed `reach` must equal `kernel.kl`'s defun list, see [`docs/analysis-rules.md`](docs/analysis-rules.md) |
+| `shake … --no-shake` | emit the FULL program instead of the shaken slice: every kernel defun and the eval-capable initialiser, no trimming, manifest `shaken=false`. The reference build for `scip-check`; the default path is unchanged and its artifacts are byte-identical |
+| `scip-check PROG OUTDIR --target go` | stage-5 level-2 oracle: build the shaken program and the full program with the same builder, index both with `scip-go`, and check that every node the shaken artifact can reach from `main` is in the full one with an identical body. Prints `OK reachable=N identical=N`, falls back to `go/ast` when `scip-go` is missing (the verdict says `path=scip` or `path=go-ast`) — see [`docs/analysis-rules.md`](docs/analysis-rules.md) |
 | `targets` | list available targets (`lisp`/`lua`/`go`/`joy`/`erlang`/`rust`/`js`/`julia`/`scheme`/`swift`/`truffle`/`truffle-native`/`c`) |
 
 The stage-1 **host** defaults to the sibling `../shen-cl/bin/sbcl/shen`
