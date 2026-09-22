@@ -637,6 +637,19 @@
 \\ ------------------------------ unification -----------------------------
 \\ Substitutions are assoc lists of [Var | Term]; walk chases bindings.
 
+\\ A logic variable is a MARKED TERM, [ygg.dl-lv Name], not a Shen variable.
+\\ The engine must never decide varness by looking at a symbol's spelling:
+\\ Shen's `variable?` is true of every uppercase-initial symbol, so a fact
+\\ argument that happens to be spelled that way - a KL let-variable reaching
+\\ `reads`, say - would become a wildcard that unifies with anything and
+\\ disables the first-argument index.  ygg.dl-varify is the only producer of
+\\ the marker and ygg.dl-lvar? the only recogniser, so data is data whatever
+\\ it is called.  Matching on the head alone keeps the test one cons? and one
+\\ eq on the hot path.
+(define ygg.dl-lvar?
+  [ygg.dl-lv | _] -> true
+  _ -> false)
+
 (define ygg.dl-lookup
   V [] -> V
   V [[V | T] | _] -> T
@@ -644,7 +657,7 @@
 
 (define ygg.dl-walk
   X S -> (let Y (ygg.dl-lookup X S) (if (= X Y) X (ygg.dl-walk Y S)))
-      where (variable? X)
+      where (ygg.dl-lvar? X)
   [X | Xs] S -> [(ygg.dl-walk X S) | (ygg.dl-walk Xs S)]
   X _ -> X)
 
@@ -653,8 +666,8 @@
 
 (define ygg.dl-unify-h
   X X S -> S
-  V T S -> [[V | T] | S]  where (variable? V)
-  T V S -> [[V | T] | S]  where (variable? V)
+  V T S -> [[V | T] | S]  where (ygg.dl-lvar? V)
+  T V S -> [[V | T] | S]  where (ygg.dl-lvar? V)
   [X | Xs] [Y | Ys] S -> (let S1 (ygg.dl-unify X Y S)
                               (if (= S1 fail) fail (ygg.dl-unify Xs Ys S1)))
   _ _ _ -> fail)
@@ -688,7 +701,7 @@
 
 (define ygg.dl-cands
   [P | Args] S -> (let A (ygg.dl-walk (ygg.dl-first Args) S)
-                       (if (variable? A)
+                       (if (ygg.dl-lvar? A)
                            (ygg.dl-query P)
                            (ygg.dl-get (ygg.dl-key P A)))))
 
@@ -730,26 +743,45 @@
   [[P | _] | _] -> P)
 
 \\ Stratification is the one thing a Datalog with negation can get silently
-\\ wrong, so it is checked rather than assumed: a [not P] inside a stratum
-\\ that also derives P would read a relation that is not finished yet.
+\\ wrong, so it is checked rather than assumed.  A [not P] is legal only
+\\ where P is already CLOSED - an EDB relation, or the head of a stratum
+\\ that has finished - so the check is against the closed set, not against
+\\ this stratum's own heads.  Checking only the latter would pass a [not P]
+\\ whose P is derived in a LATER stratum, which reads an empty relation and
+\\ is the silent wrong answer the check exists to catch.
 (define ygg.dl-check-neg
-  Rules Preds -> (ygg.mapc (/. R (ygg.dl-check-rule R Preds)) Rules))
+  Rules Closed -> (ygg.mapc (/. R (ygg.dl-check-rule R Closed)) Rules))
 
 (define ygg.dl-check-rule
-  [_ | Body] Preds -> (ygg.mapc (/. L (ygg.dl-check-lit L Preds)) Body))
+  [_ | Body] Closed -> (ygg.mapc (/. L (ygg.dl-check-lit L Closed)) Body))
 
 (define ygg.dl-check-lit
-  [not [P | _]] Preds -> (if (element? P Preds)
-                             (simple-error (cn "ygg.dl: unstratified negation on "
-                                               (str P)))
-                             done)
+  [not [P | _]] Closed -> (if (element? P Closed)
+                              done
+                              (simple-error (cn "ygg.dl: unstratified negation on "
+                                                (str P))))
   _ _ -> done)
 
 (define ygg.dl-stratum
-  Rules -> (let Preds (map (fn ygg.dl-head-pred) Rules)
-                Check (ygg.dl-check-neg Rules Preds)
-                D0    (ygg.dl-new (mapcan (/. R (ygg.dl-derive R -1 [])) Rules))
-                (ygg.dl-loop Rules Preds D0)))
+  Rules Closed -> (let Check (ygg.dl-check-neg Rules Closed)
+                       Preds (map (fn ygg.dl-head-pred) Rules)
+                       D0    (ygg.dl-new (mapcan (/. R (ygg.dl-derive R -1 [])) Rules))
+                       (ygg.dl-loop Rules Preds D0)))
+
+\\ (ygg.dl-strata Closed Strata) closes each stratum in turn, growing the
+\\ closed set by that stratum's head predicates as it goes.
+(define ygg.dl-strata
+  _ [] -> done
+  Closed [Rules | Ss] -> (do (ygg.dl-stratum Rules Closed)
+                             (ygg.dl-strata (append (map (fn ygg.dl-head-pred) Rules)
+                                                    Closed)
+                                            Ss)))
+
+\\ The predicate names of an EDB: what is closed before the first stratum
+\\ runs.  A relation with no facts at all is not nameable here, and is not
+\\ closed - a [not P] on one is a typo, not a negation.
+(define ygg.dl-fact-preds
+  Facts -> (ygg.remove-dups (map (fn hd) Facts)))
 
 \\ (ygg.dl-run Facts Strata) loads the EDB and closes each stratum in turn.
 \\ The database is left standing for the caller's queries; the next run
@@ -757,7 +789,7 @@
 (define ygg.dl-run
   Facts Strata -> (do (ygg.dl-reset)
                       (ygg.mapc (fn ygg.dl-add) Facts)
-                      (ygg.mapc (fn ygg.dl-stratum) Strata)
+                      (ygg.dl-strata (ygg.dl-fact-preds Facts) Strata)
                       done))
 
 \\ =========================== the shake's rules ==========================
@@ -765,9 +797,11 @@
 \\ be read against that file line for line: same relation names, same
 \\ clause order, same deviations D1-D7 (see the header there).  The only
 \\ syntactic difference is that logic variables are written as the
-\\ lowercase names below and turned into Shen variables by ygg.dl-varify,
-\\ because Shen's `define` rejects free variables in a body and a literal
-\\ [reach G] at toplevel would be one.
+\\ lowercase names below and turned into marked terms [ygg.dl-lv F] by
+\\ ygg.dl-varify: the authoring syntax is lowercase because Shen's `define`
+\\ rejects free variables in a body and a literal [reach G] at toplevel
+\\ would be one, and the marker is what the engine recognises, so no fact
+\\ argument can be mistaken for a variable by its spelling.
 \\
 \\   evalcapable(S) :- rawsym(S), entry(S).
 \\   anyeval(1)     :- evalcapable(_).
@@ -808,13 +842,123 @@
 
 (define ygg.dl-var
   X [] -> X
-  X [[X Name] | _] -> (intern Name)
+  X [[X Name] | _] -> [ygg.dl-lv (intern Name)]
   X [_ | Vs] -> (ygg.dl-var X Vs))
 
 (define ygg.dl-varify
   [X | Y] -> [(ygg.dl-varify X) | (ygg.dl-varify Y)]
   X -> (ygg.dl-var X (value ygg.*dl-vars*))  where (symbol? X)
   X -> X)
+
+\\ ----------------------------- engine selftest --------------------------
+\\ (yggdrasil.dl-selftest) is a test-only entry point, driven by
+\\ dlengine_test.go the way (yggdrasil.footprints ...) drives the footprint
+\\ comparison: it prints one sentinel line and the sentinel decides.
+\\
+\\   yggdrasil-dl-selftest: OK cases=N
+\\   yggdrasil-dl-selftest: FAIL <case>
+\\
+\\ Every case asserts a property the engine used to get WRONG, so none of
+\\ them can pass under the old behaviour:
+\\   - a datum spelled with a leading uppercase is data, not a wildcard: it
+\\     keys the index and refuses to unify with anything else;
+\\   - a [not P] is legal only where P is already closed - an EDB relation
+\\     or the head of an EARLIER stratum - so a later-stratum P is an error
+\\     rather than a silent read of an empty relation;
+\\   - and the legal negation the shake's own rules depend on still runs,
+\\     including over a closed relation that happens to be empty.
+(define ygg.dl-t-errors?
+  F -> (trap-error (do (thaw F) false) (/. E true)))
+
+\\ (a) a ground argument keys the index however it is spelled: the bucket
+\\ for X is the one tuple, not the whole three-tuple relation.
+(define ygg.dl-t-index
+  -> (let Load (ygg.dl-run [[kernel (intern "X")] [kernel (intern "Y")] [kernel abc]] [])
+          (and (= 3 (ygg.len (ygg.dl-query kernel)))
+               (= [[kernel (intern "X")]] (ygg.dl-cands [kernel (intern "X")] [])))))
+
+\\ (a) and it is not a wildcard: [kernel X] and [kernel abc] do not unify.
+(define ygg.dl-t-no-unify
+  -> (let Load (ygg.dl-run [[kernel abc]] [])
+          (and (= fail (ygg.dl-unify [kernel (intern "X")] [kernel abc] []))
+               (= fail (ygg.dl-unify [kernel (intern "X")] [kernel (intern "Y")] [])))))
+
+\\ (a) a rule over those facts derives exactly the two tuples.
+(define ygg.dl-t-rule-over-data
+  -> (let Load (ygg.dl-run [[kernel (intern "X")] [kernel (intern "Y")]]
+                           [(ygg.dl-varify [[[p g] [kernel g]]])])
+          (and (= 2 (ygg.len (ygg.dl-query p)))
+               (and (element? [p (intern "X")] (ygg.dl-query p))
+                    (element? [p (intern "Y")] (ygg.dl-query p))))))
+
+\\ (a) the explosion the finding names: a recursive relation holding an
+\\ uppercase-spelled datum must not match every edge in the database.
+\\ Old behaviour derived treach for d and h as well.
+(define ygg.dl-t-no-explosion
+  -> (let Load (ygg.dl-run [[tseed (intern "X")] [tedge c d] [tedge e h]]
+                           (ygg.dl-varify [[[[treach g] [tseed g]]
+                                            [[treach g] [treach f] [tedge f g]]]]))
+          (= [[treach (intern "X")]] (ygg.dl-query treach))))
+
+\\ (b) a [not P] whose P is derived in a LATER stratum is an error, not a
+\\ silent read of an empty relation.  Old behaviour derived tbad(1).
+(define ygg.dl-t-later-neg
+  -> (ygg.dl-t-errors?
+      (freeze (ygg.dl-run [[tbase 1]]
+                          (ygg.dl-varify [[[[tearly 1] [tbase 1]]]
+                                          [[[tbad 1]   [not [tlate 1]]]]
+                                          [[[tlate 1]  [tbase 1]]]])))))
+
+\\ (b) same-stratum negation is still refused, as it always was.
+(define ygg.dl-t-same-neg
+  -> (ygg.dl-t-errors?
+      (freeze (ygg.dl-run [[tbase 1]]
+                          (ygg.dl-varify [[[[tq 1] [not [tq 1]]]]])))))
+
+\\ (b) and a [not P] on a relation nothing declares is refused too: an
+\\ undeclared relation is a typo, not a negation over the empty set.
+(define ygg.dl-t-undeclared-neg
+  -> (ygg.dl-t-errors?
+      (freeze (ygg.dl-run [[tbase 1]]
+                          (ygg.dl-varify [[[[tr 1] [not [tnosuch 1]]]]])))))
+
+\\ (c) the legal case the shake's own rules are built on: evalfree(1) :-
+\\ !anyeval(1), with anyeval closed by an earlier stratum.  Both modes,
+\\ because the eval-free one negates a closed relation that is EMPTY - the
+\\ case a check keyed on "has tuples" rather than "is closed" would break.
+(define ygg.dl-t-legal-neg
+  -> (let Rules (ygg.dl-varify [[[[evalcapable s] [rawsym s] [entry s]]
+                                 [[anyeval 1] [evalcapable s]]]
+                                [[[evalfree 1] [not [anyeval 1]]]]])
+          Free  (do (ygg.dl-run [[rawsym a]] Rules) (ygg.dl-query evalfree))
+          Cap   (do (ygg.dl-run [[rawsym a] [entry a]] Rules) (ygg.dl-query evalfree))
+          (and (= [[evalfree 1]] Free) (empty? Cap))))
+
+\\ the marker, and only the marker, is what the engine calls a variable.
+(define ygg.dl-t-marker
+  -> (and (ygg.dl-lvar? (ygg.dl-varify g))
+          (and (not (ygg.dl-lvar? (intern "G")))
+               (not (ygg.dl-lvar? [kernel (intern "G")])))))
+
+(define yggdrasil.dl-selftest
+  -> (let Cases [[ground-keys-the-index   (ygg.dl-t-index)]
+                 [ground-does-not-unify   (ygg.dl-t-no-unify)]
+                 [rule-over-data-symbols  (ygg.dl-t-rule-over-data)]
+                 [no-wildcard-explosion   (ygg.dl-t-no-explosion)]
+                 [later-stratum-negation  (ygg.dl-t-later-neg)]
+                 [same-stratum-negation   (ygg.dl-t-same-neg)]
+                 [undeclared-negation     (ygg.dl-t-undeclared-neg)]
+                 [legal-earlier-negation  (ygg.dl-t-legal-neg)]
+                 [marker-is-the-variable  (ygg.dl-t-marker)]]
+          Bad   (ygg.filter (/. C (not (hd (tl C)))) Cases)
+          (ygg.dl-selftest-report Bad (ygg.len Cases))))
+
+(define ygg.dl-selftest-report
+  [] N -> (do (pr (make-string "yggdrasil-dl-selftest: OK cases=~A~%" N) (stoutput))
+              done)
+  [[Name _] | _] _ -> (do (pr (make-string "yggdrasil-dl-selftest: FAIL ~A~%" Name)
+                              (stoutput))
+                          done))
 
 (set *shake-rules*
   (ygg.dl-varify
@@ -2660,7 +2804,13 @@
                                   (ygg.trace-defunwrites Foot Kernel KL))
                              (map (/. V [portGlobal V])
                                   (value *global-primitives*)))))))
-           Run      (ygg.mapc (fn ygg.dl-stratum) (value *trace-rules*))
+           \\ These strata run against the database the shake run left
+           \\ standing, so their closed set is the relations Add just
+           \\ loaded plus the shake's own heads, named here because this
+           \\ path builds its EDB by hand rather than through ygg.dl-run.
+           Run      (ygg.dl-strata [called readGlobal initwrite defunwrite
+                                    portGlobal reach kernel]
+                                   (value *trace-rules*))
            Bad      (append (ygg.dl-col1 uncoveredCall) (ygg.dl-col1 uncoveredRead))
            Restore  (set *maximum-print-sequence-size* MaxPrint)
            Report   (ygg.trace-report (ygg.trace-provenance Meta Called) Bad
