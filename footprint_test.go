@@ -215,17 +215,8 @@ func TestFootprintOrderIsKernelLoadOrder(t *testing.T) {
 	}
 }
 
-func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
+// equalStrings lives in trace_test.go, where T2 added the identical helper
+// in the same package; one definition serves both files.
 
 // The computed-name rule warns, names the containing defun, records the
 // same answer in both manifests, and does not refuse the program.
