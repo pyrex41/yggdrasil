@@ -25,9 +25,14 @@ package main
 //	           and only the first one is true here.
 //
 // The report deliberately reads the raw JSON rather than the `builder` struct
-// for everything but the two facts that have typed consumers. A fact key added
-// to builders.json tomorrow shows up here the day it is added, with no edit to
-// this file -- which is the opposite of the failure above.
+// for everything but `port_reads`, which has a second reader and therefore may
+// not have a second rule (see contractFactRow). A `<key>`/`<key>_source` pair
+// added to builders.json tomorrow -- to a target block or to `_default` --
+// shows up here the day it is added, with no edit to this file, which is the
+// opposite of the failure above. contractRows scans BOTH blocks for exactly
+// that reason: `_default` is now the canonical home of a fact no target states,
+// so a generic reader that only walked the target's own keys would be blind to
+// the half of the file this commit created.
 
 import (
 	"encoding/json"
@@ -81,6 +86,21 @@ type contractRow struct {
 	inherited bool     // the value came from the _default block, not the target
 }
 
+// contractLegend is the report's key. It is a package-level value so a test
+// can hold it to the same standard as the rows: it says what the three words
+// mean and no more. It used to say "a named test fails when the fact drifts",
+// which is a claim about the DIRECTION of the check, and the two checked_by
+// strings in builders.json today do not have the same direction --
+// native_overrides is compared against its source both ways, while go's
+// port_reads is checked by building the pruned slice, where a wrong name added
+// breaks the build but a name removed only prunes more conservatively and
+// nothing fails. One word cannot carry that, so the word stops trying and
+// points at the string that can.
+var contractLegend = []string{
+	"verified = checked_by names a test; read it for what the test catches and in which direction",
+	"declared = stated, nothing checks it; unknown = not declared",
+}
+
 func cmdContract(rest []string) int {
 	fs := flag.NewFlagSet("yggdrasil contract", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -106,7 +126,7 @@ func cmdContract(rest []string) int {
 	}
 	defaults := raw[builderDefaultsKey]
 
-	builders, err := loadBuilders()
+	builders, defaultsB, err := parseBuilders()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "yggdrasil:", err)
 		return 1
@@ -115,8 +135,9 @@ func cmdContract(rest []string) int {
 
 	out := os.Stdout
 	fmt.Fprintf(out, "yggdrasil-contract: target=%s\n", *target)
-	fmt.Fprintln(out, "  verified = a named test fails when the fact drifts;"+
-		" declared = stated, nothing checks it; unknown = not declared")
+	for _, line := range contractLegend {
+		fmt.Fprintln(out, "  "+line)
+	}
 
 	// Level 0 is not a declaration: it is the recipe, and it either exists
 	// or the target would not be in the file.
@@ -124,7 +145,7 @@ func cmdContract(rest []string) int {
 		fmt.Sprintf("runs on %s, %s, needs %s",
 			b.RunImpl, plural(len(b.Build), "build step"), joinOr(b.Needs, "nothing")))
 
-	for _, r := range contractRows(block, defaults, b) {
+	for _, r := range contractRows(block, defaults, b, defaultsB) {
 		fmt.Fprintf(out, "%-7s %-18s %-10s %s\n", "level1", r.key, r.status, r.summary)
 		if r.inherited {
 			fmt.Fprintf(out, "%-38s%s\n", "", "inherited: builders.json "+builderDefaultsKey+
@@ -157,27 +178,35 @@ func cmdContract(rest []string) int {
 }
 
 // contractRows builds the level-1 rows: the documented keys in table order,
-// then any other `<key>`/`<key>_source` pair the file has grown since.
-func contractRows(block, defaults map[string]json.RawMessage, b builder) []contractRow {
+// then any other `<key>`/`<key>_source` pair the file has grown since -- in
+// the target's own block OR in `_default`. Scanning only the target's block
+// would miss every fact stated once for everybody, which is the shape this
+// commit just gave the file: a new `_default` fact would be inherited by all
+// thirteen targets and reported by none of them.
+func contractRows(block, defaults map[string]json.RawMessage, b, defaultsB builder) []contractRow {
 	var rows []contractRow
 	seen := map[string]bool{}
 	for _, k := range contractKeys {
 		seen[k] = true
-		rows = append(rows, contractFactRow(k, block, defaults, b))
+		rows = append(rows, contractFactRow(k, block, defaults, b, defaultsB))
 	}
+	extraSeen := map[string]bool{}
 	var extra []string
-	for k := range block {
-		if strings.HasPrefix(k, "_") || seen[k] || isFactAttribute(k, seen) {
-			continue
+	for _, src := range []map[string]json.RawMessage{block, defaults} {
+		for k := range src {
+			if strings.HasPrefix(k, "_") || seen[k] || extraSeen[k] || isFactAttribute(k, seen) {
+				continue
+			}
+			if _, ok := src[k+"_source"]; !ok {
+				continue // a recipe key (run, build, needs), not a declared fact
+			}
+			extraSeen[k] = true
+			extra = append(extra, k)
 		}
-		if _, ok := block[k+"_source"]; !ok {
-			continue // a recipe key (run, build, needs), not a declared fact
-		}
-		extra = append(extra, k)
 	}
 	sort.Strings(extra)
 	for _, k := range extra {
-		rows = append(rows, contractFactRow(k, block, defaults, b))
+		rows = append(rows, contractFactRow(k, block, defaults, b, defaultsB))
 	}
 	return rows
 }
@@ -198,7 +227,20 @@ func isFactAttribute(key string, facts map[string]bool) bool {
 	return false
 }
 
-func contractFactRow(key string, block, defaults map[string]json.RawMessage, b builder) contractRow {
+// contractFactRow resolves one fact for one target and renders its row.
+//
+// The inheritance rule is NOT re-implemented here. `port_reads` has a second
+// reader -- effectivePortReads in prune.go, the function that decides what
+// --prune-init actually drops -- and a report that resolved it by its own rule
+// could print the opposite of what the shaker will do. It did: key-presence
+// and `len(b.PortReads) > 0` differ on a declared-empty list, so
+// `"port_reads": []` read as "declared, 0 entries" here and as "inherits the
+// 35-name default" there, from one key. So this function calls
+// effectivePortReads and reports what it returns. Every other fact has exactly
+// one reader, this report, and for those presence is the rule and a declared
+// empty list is a real declaration ("this port has none") rather than a
+// silence.
+func contractFactRow(key string, block, defaults map[string]json.RawMessage, b, defaultsB builder) contractRow {
 	r := contractRow{key: key, status: "unknown", summary: "not declared in builders.json"}
 
 	src := block
@@ -207,6 +249,35 @@ func contractFactRow(key string, block, defaults map[string]json.RawMessage, b b
 		if v, ok = defaults[key]; ok {
 			r.inherited, src = true, defaults
 		}
+	}
+	if key == "port_reads" {
+		// One rule, one place. Note the empty-but-present case explicitly
+		// rather than letting the row read as if the target said nothing at
+		// all: it said something, and the shaker declined to hear it.
+		own := len(b.PortReads) > 0
+		if _, present := block[key]; present && !own {
+			r.notes = append(r.notes, "note:       this target's own port_reads is an empty list, "+
+				"which effectivePortReads (prune.go) reads as declaring none -- the default applies")
+		}
+		eff := effectivePortReads(b, defaultsB)
+		if len(eff) == 0 {
+			return r
+		}
+		r.inherited = !own
+		if r.inherited {
+			src = defaults
+		} else {
+			src = block
+		}
+		r.summary = describeStrings(eff)
+		r.source = jsonString(src[key+"_source"])
+		r.checkedBy = jsonString(src[key+"_checked_by"])
+		if factChecked(r.checkedBy) && own {
+			r.status = "verified"
+		} else {
+			r.status = "declared"
+		}
+		return r
 	}
 	if !ok {
 		return r
@@ -249,18 +320,24 @@ func contractFactRow(key string, block, defaults map[string]json.RawMessage, b b
 func describeFact(v json.RawMessage) string {
 	var list []string
 	if err := json.Unmarshal(v, &list); err == nil {
-		if len(list) == 0 {
-			return "0 entries (declared empty)"
-		}
-		if len(list) <= 4 {
-			return fmt.Sprintf("%s (%s)", plural(len(list), "entry"), strings.Join(list, ", "))
-		}
-		return plural(len(list), "entry")
+		return describeStrings(list)
 	}
 	if s := jsonString(v); s != "" {
 		return s
 	}
 	return strings.TrimSpace(string(v))
+}
+
+// describeStrings summarises a list fact: a count, plus the names themselves
+// when there are few enough to read at a glance.
+func describeStrings(list []string) string {
+	if len(list) == 0 {
+		return "0 entries (declared empty)"
+	}
+	if len(list) <= 4 {
+		return fmt.Sprintf("%s (%s)", plural(len(list), "entry"), strings.Join(list, ", "))
+	}
+	return plural(len(list), "entry")
 }
 
 func jsonString(v json.RawMessage) string {

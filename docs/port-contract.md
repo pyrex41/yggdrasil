@@ -120,9 +120,28 @@ disk:
   programs that terminate normally. A port declaring neither is reported
   `trace: unsupported`, not passed.
 - **Obligation E (entry).** Every kept defun is entered through its KL
-  body, so the woven `(ygg.traced F)` runs. A native override (Obligation
-  N) is entered through the native, so it never records itself; its name
-  is excluded from `called` on that port, and the report says how many.
+  body, so the woven `(ygg.traced F)` runs -- *while* that body is the
+  binding. A native override (Obligation N) changes the binding, and
+  therefore Obligation E is a claim about a phase, not about a function:
+  before the port installs its natives the KL body is what runs and the
+  name records itself; after, the native runs and it does not. Which half
+  a given entry falls in is what `native_overrides_installed_after`
+  states, and on shen-go it is `shen.initialise`, i.e. the whole boot is
+  in the first half. Measured on `tests/fib.shen` (shen-go da55c5d): of
+  the 18 native-overridden functions among that slice's kept kernel
+  defuns, 11 appear in `called.facts` -- so the reading that a native
+  override "never records itself" is false for that port, for every entry
+  the boot made, and an absence is not evidence either way.
+
+  What this means for the query below: a name missing from `called` may be
+  an override entered only after installation, and a name present may be
+  an override entered before it. Neither is a finding on its own. The
+  honest report is per-port and phase-aware, and Yggdrasil does not write
+  it yet: nothing today excludes override names from `called`, and no
+  report counts them. A port whose overrides are installed *before* its
+  user program runs (the reading the old text assumed) can subtract them
+  and say how many; shen-go cannot, because for shen-go the set is neither
+  all of them nor none.
 
 The check is `uncoveredCall(F) :- called(F), kernel(F), !reach(F)` empty,
 per run, per port. It is the one piece of evidence that is identical in

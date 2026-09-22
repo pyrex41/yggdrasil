@@ -22,6 +22,7 @@ package main
 // Souffle -- it is three text files and a string compare.
 
 import (
+	"fmt"
 	"os"
 	"regexp"
 	"sort"
@@ -134,19 +135,27 @@ func sliceBetween(src, open, shut string) (string, bool) {
 	return rest[:j], true
 }
 
-// TestRelationListsAgree is the drift test. Every relation analysis.dl
-// declares an `.input` for must appear in refeval.py's INPUTS and in main.go's
-// factRelations, and neither of those may carry a relation the .dl does not.
-func TestRelationListsAgree(t *testing.T) {
-	dl := readRelationsFromDL(t)
-	py := readRelationsFromRefeval(t)
+// compareRelations is the comparison itself, as a pure function over three
+// already-parsed lists. It exists as a function so that the drift test and the
+// negative control below run THE SAME code: a control that re-derives its own
+// set difference proves something about arithmetic, not about the comparison
+// that ships.
+//
+// analysis.dl is the authority: it is the file the rules live in, and the
+// other two exist to follow it. factFiles is main.go's factRelations, which is
+// a list of FILE bases (it stats <entry>.facts after a dump), not of relation
+// names -- the two differ for `readGlobal`, and carrying both halves is how
+// this checks the mapping instead of reporting it as drift.
+func compareRelations(dl, py []relation, factFiles []string) []string {
+	var problems []string
+	say := func(format string, args ...any) {
+		problems = append(problems, fmt.Sprintf(format, args...))
+	}
 
-	// analysis.dl is the authority: it is the file the rules live in, and
-	// the other two exist to follow it.
 	dlByName := map[string]relation{}
 	for _, r := range dl {
 		if prev, dup := dlByName[r.name]; dup {
-			t.Errorf("analysis/analysis.dl declares .input %s twice (%s and %s)", r.name, prev, r)
+			say("analysis/analysis.dl declares .input %s twice (%s and %s)", r.name, prev, r)
 		}
 		dlByName[r.name] = r
 	}
@@ -155,113 +164,157 @@ func TestRelationListsAgree(t *testing.T) {
 	for _, r := range py {
 		pyByName[r.name] = r
 	}
-	for name, want := range dlByName {
-		got, ok := pyByName[name]
+	for _, want := range sortedRelations(dlByName) {
+		got, ok := pyByName[want.name]
 		if !ok {
-			t.Errorf("analysis/refeval.py INPUTS is missing %q: analysis.dl declares "+
+			say("analysis/refeval.py INPUTS is missing %q: analysis.dl declares "+
 				"`.input %s`, so refeval.py evaluates the rules against an EMPTY %s "+
 				"and silently returns a smaller answer. Add %q to INPUTS with its arity.",
-				name, name, name, name)
+				want.name, want.name, want.name, want.name)
 			continue
 		}
 		if got.file != want.file {
-			t.Errorf("relation %s: analysis.dl reads %s.facts, refeval.py reads %s.facts. "+
+			say("relation %s: analysis.dl reads %s.facts, refeval.py reads %s.facts. "+
 				"Fix FILENAMES in analysis/refeval.py or the filename= on the .input.",
-				name, want.file, got.file)
+				want.name, want.file, got.file)
 		}
 	}
-	for name := range pyByName {
-		if _, ok := dlByName[name]; !ok {
-			t.Errorf("analysis/refeval.py INPUTS carries %q, which analysis/analysis.dl "+
-				"declares no `.input` for. One of the two is stale.", name)
+	for _, r := range sortedRelations(pyByName) {
+		if _, ok := dlByName[r.name]; !ok {
+			say("analysis/refeval.py INPUTS carries %q, which analysis/analysis.dl "+
+				"declares no `.input` for. One of the two is stale.", r.name)
 		}
 	}
 
-	// main.go's list is of FILE bases: it stats <entry>.facts after a dump.
 	wantFiles := map[string]relation{}
 	for _, r := range dl {
 		wantFiles[r.file] = r
 	}
 	gotFiles := map[string]bool{}
-	for _, f := range factRelations {
+	for _, f := range factFiles {
 		if gotFiles[f] {
-			t.Errorf("main.go factRelations lists %q twice", f)
+			say("main.go factRelations lists %q twice", f)
 		}
 		gotFiles[f] = true
 	}
-	for file, r := range wantFiles {
-		if !gotFiles[file] {
-			t.Errorf("main.go factRelations is missing %q: analysis.dl declares "+
+	for _, r := range sortedRelations(wantFiles) {
+		if !gotFiles[r.file] {
+			say("main.go factRelations is missing %q: analysis.dl declares "+
 				"`.input %s`, so a dump that failed to write %s.facts would go "+
 				"unnoticed and Souffle would then error on the missing file. "+
-				"Add %q to factRelations.", file, r.name, file, file)
+				"Add %q to factRelations.", r.file, r.name, r.file, r.file)
 		}
 	}
+	var extraFiles []string
 	for file := range gotFiles {
 		if _, ok := wantFiles[file]; !ok {
-			t.Errorf("main.go factRelations carries %q, which no `.input` in "+
-				"analysis/analysis.dl corresponds to. One of the two is stale.", file)
+			extraFiles = append(extraFiles, file)
 		}
 	}
+	sort.Strings(extraFiles)
+	for _, file := range extraFiles {
+		say("main.go factRelations carries %q, which no `.input` in "+
+			"analysis/analysis.dl corresponds to. One of the two is stale.", file)
+	}
+	return problems
+}
 
-	if !t.Failed() {
+// sortedRelations gives the map a stable order, so a failing run reports the
+// same problems in the same sequence every time.
+func sortedRelations(m map[string]relation) []relation {
+	var out []relation
+	for _, r := range m {
+		out = append(out, r)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
+	return out
+}
+
+// TestRelationListsAgree is the drift test. Every relation analysis.dl
+// declares an `.input` for must appear in refeval.py's INPUTS and in main.go's
+// factRelations, and neither of those may carry a relation the .dl does not.
+func TestRelationListsAgree(t *testing.T) {
+	dl := readRelationsFromDL(t)
+	py := readRelationsFromRefeval(t)
+
+	problems := compareRelations(dl, py, factRelations)
+	for _, p := range problems {
+		t.Error(p)
+	}
+	if len(problems) == 0 {
 		t.Logf("%d relations, identical across analysis.dl, refeval.py and factRelations",
 			len(dl))
 	}
 }
 
 // TestRelationListsAgree is only a drift test if it can actually see drift.
-// This runs the same comparison over a deliberately short copy of each list
-// and asserts it complains -- otherwise a parser that silently matched nothing
-// (a renamed file, a changed `.input` syntax) would read as a pass forever.
+// This is the negative control, and it runs compareRelations -- the function
+// the real test runs -- over copies of the real lists with one relation
+// removed from each follower in turn. If a parser stopped matching, or the
+// comparison stopped comparing, the lists would be empty or equal-by-vacuity
+// and these injected omissions would go unreported.
 func TestRelationListsDriftIsDetected(t *testing.T) {
 	dl := readRelationsFromDL(t)
 	py := readRelationsFromRefeval(t)
 	if len(dl) < 2 {
 		t.Fatalf("analysis.dl parsed as %d relations; the parser is broken", len(dl))
 	}
-
-	names := func(rs []relation) map[string]bool {
-		m := map[string]bool{}
-		for _, r := range rs {
-			m[r.name] = true
-		}
-		return m
-	}
-	dlNames, pyNames := names(dl), names(py)
-
-	// Drop one relation from the Python side and check the comparison the
-	// real test performs would notice.
-	dropped := dl[len(dl)-1].name
-	short := map[string]bool{}
-	for n := range pyNames {
-		if n != dropped {
-			short[n] = true
-		}
-	}
-	missing := 0
-	for n := range dlNames {
-		if !short[n] {
-			missing++
-		}
-	}
-	if missing != 1 {
-		t.Errorf("dropping %q from the refeval.py side should leave exactly one relation "+
-			"unmatched, got %d -- the comparison in TestRelationListsAgree would not "+
-			"catch a missed relation", dropped, missing)
+	if problems := compareRelations(dl, py, factRelations); len(problems) != 0 {
+		t.Skipf("the lists already disagree; TestRelationListsAgree is the test that "+
+			"reports that, and this control cannot inject drift into a broken baseline: %v",
+			problems)
 	}
 
-	// And that the parsers agree on a real, non-empty list rather than both
-	// returning nothing.
-	if len(dl) != len(py) {
-		var only []string
-		for n := range dlNames {
-			if !pyNames[n] {
-				only = append(only, n)
-			}
+	// Case 1: a relation reaches analysis.dl but not refeval.py -- the quiet
+	// failure, an empty relation and a silently smaller footprint.
+	drop := dl[len(dl)-1]
+	shortPy := make([]relation, 0, len(py))
+	for _, r := range py {
+		if r.name != drop.name {
+			shortPy = append(shortPy, r)
 		}
-		sort.Strings(only)
-		t.Errorf("analysis.dl has %d relations, refeval.py has %d (only in the .dl: %v)",
-			len(dl), len(py), only)
 	}
+	if len(shortPy) != len(py)-1 {
+		t.Fatalf("removing %q from the refeval.py list removed %d entries, not 1",
+			drop.name, len(py)-len(shortPy))
+	}
+	problems := compareRelations(dl, shortPy, factRelations)
+	if !anyContains(problems, drop.name) || !anyContains(problems, "refeval.py") {
+		t.Errorf("dropping %q from refeval.py's INPUTS produced %v; the comparison must "+
+			"name the missing relation and the list it is missing from", drop.name, problems)
+	}
+
+	// Case 2: the same relation missing from main.go's factRelations.
+	shortFacts := make([]string, 0, len(factRelations))
+	for _, f := range factRelations {
+		if f != drop.file {
+			shortFacts = append(shortFacts, f)
+		}
+	}
+	if len(shortFacts) != len(factRelations)-1 {
+		t.Fatalf("removing %q from factRelations removed %d entries, not 1",
+			drop.file, len(factRelations)-len(shortFacts))
+	}
+	problems = compareRelations(dl, py, shortFacts)
+	if !anyContains(problems, drop.file) || !anyContains(problems, "factRelations") {
+		t.Errorf("dropping %q from factRelations produced %v; the comparison must name the "+
+			"missing fact file and the list it is missing from", drop.file, problems)
+	}
+
+	// Case 3: a stale entry in a follower that the .dl never declared. Drift
+	// has two directions and a one-directional control would miss one.
+	problems = compareRelations(dl, append(append([]relation(nil), py...),
+		relation{name: "ghostRelation", file: "ghostRelation"}), factRelations)
+	if !anyContains(problems, "ghostRelation") {
+		t.Errorf("an INPUTS entry with no `.input` in analysis.dl went unreported: %v", problems)
+	}
+}
+
+func anyContains(xs []string, sub string) bool {
+	for _, x := range xs {
+		if strings.Contains(x, sub) {
+			return true
+		}
+	}
+	return false
 }

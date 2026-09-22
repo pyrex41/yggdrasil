@@ -169,7 +169,7 @@
       "shen.*lambdatable*"
     ],
     "port_reads_source": "shen-go da55c5d kl/primitives.go (*stinput*, *stoutput*), kl/kernelfast.go nativeFn (shen.*lambdatable*) and primArityFast (*property-vector*), kl/prim.go ResolveHomePath (*home-directory*)",
-    "port_reads_checked_by": "TestPruneInitGoArtifactStillRuns (prune_test.go) and the parity gate: the pruned go slice builds and prints fib.expected",
+    "port_reads_checked_by": "TestPruneInitGoArtifactStillRuns (prune_test.go) and the parity gate: the pruned go slice builds and prints fib.expected. One-directional: a name added here that go does not read makes the pruned slice keep a form it should not, and a name that go DOES read but this list omits breaks the run -- but a name removed from a list that is already a superset only prunes less, and nothing fails",
     "native_overrides": [
       "<-vector",
       "==",
@@ -231,7 +231,7 @@
       "vector?"
     ],
     "native_overrides_source": "shen-go da55c5d kl/kernelfast.go InstallKernelFast: every symbol rebound there (BindSymbolFunc / restoreCanonicalPrimitive / overridePrimitive / overrideNative)",
-    "native_overrides_checked_by": "TestNativeOverridesMatchKernelFast (prune_test.go): parses InstallKernelFast in the sibling checkout and compares",
+    "native_overrides_checked_by": "TestNativeOverridesMatchKernelFast (prune_test.go): parses InstallKernelFast in the sibling checkout and compares both ways, so a name added here and a name removed from here both fail",
     "native_overrides_installed_after": "shen.initialise",
     "native_overrides_installed_after_source": "shen-go da55c5d cmd/yggdrasil-build/main.go genMain: run(&e, \"shen.initialise\", ...) is emitted before runHelper(\"InstallKernelFast\", ...), so the kernel's KL bodies run during boot and the natives replace them only afterwards"
   },

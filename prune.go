@@ -80,6 +80,15 @@ func portReadsFor(target string) ([]string, error) {
 // list wins, an absent one falls back to `_default`. Callers must go through
 // it (or through portReadsFor) rather than reading b.PortReads, which is empty
 // for twelve of the thirteen targets and means "not declared", not "none".
+//
+// "One place" is load-bearing and was briefly untrue. There are two readers of
+// port_reads -- the shaker, through portReadsFor, and `yggdrasil contract`,
+// through contractFactRow -- and contract.go first resolved the key itself, by
+// key-presence. The two predicates agree on every target in the file today and
+// disagree on `"port_reads": []`: presence says "declared, none", this says
+// "declares nothing, inherit". A report is worth having only if it says what
+// the shaker will do, so contractFactRow calls this function instead of
+// deciding again. TestDeclaredEmptyPortReadsInheritsInBothReaders pins it.
 func effectivePortReads(b, defaults builder) []string {
 	if len(b.PortReads) > 0 {
 		return b.PortReads
