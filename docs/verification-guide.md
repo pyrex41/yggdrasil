@@ -27,21 +27,18 @@ Contents:
 
 ## 1. The problem: what a shake changes
 
-Yggdrasil is a **tree shaker** for [Shen](https://shenlanguage.org)
-programs. Tree shaking is the general name for removing code a program
-cannot reach; the term comes from the JavaScript bundler world
+Yggdrasil is a **tree shaker** for Shen programs. Tree shaking is the
+general name for removing code a program cannot reach; the term comes from
+the JavaScript bundler world
 ([Rollup's explanation](https://rollupjs.org/introduction/#tree-shaking)
-is a good short one), but the idea is older, and Mark Tarver's
+is a good short one), and Mark Tarver's
 [original Yggdrasil paper](../yggdrasil.pdf) proposed it for Shen in 2023.
 
-Shen programs compile to **KLambda** (KL), a tiny Lisp with about forty
-primitives that every Shen port implements. The Shen kernel itself, the
-typechecker, reader, printer and Prolog engine, is written in Shen and
-ships as KL: 686 functions in the S42 kernel. A "hello world" needs about
-fifty of them. The shake computes which fifty, emits just those as
-`kernel.kl`, and hands the result to a per-target builder that compiles
-KL to Go, Lua, JavaScript, Rust, and so on. See the
-[README](../README.md) for the pipeline and targets.
+The S42 kernel is 686 KL functions. A "hello world" needs about fifty.
+The shake computes which fifty, emits just those as `kernel.kl`, and
+hands the result to a per-target builder that compiles KL to Go, Lua,
+JavaScript, Rust, and so on. See the [README](../README.md) for the
+pipeline and targets.
 
 The shaken program is not just a subset. Along the way the shake also:
 
@@ -438,25 +435,22 @@ to remove that core but to make its contents a list.
 
 Toolchain used for the numbers in this guide:
 
-- a Shen host: [shen-go](https://github.com/pyrex41/shen-go) built with
-  `make shen`; the reference is shen-cl. Set `YGGDRASIL_HOST`.
-- [Soufflé](https://souffle-lang.github.io/install) 2.4.1; obtained here
-  via [Nix](https://nixos.org/) from the `nixos-24.05` channel
-  (`nix-build -E '(import <nixpkgs> {}).souffle'`), or apt on Ubuntu 22.04.
+- a Shen host (the reference is shen-cl; shen-go also works). Set
+  `YGGDRASIL_HOST`.
+- [Soufflé](https://souffle-lang.github.io/install) 2.4.1 (apt, Homebrew,
+  or Nix all carry it).
 - `scip-go`: `go install github.com/scip-code/scip-go/cmd/scip-go@latest`
   (the module moved from the `sourcegraph` path).
-- the shen-go Yggdrasil builder at commit `24b2c00`; master has a boot
-  regression, tracked as
-  [shen-go#46](https://github.com/pyrex41/shen-go/issues/46). Set
-  `YGGDRASIL_SHEN_GO_DIR` to that checkout.
+- the sibling shen-go checkout, for the go target. Set
+  `YGGDRASIL_SHEN_GO_DIR` if it is not at `../shen-go`.
 
 Then:
 
 ```
 go build -o yggdrasil_bin .
 PATH=/path/to/souffle:/path/to/scip-go:$PATH \
-YGGDRASIL_HOST=/path/to/shen-go/shen \
-YGGDRASIL_SHEN_GO_DIR=/path/to/shen-go-24b2c00 \
+YGGDRASIL_HOST=/path/to/shen \
+YGGDRASIL_SHEN_GO_DIR=/path/to/shen-go \
 go test -count=1 ./...
 ```
 
