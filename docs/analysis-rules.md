@@ -114,21 +114,71 @@ reaches(C)   :- cap(C, P), usedprim(P).
 needsEval    :- usedprim(eval-kl).
 ```
 
-Initialisation order. This is the check the thread asked for and the one
-the shake does not have. A form may read a global only if an earlier kept
-form, or the port, wrote it. `before` is the index order of kept toplevel
-forms; user files come after the synthesised initialiser, in source order.
+Initialisation order. This is the check the thread asked for, and the shake
+runs exactly these rules (`ygg.*init-order-rules*` in `yggdrasil.shen`). A
+form may read a global only if some form up to and including itself wrote it
+-- with its own `(set V _)`, or by applying a function whose body sets it --
+or the port supplies it. `succ` is the index order of the final form
+sequence: kept toplevel forms first, then the user files' forms after the
+synthesised initialiser, in source order.
 
 ```
-readBeforeWrite(N, V) :- reads(N, V), !portGlobal(V),
-                         !(writes(M, V), M < N).
+wantedGlobal(V)           :- reads(_, V).
+writesVia(F, V)           :- defwrite(F, V).
+writesVia(F, V)           :- fcall(F, G), writesVia(G, V).
+topWrites(N, V)           :- formwrite(N, V).
+topWrites(N, V)           :- formcalls(N, G), writesVia(G, V).
+writtenBefore(N, V)       :- topWrites(M, V), succ(M, N), wantedGlobal(V).
+writtenBefore(N, V)       :- writtenBefore(M, V), succ(M, N).
+directWrittenBefore(N, V) :- writes(M, V), succ(M, N), wantedGlobal(V).
+directWrittenBefore(N, V) :- directWrittenBefore(M, V), succ(M, N).
+covered(N, V)             :- writtenBefore(N, V).
+covered(N, V)             :- topWrites(N, V), wantedGlobal(V).
+readBeforeWrite(N, V)     :- reads(N, V), !covered(N, V), !portGlobal(V).
+weakRead(N, V)            :- reads(N, V), covered(N, V),
+                             !directWrittenBefore(N, V), !portGlobal(V).
 ```
+
+The order is an EDB relation, not the side condition `M < N`, because the
+shake's own engine has no arithmetic; materialising it is what lets all
+three engines run the same rules rather than three dialects of them (D11).
+It is `succ`, the adjacent pairs walked transitively, rather than a tuple per
+`M < N` pair, and `wantedGlobal` restricts both closures to the globals some
+form actually reads -- a magic-set restriction written out by hand. Both are
+there for the shake's engine, not for Soufflé: unrestricted, the closures are
+~14,000 tuples on `tests/metaeval.shen`, derived to answer a question about
+that program's single toplevel read.
+
+Three things widen the write side, and each one exists because a program
+that runs correctly was being refused with a hint -- *reorder the program* --
+that could not be acted on:
+
+```
+(define setup -> (set *cfg* 41))     (do (set *x* 1) (print (value *x*)))
+(setup)                              (thaw (freeze (set *f* 1)))
+(print (value *cfg*))                (print (value *f*))
+```
+
+the call graph (`writesVia`, D13), a form's own writes covering its own reads
+(`covered`'s second clause, D15), and a write walk that descends into `freeze`
+and `lambda` (`formwrite`, D15 -- `writes` deliberately does not, because
+stage 4 must not treat an unthawed freeze as an initialisation).
 
 Any `readBeforeWrite` fact fails the shake with the form and the variable
-named. Measured today on `tests/fib.shen`: the slice reads 6 globals, the
-initialiser writes 35, and the only read without a prior write is
-`*stoutput*`, which is a port global. So the rule passes on current output;
-its value is that it keeps passing when the kernel's boot order or the
+named; what is left refused is a read with no write anywhere up to its own
+form, which is exactly the program a reordering can fix. `weakRead` decides
+nothing; it reports how the reads were discharged. None of the three
+widenings is precise -- a call *could* write `V` rather than does, nothing
+knows in which order a `do` runs or whether a freeze is thawed -- so a read
+only they cover is covered more weakly than one a literal earlier write
+covers. `weakRead` is exactly that set: `directWrittenBefore`, the relation
+that decides `checked`, stays strictly-earlier and freeze-blind, and the
+manifest says `init-order=checked` when `weakRead` is empty and
+`init-order=checked-weak` when it is not. Measured today on
+`tests/fib.shen`: the slice reads 6 globals, the initialiser writes 35, and
+the only read without a prior write is `*stoutput*`, which is a port global,
+so both output relations are empty and fib records `checked`. The rules'
+value is that they keep deciding this when the kernel's boot order or the
 user's toplevel forms change.
 
 Dead initialisation.
@@ -269,7 +319,8 @@ what keeps user defuns, the weaver's helpers and the synthesised
 call graph, so `reach` could not have derived them and a run entering them
 says nothing about the footprint. `initwrite` is the globals a kept
 **toplevel** form writes (stage 4's `writes`, computed by the same
-`ygg.io-writes` the init-order check uses); `defunwrite` is the globals a
+`ygg.io-writes` the init-order check's `directWrittenBefore` half uses);
+`defunwrite` is the globals a
 kept **defun body** writes, which is what stops `uncoveredRead` from flagging
 every counter the kernel maintains at run time (`shen.*call*`, `shen.*infs*`,
 `shen.*gensym*`).
@@ -431,19 +482,33 @@ cannot drift apart.
    the header of `analysis.dl`; stage 3 has to reconcile them the other
    way, by changing the code.
 2. **Init-order check in Shen.** *Done.* `ygg.init-order-check` in
-   `yggdrasil.shen` scans the final form sequence — the kept toplevel
-   forms as `trim-top` leaves them, then the user files' toplevel forms
-   in manifest order — for `(value V)` and `(set V _)` at any depth
-   except inside a `defun`, `lambda` or `freeze` (those bodies do not run
-   while the artifact boots). A read with no earlier write, and no port
-   global to explain it, prints
+   `yggdrasil.shen` builds the EDB from the final form sequence — the kept
+   toplevel forms as `trim-top` leaves them, then the user files' toplevel
+   forms in manifest order — reading `(value V)` at any depth except inside
+   a `defun`, `lambda` or `freeze` (those bodies do not run while the
+   artifact boots), the writes twice (`writes`, the same exclusions, and
+   `formwrite`, which does descend into `lambda` and `freeze`), plus the
+   per-defun writes, the call edges the transitive half needs and the form
+   order as `succ`, and then runs the rules above in `ygg.dl`. A read with
+   no write anywhere up to and including its own form — directly, or through
+   a function the form applies — and no port global to explain it, prints
    `yggdrasil-shake: FAIL init-order form=N reads=V` and aborts before
    `kernel.kl` is written; the Go driver surfaces that line. A clean run
-   records `init-order=checked` in both manifests, after `needs-eval`.
-   Fixtures: `tests/init-order-bad.shen` (refused) and
-   `tests/init-order-ok.shen` (same reads, boot order); `initorder_test.go`
-   is the host-gated test. Measured: `kernel.kl` byte-identical on every
-   existing fixture, manifests differing only by the new line.
+   records `init-order=checked` in both manifests, after `needs-eval`, or
+   `init-order=checked-weak` when some read was discharged only by one of
+   the three over-approximations (`weakRead` above). Fixtures:
+   `tests/init-order-bad.shen` (refused), `tests/init-order-ok.shen` (same
+   reads, boot order), `tests/init-order-setter.shen` (a global written by a
+   toplevel call: `checked-weak`), `tests/init-order-sameform.shen` (a form
+   that writes and reads the same global, and a write inside a `freeze` the
+   same form thaws: `checked-weak`) and `tests/init-order-letvar.shen` (a
+   `(value X)` on a let-bound variable, which is a computed name and not a
+   read of a global); `initorder_test.go` is the host-gated test, and
+   `TestAnalysisOracleMatchesShake` diffs `readBeforeWrite` and `weakRead`
+   against the other engines like any other relation. Measured: `kernel.kl`
+   byte-identical on every existing fixture, and the shake's user CPU within
+   noise of the pre-rules check (`tests/metaeval.shen` 1.02–1.07s before,
+   0.91–0.94s after; `tests/partial-eval.shen` 0.94–1.04 → 0.96–1.09).
 3. **Rules as the implementation.** — **done.**
    `ygg.dl` in `yggdrasil.shen` is a bottom-up Datalog engine in about 150
    lines; `(value *shake-rules*)` beside it is `analysis/analysis.dl` as
@@ -511,11 +576,15 @@ cannot drift apart.
    eval entry point, interning a name you never apply being perfectly safe.
    The shake prints `yggdrasil-shake: WARN computed-name in F` and records
    `computed-names=none` or `computed-names=F,G` in both manifests after
-   `init-order`. Measured: of the sixteen fixtures, **only the new
-   `tests/computed-name.shen` triggers it** (`computed-names=computed-call`);
-   every other fixture, the eval-capable ones included, is `none` — which is
-   the result worth having, since it says the hypothesis is not vacuous and
-   not routinely violated. `footprint_test.go` is the host-gated test.
+   `init-order`. Measured when this landed: of the sixteen fixtures then in
+   `tests/`, **only `tests/computed-name.shen` triggered it**
+   (`computed-names=computed-call`); every other fixture, the eval-capable
+   ones included, was `none` — which is the result worth having, since it
+   says the hypothesis is not vacuous and not routinely violated. The
+   stage-2 fixture `tests/init-order-letvar.shen`, added later, is the
+   second: its `(let X *a* (print (value X)))` is a `(value X)` on a
+   variable, so it records `computed-names=top`, which is exactly the
+   classification that keeps it out of the init-order check. `footprint_test.go` is the host-gated test.
 4. **Dead initialisation.** — **done.**
    `readsIn`, `reads`, `writes` and `portReads` join the fact dump (twenty-one
    relations now); `liveGlobal`/`deadInit` join `analysis.dl`,

@@ -207,6 +207,34 @@ func TestAnalysisOracleMatchesShake(t *testing.T) {
 			// both engines, over the reach set they have just agreed on.
 			pyDead := relWithRefeval(t, factsDir, "deadInit")
 
+			// Stage 2's readBeforeWrite is the one relation the shake
+			// itself answers yes or no to: this fixture shook, so the
+			// shake's own ygg.dl derived no violation, and the oracle
+			// must derive none either. weakRead is the other half -- it
+			// IS the manifest's init-order= key (empty: checked,
+			// non-empty: checked-weak), so the two engines are checked
+			// against each other there the way they are on
+			// computed-names=.
+			pyRBW := relWithRefeval(t, factsDir, "readBeforeWrite")
+			if len(pyRBW) > 0 {
+				extra, _ := diffSets(pyRBW, map[string]bool{})
+				t.Errorf("the shake accepted this program but the rules derive readBeforeWrite: %v", sample(extra))
+			}
+			pyWeak := relWithRefeval(t, factsDir, "weakRead")
+			wantKey := "checked"
+			if len(pyWeak) > 0 {
+				wantKey = "checked-weak"
+			}
+			manifest, err := os.ReadFile(filepath.Join(shakeDir, "yggdrasil.manifest.txt"))
+			if err != nil {
+				t.Fatalf("reading manifest: %v", err)
+			}
+			if got := manifestKey(t, string(manifest), "init-order"); got != wantKey {
+				extra, _ := diffSets(pyWeak, map[string]bool{})
+				t.Errorf("manifest says init-order=%s but refeval's weakRead has %d tuple(s) %v, which means %s",
+					got, len(pyWeak), sample(extra), wantKey)
+			}
+
 			if souffle != "" {
 				rel := souffleRun(t, souffle, factsDir)
 				so := rel("reach")
@@ -224,6 +252,20 @@ func TestAnalysisOracleMatchesShake(t *testing.T) {
 				}
 				if extra, missing := diffSets(rel("deadInit"), pyDead); len(extra)+len(missing) > 0 {
 					t.Errorf("souffle and refeval.py disagree on deadInit\n  only souffle: %v\n  only refeval: %v",
+						sample(extra), sample(missing))
+				}
+				// The stage-2 rules go through the same engine as the rest.
+				// The nightly analysis-oracle workflow makes Souffle PARSE
+				// them (it evaluates the whole .dl) but only diffs `reach`;
+				// this is the one place their tuples are compared, so
+				// without Souffle here the "three engines agree on
+				// readBeforeWrite" claim is a two-engine one.
+				if extra, missing := diffSets(rel("readBeforeWrite"), pyRBW); len(extra)+len(missing) > 0 {
+					t.Errorf("souffle and refeval.py disagree on readBeforeWrite\n  only souffle: %v\n  only refeval: %v",
+						sample(extra), sample(missing))
+				}
+				if extra, missing := diffSets(rel("weakRead"), pyWeak); len(extra)+len(missing) > 0 {
+					t.Errorf("souffle and refeval.py disagree on weakRead\n  only souffle: %v\n  only refeval: %v",
 						sample(extra), sample(missing))
 				}
 			}
