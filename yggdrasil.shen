@@ -872,6 +872,10 @@
 \\   Foot = [ F in kernel load order | reach F ]
 \\          ++ [ S in Seeds, deduplicated | not (reach S) ]
 \\
+\\ ygg.remove-dups keeps the LAST occurrence of a repeated name, so the
+\\ remainder is in last-occurrence Seeds order; deterministic either way,
+\\ and nothing downstream reads that order.
+\\
 \\ The remainder is exactly the NON-kernel seeds - primitives, user function
 \\ names, data symbols - because every kernel-defun seed is in `reach` by the
 \\ seed -> reach rule; they carry no row in Graph and so cannot appear in the

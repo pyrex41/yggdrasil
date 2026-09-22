@@ -99,7 +99,8 @@
 //     derived set as
 //
 //         [ F in kernel load order | reach(F) ]
-//         ++ [ S in Seeds, deduplicated | not reach(S) ]
+//         ++ [ S in Seeds, deduplicated (last occurrence kept) |
+//                                                      not reach(S) ]
 //
 //     where kernel load order is (map (fn row-head) Graph), i.e. the order
 //     `graph-rows` read the kernel file in. The remainder is exactly the

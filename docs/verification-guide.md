@@ -226,8 +226,9 @@ eval-capable on the shen-go host; the naive prototype it replaced took
 6.5 s.
 
 The shake's output stayed **byte-identical** on every fixture across this
-change, and `(yggdrasil.footprints ["prog"])` computes the footprint by
-rules, by worklist and by Warshall and asserts agreement.
+change, with one later, deliberate exception described below, and
+`(yggdrasil.footprints ["prog"])` computes the footprint by rules, by
+worklist and by Warshall and asserts agreement.
 
 One divergence needs explaining, recorded as D8. Datalog derives a *set*
 of reachable functions; it has no notion of order. But two things the
@@ -238,15 +239,39 @@ program the shake replaces the kernel's boot-time table construction with
 a literal `(set shen.*lambdatable* (cons (cons f (lambda ...)) ...))`, one
 entry per footprint function, and that literal is emitted by walking the
 footprint *as a list*. Whatever order the list has becomes the order of
-the entries and therefore the bytes of `kernel.kl`. Since byte-identical
-output across the eight host ports is a headline guarantee, the order has
-to be deterministic and had to stay what it was. So the engine derives the
-set, then renders it as a list using the same depth-first walk over the
-same graph rows the old worklist used, following only edges the rules
-derived and emitting only nodes the rules put in `reach`. A walk that can
-only drop nodes cannot invent a footprint, and a check errors if the rules
-derived anything the list lacks. Membership is decided by the rules;
-ordering is a presentation choice that keeps the bytes stable.
+the entries and therefore the bytes of `kernel.kl`, so the order has to be
+a defined, deterministic function of the program.
+
+It is defined, not walked. `ygg.rule-footprint` renders the derived set as
+kernel load order — `(map (fn row-head) Graph)`, the order `graph-rows`
+read the kernel in — restricted to `reach`, followed by the seeds the
+rules do not reach, deduplicated. That remainder is exactly the non-kernel
+seeds: primitives, user function names and data symbols, which D6 keeps
+out of `reach` and which `keep-set` and the arity trimming still read.
+Membership is decided by the rules; the order is a value.
+
+It did not start that way, and the correction is the one place the shake's
+bytes have moved. Stage 3 first kept the old order by re-running the
+pre-rules depth-first walk over the same raw graph rows, emitting only
+nodes the rules had put in `reach`, with a check that errored if the rules
+derived anything the list lacked — a second reachability implementation,
+over a second graph, from a second seed computation, kept alive only so
+that `kernel.kl`'s bytes would not move. It is now deleted;
+`ygg.dl-walk-order` and `ygg.dl-covered?` no longer exist. Deleting it
+moved exactly one line of `kernel.kl` on each eval-free fixture — the
+synthesised `shen.initialise`, whose lambda-table literal is a permutation
+of the same entries — while the eval-capable fixtures, which still build
+that table at boot, stayed byte-identical. The defun set, both manifests
+and every `tests/*.expected` are unchanged before and after, and `fn`
+reads the lambda table with `assoc`, so the order never carried meaning
+beyond those bytes. Byte identity *across the eight ports* is the headline
+guarantee and is untouched; byte identity across versions of Yggdrasil was
+a self-imposed constraint, and it was given up there, once, deliberately,
+rather than keep paying for it with a duplicate traversal.
+`TestFootprintOrderIsKernelLoadOrder` now checks the definition on every
+fixture that shakes — the footprint restricted to kernel defuns is a
+subsequence of kernel load order — and the old walk's order fails that
+test, so it is a regression test and not a golden.
 
 Design note: [analysis-rules.md](analysis-rules.md), "Engine" and Stage 3.
 
@@ -453,7 +478,7 @@ down and reported but not established by anything here.
 |---|---|---|---|
 | The footprint is the least fixpoint of the published rules | checked | Soufflé, the Python evaluator and the Shen engine agree on `reach` for every fixture in both modes | 5, 6 |
 | The rules describe the shake that ships | checked | `reach` equals the functions in `kernel.kl`; deviations D1 to D10 record where the design had to bend to the code | 5, 6 |
-| The shake's output did not change under any of this work | checked | `kernel.kl` and both manifests byte-identical on every fixture, before and after each stage | 6, 7, 8, 9 |
+| The shake's output changed under this work exactly once, in one line | checked | `kernel.kl` and both manifests byte-identical on every fixture before and after each stage, with one exception: the D8 ordering change permutes the lambda-table literal on the single synthesised `shen.initialise` line of `kernel.kl` on the eval-free fixtures. Manifests, defun sets and the behavioural goldens are unchanged by it, and byte-identity *across ports* is untouched | 6, 7, 8, 9 |
 | The footprint is minimal for the rule set | checked, and qualified below | worklist, Warshall and rules agree; nothing reachable is dropped and nothing unreachable is kept, *relative to the rules' notion of an edge* | 3, 6 |
 | No toplevel form reads a global before it is written | checked | the init-order rule, on the final form sequence, refusing the shake on violation | 7 |
 | Every function actually entered on a run was in the footprint | evidence | the woven trace and the containment query, on four fixtures and two runtimes | 8 |

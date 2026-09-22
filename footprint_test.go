@@ -292,3 +292,137 @@ func TestComputedNameWarnSentinel(t *testing.T) {
 		t.Errorf("shake must warn about the computed name:\n%s", out)
 	}
 }
+
+// ---------------------------------------------------------------------
+// D8's prose, not just D8's code.
+//
+// The set-versus-list glue was two reachability implementations wired
+// together, and deleting it left four dead names: ygg.dl-walk-order,
+// ygg.dl-covered?, ygg.dl-succs and ygg.dl-edge?. The failure this guards
+// against is the one that actually happened - the code went, and the guide
+// and the rules note went on describing the walk in the present tense, so a
+// reader learned a mechanism that no longer exists. The same defect,
+// relocated from code into prose.
+//
+// So: nothing in the Shen source may name them, and every paragraph of
+// documentation that does must frame them as history. No host needed.
+
+var deletedShakeInternals = []string{
+	"ygg.dl-walk-order",
+	"ygg.dl-covered?",
+	"ygg.dl-succs",
+	"ygg.dl-edge?",
+}
+
+// A paragraph naming a deleted function has to say, in the same breath, that
+// it is gone. These are the ways the current text says it.
+var historyMarkers = []string{
+	"deleted",
+	"no longer exist",
+	"replaced",
+	"Until this commit",
+}
+
+func TestDeletedShakeInternalsAreGoneFromTheSource(t *testing.T) {
+	src, err := os.ReadFile("yggdrasil.shen")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range deletedShakeInternals {
+		if strings.Contains(string(src), name) {
+			t.Errorf("yggdrasil.shen still names %s: the D8 walk was deleted, "+
+				"and ygg.rule-footprint's order is a value, not a traversal", name)
+		}
+	}
+}
+
+func TestDocsDoNotDescribeTheDeletedWalkAsLive(t *testing.T) {
+	for _, doc := range docFiles(t) {
+		body, err := os.ReadFile(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, para := range strings.Split(string(body), "\n\n") {
+			for _, name := range deletedShakeInternals {
+				if !strings.Contains(para, name) {
+					continue
+				}
+				if !anyOf(para, historyMarkers) {
+					t.Errorf("%s describes %s as if it still existed; it was "+
+						"deleted with the D8 glue. Paragraph:\n%s",
+						doc, name, strings.TrimSpace(para))
+				}
+			}
+		}
+	}
+}
+
+// The walk the guide used to describe did not always name the functions it
+// was describing ("renders it as a list using the same depth-first walk over
+// the same graph rows the old worklist used"), so naming alone is not enough
+// of a net. Any prose about a depth-first walk in the footprint's ordering
+// has to be historical too.
+func TestDocsDoNotDescribeADepthFirstFootprintWalk(t *testing.T) {
+	for _, doc := range docFiles(t) {
+		body, err := os.ReadFile(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, para := range strings.Split(string(body), "\n\n") {
+			if !strings.Contains(para, "depth-first walk") {
+				continue
+			}
+			if !anyOf(para, historyMarkers) {
+				t.Errorf("%s describes a depth-first walk as live; the footprint's "+
+					"order is kernel load order, a value. Paragraph:\n%s",
+					doc, strings.TrimSpace(para))
+			}
+		}
+	}
+}
+
+// Section 12 of the guide is a claims table, and the row about the shake's
+// output used to read "did not change under any of this work | checked".
+// Deleting the D8 glue moved one line of kernel.kl on the eval-free
+// fixtures, so that row has to carry the exception or it is a false claim
+// with the word "checked" next to it.
+func TestGuideByteIdentityClaimCarriesTheD8Exception(t *testing.T) {
+	body, err := os.ReadFile("docs/verification-guide.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := 0
+	for _, line := range strings.Split(string(body), "\n") {
+		if !strings.HasPrefix(line, "|") || !strings.Contains(line, "The shake's output") {
+			continue
+		}
+		rows++
+		if !strings.Contains(line, "D8") {
+			t.Errorf("the claims-table row about the shake's output does not name "+
+				"the D8 ordering exception:\n%s", line)
+		}
+	}
+	if rows != 1 {
+		t.Errorf("expected exactly one claims-table row about the shake's output, found %d", rows)
+	}
+}
+
+// docFiles is the prose this package holds to the code: the guide, the design
+// notes beside it, and the README.
+func docFiles(t *testing.T) []string {
+	t.Helper()
+	docs, err := filepath.Glob("docs/*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(docs, "README.md")
+}
+
+func anyOf(s string, needles []string) bool {
+	for _, n := range needles {
+		if strings.Contains(s, n) {
+			return true
+		}
+	}
+	return false
+}
