@@ -11,10 +11,10 @@ name: go
 #               intended, and the job asserts HOW MANY skip so the pipeline
 #               cannot quietly become 100% skips.
 #   host-test   ubuntu only, WITH a shen-go stage-1 host built the way
-#               parity-gate.yml builds it, and with scip-go installed so the
-#               scip check runs instead of skipping.  This is the job that
-#               actually runs the shake, the typecheck gate, the
-#               footprint/trace/scip checks and the analysis engines.
+#               parity-gate.yml builds it.  This is the job that actually runs
+#               the shake, the typecheck gate, the footprint/trace/scip checks
+#               and the analysis engines.  (It used to install scip-go too; the
+#               scip check needs only go/ast now -- see the note in the job.)
 #
 # Before this file grew host-test, every run of this workflow was green with
 # twenty SKIPs and zero shakes: per test nothing passed vacuously, per
@@ -27,24 +27,39 @@ on:
   workflow_dispatch:
 
 env:
-  # Host-gated tests that legitimately skip when no Shen host is present.
-  # Measured on this branch with
+  # Tests that legitimately skip when no Shen host is present.  Measured on
+  # this branch with
   #   unset YGGDRASIL_HOST; go test ./... -count=1 -v 2>&1 | grep -c '^--- SKIP'
-  # -> 21.  The twenty-one are:
+  # in a checkout with no sibling shen-go, which is what this job has -> 33.
+  # (It was 21 before the eight fix branches merged; each new entry below is
+  # marked with the branch that brought it.)  The thirty-three are:
   #   analysis_test.go  TestAnalysisOracleMatchesShake TestFactsDoesNotChangeTheShake
   #   check_test.go     TestCheckTypedOK TestCheckTypedBadFailsButShakes
   #                     TestCheckUnsignedDefineFails
+  #   dlengine_test.go  TestDLEngineSelfTest (T8)
   #   footprint_test.go TestFootprintEnginesAgree TestComputedNameWarnsAndRecords
   #                     TestComputedNameNoneIsRecorded TestComputedNameWarnSentinel
+  #                     TestFootprintOrderIsKernelLoadOrder (T5)
   #   initorder_test.go TestInitOrderBadIsRefused TestInitOrderOKShakesAndRecords
+  #                     TestInitOrderSetterShakes (T1) TestInitOrderLetVarIsNotAGlobal (T1)
+  #                     TestInitOrderCallOrderStillDecides (T1) TestInitOrderRuleInRefeval (T1)
+  #                     TestInitOrderSameFormAndFreezeShake (T1)
+  #                     TestInitOrderLaterWriteStillRefused (T1)
   #   manifest_test.go  TestManifestKeySetsMatch
   #   parity_test.go    TestRunCaptureHelper (helper subprocess, defined at
   #                     parity_test.go:78 and skipping at :80; it skips WITH a
   #                     host too -- it is re-executed by its parent test)
   #   prune_test.go     TestPruneInitDefaultIsInert TestPruneInitDropsOnlyWholeSets
   #                     TestPruneInitGoArtifactStillRuns
+  #                     TestNativeOverridesMatchKernelFast (T4) -- the one entry
+  #                     here that is NOT host-gated: it needs a sibling shen-go
+  #                     checkout to read kl/kernelfast.go from, which this job
+  #                     does not make and host-test does.  It is in the count
+  #                     because the count is a raw grep, not a claim about why.
   #   scip_test.go      TestScipCheckFixtures
   #   trace_test.go     TestTraceIsOptional TestTraceCheckRules TestTraceCheckFixtures
+  #                     TestTraceCheckComplete (T2) TestTraceCheckTruncated (T2)
+  #                     TestTraceCheckPrefix (T2)
   #   why_test.go       TestWhyPartialFixtures
   # This is an EXACT count on ubuntu-latest, not a ceiling: a ceiling only
   # catches a test that becomes host-gated, and lets a test that stops being
@@ -52,8 +67,9 @@ env:
   # this number in either direction is a deliberate act, and the commit that
   # moves it should say which test moved and why.  (Merging two branches that
   # each add a host-gated test therefore needs the count re-measured and the
-  # enumeration above re-written; that is the intended cost.)
-  NO_HOST_EXPECTED_SKIPS: "21"
+  # enumeration above re-written; that is the intended cost, and it is what
+  # this integration paid.)
+  NO_HOST_EXPECTED_SKIPS: "33"
   # macos-latest and windows-latest may skip MORE than that, for reasons that
   # have nothing to do with a host: portable_test.go:138 skips without python3
   # and portable_test.go:382 skips without node.  Both are present on the
@@ -61,7 +77,8 @@ env:
   # slack of two is allowed on the other two runners.  The 21 was measured on
   # macOS with both tools installed; it has never been measured on Windows.
   NO_HOST_ENV_SLACK: "2"
-  # With a host AND scip-go, only the helper subprocess above may skip.
+  # With a host and a sibling shen-go checkout -- both of which host-test
+  # makes -- only the helper subprocess above may skip.
   HOST_MAX_SKIPS: "1"
 
 jobs:
@@ -159,25 +176,16 @@ jobs:
         run: go build -o "$GITHUB_WORKSPACE/../shen-go-host" ./cmd/shen
         working-directory: ${{ github.workspace }}/../shen-go
 
-      # scip-go is a TEST-harness dependency, not a CLI one: README.md records
-      # that yggdrasil falls back to go/ast without it.  But scip_test.go gates
-      # TestScipCheckFixtures on `exec.LookPath("scip-go")` at top level, and
-      # the ubuntu image does not ship it -- so without this step the scip
-      # check silently skips here exactly as it did before this job existed,
-      # which is the thing this workflow is for.  Version pinned for the same
-      # reason as the host.  The module moved from the `sourcegraph` path to
-      # `scip-code` (docs/verification-guide.md); v0.2.7 is the version the
-      # guide's numbers were taken with.
-      - name: install scip-go (pinned)
-        run: |
-          set -euo pipefail
-          go install github.com/scip-code/scip-go/cmd/scip-go@v0.2.7
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-
-      # Fail here, with a clear cause, rather than one step later as a
-      # mystery extra SKIP.
-      - name: scip-go is on PATH
-        run: command -v scip-go
+      # No scip-go step, deliberately.  T6 installed scip-go at a pinned
+      # v0.2.7 and asserted it on PATH, because scip_test.go then gated
+      # TestScipCheckFixtures on `exec.LookPath("scip-go")` and the ubuntu
+      # image does not ship it, so the scip check would have skipped here
+      # silently.  T3 deleted the Go-level SCIP machinery in the same
+      # integration: scip-check now recovers the KL-level graph with `go/ast`
+      # alone, nothing in this repo execs scip-go, and TestScipCheckFixtures
+      # gates on a Shen host and `go` only.  Installing a tool no test looks
+      # for would add a network fetch that can redden this job for a reason
+      # unrelated to anything it checks.
 
       - name: go test with a host, and assert the skip count
         env:
@@ -200,7 +208,7 @@ jobs:
             echo "::error::$skips tests skipped WITH a host, max is $HOST_MAX_SKIPS."
             echo "::error::A host-gated test that still skips here is a test that never runs"
             echo "::error::anywhere. The skipped names are printed above; the usual causes are"
-            echo "::error::(a) a tool this job does not install -- scip-go, python3, node --"
+            echo "::error::(a) a tool this job does not install -- python3, node --"
             echo "::error::in which case install it here rather than raising this number, and"
             echo "::error::(b) the pinned shen-go failing to build a stage-2 artifact, which is"
             echo "::error::a real regression at the pin and not a reason to relax the gate."
