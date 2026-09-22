@@ -106,6 +106,39 @@ func TestKLDelta(t *testing.T) {
 	})
 }
 
+// TestInlinedClosure pins the consequence of a declared special form. shen-go
+// emits PrimIsSymbol at every call site of `symbol?`, so the kept defun
+// `symbol?` is never looked up and neither is shen.analyse-symbol?, which
+// only it calls. Subtracting the declared name without its subtree turns the
+// subtree into a residue; subtracting more than the subtree would hide one.
+func TestInlinedClosure(t *testing.T) {
+	g := &klGraph{
+		Defuns: map[string]map[string]bool{
+			"symbol?":              set("shen.analyse-symbol?"),
+			"shen.analyse-symbol?": set("shen.alphanums?"),
+			"shen.alphanums?":      set(),
+			"hd":                   set(),
+		},
+		Seeds: set("hd"),
+	}
+	got := sortedKeys(inlinedClosure(g, set("symbol?")))
+	want := "shen.alphanums?,shen.analyse-symbol?,symbol?"
+	if strings.Join(got, ",") != want {
+		t.Fatalf("closure = %v, want %s", got, want)
+	}
+	// Nothing outside the subtree is swept in.
+	if inlinedClosure(g, set("symbol?"))["hd"] {
+		t.Error("hd is reached by an ordinary lookup and must not be subtracted")
+	}
+	// With nothing declared there is no closure, so the whole subtree is a
+	// residue: that is what makes the declaration load-bearing.
+	foot := set("symbol?", "shen.analyse-symbol?", "shen.alphanums?", "hd")
+	missing, _ := klDelta(foot, klReach(g), inlinedClosure(g, nil), nil)
+	if strings.Join(missing, ",") != "shen.alphanums?,shen.analyse-symbol?,symbol?" {
+		t.Fatalf("missing = %v, want the whole subtree", missing)
+	}
+}
+
 // TestKernelDefunNames checks the footprint parser against the shape a
 // shaken kernel.kl actually has, including the synthesised initialiser the
 // caller then deletes.
@@ -152,42 +185,85 @@ func TestKernelDefunNames(t *testing.T) {
 	}
 }
 
-// TestKLHeads covers the residue diagnosis: whether the KL a residue name
-// came from calls that name anywhere. It changes no verdict, so the thing to
-// get right is that it never claims a call site the text does not have.
-func TestKLHeads(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "kernel.kl")
-	// shen.scan-body builds `(shen.f-error V761)` with cons rather than
-	// writing it, which is why the rules see an edge to shen.f-error and no
-	// backend can: there is no call site to compile.
-	const src = `(defun shen.scan-body (V761 V762) (cons (cons shen.f-error (cons V761 ())) ()))
-(defun shen.op1 (V836) (cond ((= @v V836) hdv) (true (not V836))))
-(defun shen.noisy (V1) (pr "(input V1)" V1))
+// klModule writes a module directory in the shape yggdrasil-build emits, so
+// buildKLGraph can be tested without a Shen host or a Go toolchain.
+func klModule(t *testing.T, kernel string) string {
+	t.Helper()
+	dir := t.TempDir()
+	const symbols = `package main
+
+var symdo = MakeSymbol("do")
+var symfoo = MakeSymbol("foo")
+var symbar = MakeSymbol("bar")
+var symquoted = MakeSymbol("quoted")
+var symtable = MakeSymbol("table")
+var symshen_4initialise = MakeSymbol("shen.initialise")
 `
-	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "symbols.go"), []byte(symbols), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	heads, err := klHeads(path)
+	if err := os.WriteFile(filepath.Join(dir, "kernel_00.go"), []byte(kernel), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// TestBuildKLGraph covers the three things the recovered graph gets wrong if
+// anyone simplifies it back: the body is behind a temporary, a bare symbol in
+// constructed data is an edge, and the synthesised initialiser's quoted names
+// are not.
+func TestBuildKLGraph(t *testing.T) {
+	// `foo`'s body is assigned to tmp1 and the binding only names it; `foo`
+	// mentions `bar` in call position and `quoted` in data position. The
+	// initialiser calls `foo` and quotes `table`, the shape trim-top writes
+	// when it rebuilds the arity table against the footprint.
+	const kernel = `package main
+
+var KernelChunk0 = MakeNative(func(__e *ControlFlow) {
+	tmp1 := MakeNative(func(__e *ControlFlow) {
+		tmp2 := Call(__e, PrimFunc(symbar), V1)
+		__e.Return(PrimCons(symquoted, tmp2))
+	}, 1)
+	tmp3 := Call(__e, ns2_1set, symfoo, tmp1)
+	_ = tmp3
+	tmp4 := MakeNative(func(__e *ControlFlow) {
+		__e.Return(PrimCons(symtable, Call(__e, PrimFunc(symfoo))))
+	}, 0)
+	tmp5 := Call(__e, ns2_1set, symshen_4initialise, tmp4)
+	_ = tmp5
+	tmp6 := MakeNative(func(__e *ControlFlow) { __e.Return(Nil) }, 0)
+	_ = Call(__e, ns2_1set, symbar, tmp6)
+	_ = Call(__e, ns2_1set, symquoted, tmp6)
+	_ = Call(__e, ns2_1set, symtable, tmp6)
+	run(&e, "shen.initialise", PrimFunc(MakeSymbol("shen.initialise")))
+})
+`
+	g, err := buildKLGraph(klModule(t, kernel))
 	if err != nil {
-		t.Fatalf("klHeads: %v", err)
+		t.Fatalf("buildKLGraph: %v", err)
 	}
-	for _, want := range []string{"defun", "cons", "cond", "not", "pr"} {
-		if !heads[want] {
-			t.Errorf("%q is called here and klHeads missed it", want)
-		}
+	// Following the tmp1 hop is what gives foo any edges at all.
+	if got := strings.Join(sortedKeys(g.Defuns["foo"]), ","); got != "bar,quoted" {
+		t.Errorf("foo's edges = %v, want [bar quoted]: the body is behind a temporary", got)
 	}
-	// The whole point: these occur, but never as the head of a written form.
-	for _, none := range []string{"shen.f-error", "hdv"} {
-		if heads[none] {
-			t.Errorf("%q has no call site in this KL, only a quoted occurrence", none)
-		}
+	// A bare symbol in constructed data is an edge, as analysis.dl D1 says.
+	if !g.Defuns["foo"]["quoted"] {
+		t.Error("a bare symbol in constructed data must be an edge (analysis.dl D1)")
 	}
-	// A `(name ` inside a string literal is not a call site either. This
-	// direction is the safe one -- claiming a call site that is not there
-	// only ever makes a residue name read as the more serious of the two --
-	// but the scanner should still not invent it.
-	if heads["input"] {
-		t.Error("`(input ` came from a string literal, not from a call site")
+	// The initialiser calls foo and quotes table; only the call is an edge.
+	if !g.Defuns[klInitialiser]["foo"] {
+		t.Error("the initialiser's call to foo must be an edge")
+	}
+	if g.Defuns[klInitialiser]["table"] {
+		t.Error("the initialiser quotes `table` against the footprint (D7): quoting it is not an edge")
+	}
+	// main.go's MakeSymbol entry point is what makes the initialiser a seed.
+	if !g.Seeds[klInitialiser] {
+		t.Errorf("shen.initialise must be seeded by the driver's entry point, seeds=%v", sortedKeys(g.Seeds))
+	}
+	// And so the reach set is the initialiser's subtree, not everything.
+	if got := strings.Join(sortedKeys(klReach(g)), ","); got != "bar,foo,quoted,shen.initialise" {
+		t.Errorf("reach = %v, want [bar foo quoted shen.initialise]; `table` is only quoted", got)
 	}
 }
 
@@ -240,7 +316,7 @@ func TestSpecialFormsAudit(t *testing.T) {
 	full := set("do", "not", "symbol?", "variable?", "integer?", "shen.app", "shen.str", "hd")
 
 	t.Run("applied names are the ones that did work", func(t *testing.T) {
-		applied, unused, unknown := specialFormsAudit(foot, rs, set("do", "not", "symbol?"), full)
+		applied, via, unused, unknown := specialFormsAudit(foot, rs, set("do", "not", "symbol?"), nil, full)
 		if strings.Join(applied, ",") != "do,not" {
 			t.Errorf("applied = %v, want [do not]", applied)
 		}
@@ -248,13 +324,13 @@ func TestSpecialFormsAudit(t *testing.T) {
 		if strings.Join(unused, ",") != "symbol?" {
 			t.Errorf("unused = %v, want [symbol?]", unused)
 		}
-		if len(unknown) != 0 {
-			t.Errorf("unknown = %v, want none", unknown)
+		if len(unknown) != 0 || len(via) != 0 {
+			t.Errorf("unknown = %v, viaClosure = %v, want none", unknown, via)
 		}
 	})
 
 	t.Run("a declared name the artifact reaches anyway is unused, not applied", func(t *testing.T) {
-		applied, unused, _ := specialFormsAudit(foot, rs, set("hd"), full)
+		applied, _, unused, _ := specialFormsAudit(foot, rs, set("hd"), nil, full)
 		if len(applied) != 0 {
 			t.Errorf("applied = %v, want none: hd is reached by an ordinary lookup", applied)
 		}
@@ -265,7 +341,7 @@ func TestSpecialFormsAudit(t *testing.T) {
 
 	// The failing case: a declaration that no longer names a kernel defun.
 	t.Run("a stale declaration is a finding", func(t *testing.T) {
-		_, _, unknown := specialFormsAudit(foot, rs, set("do", "not", "nto"), full)
+		_, _, _, unknown := specialFormsAudit(foot, rs, set("do", "not", "nto"), nil, full)
 		if strings.Join(unknown, ",") != "nto" {
 			t.Fatalf("unknown = %v, want exactly [nto]", unknown)
 		}
@@ -273,8 +349,28 @@ func TestSpecialFormsAudit(t *testing.T) {
 
 	// With no full footprint to check against, nothing can be called stale.
 	t.Run("no full kernel means no unknown verdict", func(t *testing.T) {
-		if _, _, unknown := specialFormsAudit(foot, rs, set("nto"), nil); len(unknown) != 0 {
+		if _, _, _, unknown := specialFormsAudit(foot, rs, set("nto"), nil, nil); len(unknown) != 0 {
 			t.Errorf("unknown = %v, want none without a full kernel", unknown)
+		}
+	})
+
+	// What the closure added is reported apart from what was declared, so
+	// the verdict never credits the declaration with more than it did.
+	t.Run("the closure is reported apart from the declaration", func(t *testing.T) {
+		accounted := set("do", "not", "shen.str")
+		applied, via, _, _ := specialFormsAudit(foot, rs, set("do", "not"), accounted, full)
+		if strings.Join(applied, ",") != "do,not" {
+			t.Errorf("applied = %v, want [do not]", applied)
+		}
+		// shen.str is reachable here, so the closure did no work on it.
+		if len(via) != 0 {
+			t.Errorf("viaClosure = %v, want none: shen.str is reachable", via)
+		}
+		rs2 := fibReach()
+		delete(rs2, "shen.str")
+		_, via, _, _ = specialFormsAudit(foot, rs2, set("do", "not"), accounted, full)
+		if strings.Join(via, ",") != "shen.str" {
+			t.Errorf("viaClosure = %v, want [shen.str]", via)
 		}
 	})
 }
@@ -312,9 +408,12 @@ func TestScipCheckFixtures(t *testing.T) {
 			if !strings.Contains(s, "yggdrasil-scip-check: OK ") {
 				t.Fatalf("no OK line:\n%s", lastLines(s, 20))
 			}
-			// The verdict must say what it subtracted, by name, and must
-			// not have printed a residue on either side.
-			if !strings.Contains(s, "kl-level delta accounted: special_forms=do,not") {
+			// The verdict must say what it subtracted, by name. The
+			// assertion is the invariant -- an empty residue and a clean
+			// audit -- not this fixture's particular residue, because
+			// pinning the residue is what made correcting the declaration
+			// look like a regression last time.
+			if !strings.Contains(s, "kl-level delta accounted: special_forms=") {
 				t.Fatalf("no accounted line naming the special forms:\n%s", lastLines(s, 20))
 			}
 			// The declaration is audited too: a name that is not a kernel
