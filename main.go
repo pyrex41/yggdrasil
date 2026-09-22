@@ -1108,6 +1108,7 @@ var factRelations = []string{
 	"rawsym", "usersym", "entry", "prim", "cap", "portGlobal", "initprim",
 	"userintern", "userglobal",
 	"readsIn", "reads", "writes", "portReads",
+	"defwrite", "fcall", "formcalls", "before",
 	"defunwrite", "called", "readglobal",
 }
 

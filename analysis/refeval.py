@@ -28,8 +28,8 @@ import os
 import sys
 
 # Relations read from FACTSDIR, with their arity. A missing file is an empty
-# relation, not an error: the dump writes all twenty-four, but a hand-built fact
-# directory that omits one should still evaluate.
+# relation, not an error: the dump writes all twenty-eight, but a hand-built
+# fact directory that omits one should still evaluate.
 INPUTS = {
     "kernel": 1,
     "callpos": 2,
@@ -52,6 +52,13 @@ INPUTS = {
     "reads": 2,
     "writes": 2,
     "portReads": 1,
+    # Initialisation order (stage 2). `before` is an EDB relation rather
+    # than an M < N side condition so that the shake's own engine, which has
+    # no arithmetic, can evaluate the same rules (D11).
+    "defwrite": 2,
+    "fcall": 2,
+    "formcalls": 2,
+    "before": 2,
     # The runtime trace: empty in an ordinary dump, filled by
     # `yggdrasil trace-check`. readGlobal lives in readglobal.facts, the name
     # stage 4 consumes (docs/analysis-rules.md, "Runtime trace").
@@ -189,6 +196,50 @@ def evaluate(db):
     live |= written & rawsym
     deadinit = {(n, v) for n, v in db["writes"] if v not in live}
 
+    # ---- initialisation order (stage 2, D11/D12/D13) ----------------
+    # writesVia(F,V)       :- defwrite(F,V).
+    # writesVia(F,V)       :- fcall(F,G), writesVia(G,V).
+    # topWrites(N,V)       :- writes(N,V).
+    # topWrites(N,V)       :- formcalls(N,G), writesVia(G,V).
+    # writtenBefore(N,V)   :- topWrites(M,V), before(M,N).
+    # readBeforeWrite(N,V) :- reads(N,V), !writtenBefore(N,V), !portGlobal(V).
+    callers = {}
+    for f, g in db["fcall"]:
+        callers.setdefault(g, set()).add(f)
+    writesvia = set(db["defwrite"])
+    delta = set(writesvia)
+    while delta:
+        nxt = set()
+        for g, v in delta:
+            for f in callers.get(g, ()):
+                if (f, v) not in writesvia:
+                    writesvia.add((f, v))
+                    nxt.add((f, v))
+        delta = nxt
+    viawrites = {}
+    for f, v in writesvia:
+        viawrites.setdefault(f, set()).add(v)
+
+    topwrites = set(db["writes"])
+    for n, g in db["formcalls"]:
+        for v in viawrites.get(g, ()):
+            topwrites.add((n, v))
+
+    after = {}
+    for m, n in db["before"]:
+        after.setdefault(m, set()).add(n)
+    writtenbefore = set()
+    for m, v in topwrites:
+        for n in after.get(m, ()):
+            writtenbefore.add((n, v))
+
+    portglobal = one("portGlobal")
+    readbeforewrite = {
+        (n, v)
+        for n, v in db["reads"]
+        if (n, v) not in writtenbefore and v not in portglobal
+    }
+
     # ---- runtime trace ----------------------------------------------
     # initwrite(V)     :- writes(_, V).
     # uncoveredCall(F) :- called(F), kernel(F), !reach(F).
@@ -213,6 +264,10 @@ def evaluate(db):
         "computedName": {(f,) for f in computedname},
         "liveGlobal": {(v,) for v in live},
         "deadInit": deadinit,
+        "writesVia": writesvia,
+        "topWrites": topwrites,
+        "writtenBefore": writtenbefore,
+        "readBeforeWrite": readbeforewrite,
         "called": {(f,) for f in called},
         "readGlobal": {(v,) for v in readglobal},
         "uncoveredCall": {(f,) for f in uncoveredcall},

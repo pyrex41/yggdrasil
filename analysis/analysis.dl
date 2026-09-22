@@ -354,3 +354,70 @@ liveGlobal(V) :- writes(_, V), rawsym(V).
 .decl deadInit(n:number, v:symbol)
 .output deadInit
 deadInit(N, V) :- writes(N, V), !liveGlobal(V).
+
+// ==================== initialisation order (stage 2) ===================
+// The kept toplevel forms ARE the artifact's initialisation, in order. A
+// form may read a global only if an earlier form wrote it -- directly, with
+// its own (set V _), or indirectly, by applying a function whose body sets
+// it -- or the port supplies the global before any Shen code runs.
+//
+// The indirect half is what makes the rule usable. A program that writes
+//
+//     (define setup -> (set *cfg* 41))
+//     (setup)
+//     (print (value *cfg*))
+//
+// initialises *cfg* perfectly well; a rule that only looks for a literal
+// toplevel (set *cfg* _) calls it a violation and asks for a reordering
+// that does not exist. So the write side is closed over the call graph.
+//
+// D11. `before` is an EDB relation, not the side condition M < N. The shake
+//     evaluates these same rules in ygg.dl (yggdrasil.shen,
+//     ygg.*init-order-rules*), a small engine with no arithmetic and no
+//     comparison operators at all. Materialising the order as facts is what
+//     lets the shake, refeval.py and Soufflé run the SAME rules rather than
+//     three dialects of them, and it is affordable: the relation is
+//     quadratic in the number of toplevel forms, which is a few dozen.
+//
+// D12. `defwrite` and `fcall` are dumped for the USER program's defuns
+//     only, not the kernel's. The kernel's own init forms are covered by
+//     direct `writes` tuples today, so closing over 683 kernel bodies would
+//     add tuples that discharge nothing; and the write side is an
+//     over-approximation, so leaving edges out can only make the check
+//     refuse more, never less. `defwrite` is a new two-column relation and
+//     is NOT the runtime trace's one-column `defunwrite`, which is
+//     restricted to KEPT defuns and answers a different question.
+//
+// D13. `writesVia` says a call COULD write V, not that it does: it ignores
+//     branches, guards and argument values. A read discharged only through
+//     that path is therefore discharged more weakly than one a literal
+//     earlier write discharges, and the shake records the difference in
+//     both manifests as init-order=checked-weak rather than =checked. The
+//     rules do not derive that distinction; nothing here depends on it.
+
+.decl defwrite(f:symbol, v:symbol)    // defun F's body evaluates (set V _), V a literal symbol
+.input defwrite
+
+.decl fcall(f:symbol, g:symbol)       // defun F applies G
+.input fcall
+
+.decl formcalls(n:number, g:symbol)   // the N-th kept toplevel form applies G
+.input formcalls
+
+.decl before(m:number, n:number)      // M < N over the kept toplevel form indices
+.input before
+
+.decl writesVia(f:symbol, v:symbol)
+writesVia(F, V) :- defwrite(F, V).
+writesVia(F, V) :- fcall(F, G), writesVia(G, V).
+
+.decl topWrites(n:number, v:symbol)
+topWrites(N, V) :- writes(N, V).
+topWrites(N, V) :- formcalls(N, G), writesVia(G, V).
+
+.decl writtenBefore(n:number, v:symbol)
+writtenBefore(N, V) :- topWrites(M, V), before(M, N).
+
+.decl readBeforeWrite(n:number, v:symbol)
+.output readBeforeWrite
+readBeforeWrite(N, V) :- reads(N, V), !writtenBefore(N, V), !portGlobal(V).
