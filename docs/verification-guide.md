@@ -264,11 +264,16 @@ Once reads and writes of globals are facts, two checks are one rule each.
 ```
 
 Of the six orderings only one is right. The rule `readBeforeWrite(N, V)`
-fires when a toplevel form reads a global no earlier form wrote and no
-port supplies. The shake refuses such a program with
+fires when a toplevel form reads a global that no form up to and including
+itself wrote — directly, through a function it calls, or inside a `freeze`
+it thaws — and no port supplies. The shake refuses such a program with
 `yggdrasil-shake: FAIL init-order form=N reads=V` and writes no
-`kernel.kl`; a clean run records `init-order=checked` in the manifest.
-Fixture: `tests/init-order-bad.shen`.
+`kernel.kl`; what is left refused is exactly the program a reordering can
+fix. A clean run records `init-order=checked` in the manifest, or
+`init-order=checked-weak` when some read was discharged only by one of
+those three over-approximations (the sibling rule `weakRead`). Fixtures:
+`tests/init-order-bad.shen` (refused), `tests/init-order-setter.shen` and
+`tests/init-order-sameform.shen` (both `checked-weak`).
 
 **Dead initialisation.** `liveGlobal(V)` is a global some kept function or
 toplevel form reads, or the port's runtime reads natively; `deadInit(N,V)`
@@ -455,7 +460,7 @@ down and reported but not established by anything here.
 | The rules describe the shake that ships | checked | `reach` equals the functions in `kernel.kl`; deviations D1 to D10 record where the design had to bend to the code | 5, 6 |
 | The shake's output did not change under any of this work | checked | `kernel.kl` and both manifests byte-identical on every fixture, before and after each stage | 6, 7, 8, 9 |
 | The footprint is minimal for the rule set | checked, and qualified below | worklist, Warshall and rules agree; nothing reachable is dropped and nothing unreachable is kept, *relative to the rules' notion of an edge* | 3, 6 |
-| No toplevel form reads a global before it is written | checked | the init-order rule, on the final form sequence, refusing the shake on violation | 7 |
+| No toplevel form reads a global before it is written | checked, with an over-approximated write side | the init-order rules, on the final form sequence, refusing the shake on violation; `init-order=checked-weak` marks a run where a call graph, a same-form write or a freeze-wrapped one did the discharging | 7 |
 | Every function actually entered on a run was in the footprint | evidence | the woven trace and the containment query, on four fixtures and two runtimes | 8 |
 | The backend compiled the same kept functions the same way in the full and shaken builds | evidence, and only for compositional backends | the KL-level graph recovered from the generated Go, with the two-name delta accounted for | 9 |
 | The shaken artifact computes what the full program computes | evidence | the parity gate against goldens, across targets, boots and passes | 10 |

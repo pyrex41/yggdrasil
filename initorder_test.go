@@ -7,6 +7,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -123,8 +124,9 @@ func manifestKey(t *testing.T, manifest, key string) string {
 // Closing the write side over the call graph must not disarm the check. The
 // two programs below differ only in WHERE the call to the setter sits: before
 // the read it discharges it, after the read it discharges nothing, because
-// `before` is a strict M < N over the form indices. A transitive write
-// analysis that ignored order would accept both.
+// the order relation the rules walk is strict: a form's own writes cover its
+// own reads, but a LATER form's cover nothing. A transitive write analysis
+// that ignored order would accept both.
 //
 // These live in a temp dir rather than under tests/, because the second one
 // must not shake and analysis_test.go's oracle globs tests/*.shen.
@@ -180,11 +182,12 @@ func TestInitOrderRuleInRefeval(t *testing.T) {
 		if _, err := facts(tc.prog, dir, host, "sub", true); err != nil {
 			t.Fatalf("facts %s: %v", tc.prog, err)
 		}
-		for _, rel := range []string{"defwrite", "fcall", "formcalls", "before"} {
+		for _, rel := range []string{"defwrite", "fcall", "formcalls", "formwrite", "succ"} {
 			if _, err := os.Stat(filepath.Join(dir, rel+".facts")); err != nil {
 				t.Fatalf("%s: %s.facts not dumped: %v", tc.prog, rel, err)
 			}
 		}
+		assertSuccIsLinear(t, dir)
 		got := relWithRefeval(t, dir, "readBeforeWrite")
 		if len(got) != len(tc.want) {
 			t.Fatalf("%s: readBeforeWrite = %v, want %d tuple(s)", tc.prog, got, len(tc.want))
@@ -199,6 +202,89 @@ func TestInitOrderRuleInRefeval(t *testing.T) {
 			if !found {
 				t.Fatalf("%s: readBeforeWrite must name %s, got %v", tc.prog, v, got)
 			}
+		}
+	}
+}
+
+// assertSuccIsLinear pins the shape of the order EDB, not just its content.
+// succ is the adjacent pairs -- one tuple per form gap -- because the shake's
+// own engine loads a quadratic before(M,N) relation in cubic time (D11 in
+// analysis/analysis.dl). Going back to a tuple per M < N pair would still
+// derive the right answer, so nothing else in the suite would notice.
+func assertSuccIsLinear(t *testing.T, dir string) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(dir, "succ.facts"))
+	if err != nil {
+		t.Fatalf("reading succ.facts: %v", err)
+	}
+	rows, maxN := 0, 0
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		if line == "" {
+			continue
+		}
+		rows++
+		cols := strings.Fields(line)
+		if len(cols) != 2 {
+			t.Fatalf("succ.facts row %q: want two columns", line)
+		}
+		n, err := strconv.Atoi(cols[1])
+		if err != nil {
+			t.Fatalf("succ.facts row %q: %v", line, err)
+		}
+		if n > maxN {
+			maxN = n
+		}
+	}
+	if rows != maxN-1 {
+		t.Errorf("succ.facts has %d rows over %d forms; the adjacent pairs are %d "+
+			"(a quadratic order EDB would be %d)", rows, maxN, maxN-1, maxN*(maxN-1)/2)
+	}
+}
+
+// A form's own writes discharge its own reads, and the write side descends
+// into freeze and lambda. Both programs in the fixture run correctly under an
+// unshaken Shen and under main; refusing them was the other half of the
+// regression this check was fixed for. Both relaxations are imprecise, so the
+// manifest must say checked-weak.
+func TestInitOrderSameFormAndFreezeShake(t *testing.T) {
+	host := checkHost(t)
+	out := t.TempDir()
+	if _, err := shake("tests/init-order-sameform.shen", out, host, "sub", true); err != nil {
+		t.Fatalf("a form that writes and reads the same global must shake: %v", err)
+	}
+	if fi, err := os.Stat(filepath.Join(out, "kernel.kl")); err != nil || fi.Size() == 0 {
+		t.Fatalf("shake wrote no kernel.kl (err=%v)", err)
+	}
+	txt, err := os.ReadFile(filepath.Join(out, "yggdrasil.manifest.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := manifestKey(t, string(txt), "init-order"); got != "checked-weak" {
+		t.Fatalf("a same-form or freeze-wrapped write is an over-approximation and must "+
+			"record init-order=checked-weak, got %q:\n%s", got, txt)
+	}
+}
+
+// ...and neither relaxation may disarm the check: a write in a LATER form
+// still discharges nothing, whether it is a plain (set V _) or one wrapped in
+// a freeze. These live in a temp dir because they must not shake and
+// analysis_test.go's oracle globs tests/*.shen.
+func TestInitOrderLaterWriteStillRefused(t *testing.T) {
+	host := checkHost(t)
+	for name, body := range map[string]string{
+		"late-do.shen":     "(print (value *lx*))\n(do (set *lx* 1) 0)\n",
+		"late-freeze.shen": "(print (value *lf*))\n(thaw (freeze (set *lf* 1)))\n",
+	} {
+		p := filepath.Join(t.TempDir(), name)
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := shake(p, t.TempDir(), host, "sub", true)
+		if err == nil {
+			t.Fatalf("%s: a write in a later form must not discharge an earlier read", name)
+		}
+		if !strings.Contains(err.Error(), "FAIL init-order") {
+			t.Fatalf("%s: want the init-order sentinel, got: %v", name, err)
 		}
 	}
 }

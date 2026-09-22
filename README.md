@@ -177,14 +177,21 @@ derived from the emitted primitive set. `cannot-reach=eval` is a static,
 certifiable "this program can never evaluate code at runtime". See
 `docs/reachability.md`.
 
-A successful shake also records `init-order=checked` (`("init-order"
-checked)` in the s-expression manifest) after `needs-eval`: every
+A successful shake also records `init-order=` after `needs-eval` (the
+same value as `("init-order" ...)` in the s-expression manifest): every
 toplevel form in the emitted boot sequence — the kernel's init forms,
 then the user files' toplevel forms in manifest order — reads a global
-only after an earlier form set it, or because the port supplies it
-(`*stinput*`, `*stoutput*`). A program that violates the rule is refused
-with no artifacts written (see `docs/analysis-rules.md`). Builders must
-ignore manifest keys they do not recognise, so the key is contract-safe.
+only after some form up to and including itself set it, or because the
+port supplies it (`*stinput*`, `*stoutput*`). The value is **`checked`**
+when every one of those reads had a literal, strictly earlier `(set V _)`
+to point at, and **`checked-weak`** when at least one was discharged only
+by an over-approximation: the form calls a function whose body sets the
+global, or the form sets it itself, or the `(set V _)` sits inside a
+`freeze` or `lambda`. None of the three says the write *does* happen
+before the read, only that it could, so the check is weaker there and the
+manifest says so. A program that violates the rule is refused with no
+artifacts written (see `docs/analysis-rules.md`). Builders must ignore
+manifest keys they do not recognise, so the key is contract-safe.
 
 Every shake also records `pruned-init=N` after `computed-names`: the
 number of toplevel forms the synthesised initialiser dropped because

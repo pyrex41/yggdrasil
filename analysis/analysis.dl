@@ -357,9 +357,10 @@ deadInit(N, V) :- writes(N, V), !liveGlobal(V).
 
 // ==================== initialisation order (stage 2) ===================
 // The kept toplevel forms ARE the artifact's initialisation, in order. A
-// form may read a global only if an earlier form wrote it -- directly, with
-// its own (set V _), or indirectly, by applying a function whose body sets
-// it -- or the port supplies the global before any Shen code runs.
+// form may read a global only if some form up to and including itself wrote
+// it -- directly, with its own (set V _), or indirectly, by applying a
+// function whose body sets it -- or the port supplies the global before any
+// Shen code runs.
 //
 // The indirect half is what makes the rule usable. A program that writes
 //
@@ -371,13 +372,32 @@ deadInit(N, V) :- writes(N, V), !liveGlobal(V).
 // toplevel (set *cfg* _) calls it a violation and asks for a reordering
 // that does not exist. So the write side is closed over the call graph.
 //
-// D11. `before` is an EDB relation, not the side condition M < N. The shake
-//     evaluates these same rules in ygg.dl (yggdrasil.shen,
-//     ygg.*init-order-rules*), a small engine with no arithmetic and no
-//     comparison operators at all. Materialising the order as facts is what
-//     lets the shake, refeval.py and Soufflé run the SAME rules rather than
-//     three dialects of them, and it is affordable: the relation is
-//     quadratic in the number of toplevel forms, which is a few dozen.
+// D11. The order arrives as an EDB relation, not as the side condition
+//     M < N. The shake evaluates these same rules in ygg.dl
+//     (yggdrasil.shen, ygg.*init-order-rules*), a small engine with no
+//     arithmetic and no comparison operators at all. Materialising the
+//     order as facts is what lets the shake, refeval.py and Soufflé run the
+//     SAME rules rather than three dialects of them.
+//
+//     The EDB is `succ`, the adjacent pairs, and writtenBefore walks it
+//     transitively. The obvious spelling is a `before(M,N)` tuple for every
+//     M < N, and this check first shipped with that; it derives the
+//     identical relation, but it is quadratic in the form count -- 20,301
+//     tuples for tests/metaeval.shen's 202 forms -- and loading it is cubic
+//     in the shake's own engine, which dedupes each incoming fact against a
+//     bucket. succ costs 201 tuples.
+//
+//     `wantedGlobal` is the same concern and it is the bigger half. Only a
+//     global that some toplevel form reads can reach readBeforeWrite or
+//     weakRead, so both order closures are restricted to those. Unrestricted
+//     they are (globals written) x (forms after the write): ~14,000 tuples
+//     on metaeval, derived to answer a question about that program's one
+//     toplevel read, and 0.55s of a 1.7s shake. The restriction is written
+//     as a rule, not applied in the extractors, so all three engines derive
+//     the same relation; it is a magic-set restriction done by hand.
+//
+//     Soufflé and refeval.py would not have needed either. The engine the
+//     artifact is actually built with does, and it is one of the three.
 //
 // D12. `defwrite` and `fcall` are dumped for the USER program's defuns
 //     only, not the kernel's. The kernel's own init forms are covered by
@@ -388,36 +408,107 @@ deadInit(N, V) :- writes(N, V), !liveGlobal(V).
 //     is NOT the runtime trace's one-column `defunwrite`, which is
 //     restricted to KEPT defuns and answers a different question.
 //
+//     The call edges come from `function-calls` restricted to the user's
+//     defun names, NOT from `called-fns`, which is the walk the rest of the
+//     shaker uses: called-fns filters its symbols through kernel-defun?, a
+//     build-time `defp` mark carried only by the kernel's own defun names,
+//     so over user code it yields kernel names and never the user's own --
+//     with it, (setup) above stays invisible and this rule buys nothing.
+//     The restriction to a name set is the same shape; only the name set
+//     differs. See D14 for what that walk's precision is.
+//
 // D13. `writesVia` says a call COULD write V, not that it does: it ignores
 //     branches, guards and argument values. A read discharged only through
 //     that path is therefore discharged more weakly than one a literal
 //     earlier write discharges, and the shake records the difference in
-//     both manifests as init-order=checked-weak rather than =checked. The
-//     rules do not derive that distinction; nothing here depends on it.
+//     both manifests as init-order=checked-weak rather than =checked. That
+//     distinction is derived here rather than recomputed in the shake:
+//     `weakRead` is a read that `covered` covers and `directWrittenBefore`
+//     does not, so the manifest key has one definition, in the rules, that
+//     all three engines evaluate and the oracle test diffs.
+//
+// D14. `fcall` and `formcalls` mean MENTIONS, not applies. Both are built by
+//     a symbol walk over the code (function-calls, restricted to the user's
+//     defun names), the same precision graph-rows gives `callpos` for the
+//     kernel, so (set *names* [setup]) counts as a call to setup. It errs
+//     the safe way here: a spurious edge can only discharge a read the
+//     check would otherwise refuse -- at worst turning a refusal into
+//     init-order=checked-weak -- and can never manufacture a violation,
+//     because `directWrittenBefore`, which decides =checked, does not look
+//     at these relations at all.
+//
+// D15. A form's own writes discharge its own reads (`covered` takes
+//     topWrites(N,V), not only writtenBefore), and `formwrite` -- unlike
+//     `writes`, which stage 4's deadInit needs -- descends into lambda and
+//     freeze. Both of
+//
+//         (do (set *x* 1) (print (value *x*)))
+//         (thaw (freeze (set *f* 1)))   ...   (print (value *f*))
+//
+//     run correctly and a strictly-earlier, freeze-blind rule refuses them,
+//     with the same unactionable "reorder the program" hint the indirect
+//     half was added to stop producing. Neither relaxation is precise --
+//     nothing here knows in which order a `do` runs or whether a freeze is
+//     ever thawed -- so both are weak: `directWrittenBefore`, the relation
+//     that decides =checked, stays strictly-earlier and freeze-blind, and a
+//     read that only D15 discharged is a weakRead. What is still refused is
+//     a read with no write anywhere up to and including its own form, which
+//     is exactly the program a reordering can fix.
 
 .decl defwrite(f:symbol, v:symbol)    // defun F's body evaluates (set V _), V a literal symbol
 .input defwrite
 
-.decl fcall(f:symbol, g:symbol)       // defun F applies G
+.decl fcall(f:symbol, g:symbol)       // defun F's body mentions defun G (D14)
 .input fcall
 
-.decl formcalls(n:number, g:symbol)   // the N-th kept toplevel form applies G
+.decl formcalls(n:number, g:symbol)   // the N-th kept toplevel form mentions defun G (D14)
 .input formcalls
 
-.decl before(m:number, n:number)      // M < N over the kept toplevel form indices
-.input before
+.decl formwrite(n:number, v:symbol)   // the N-th form says (set V _) at any depth, freeze and lambda included (D15)
+.input formwrite
+
+.decl succ(m:number, n:number)        // N is M+1 over the kept toplevel form indices (D11)
+.input succ
+
+// The demand set: the globals a kept toplevel form reads. Nothing else can
+// appear in either output relation, so the two order closures below are
+// restricted to it (D11).
+.decl wantedGlobal(v:symbol)
+wantedGlobal(V) :- reads(_, V).
 
 .decl writesVia(f:symbol, v:symbol)
 writesVia(F, V) :- defwrite(F, V).
 writesVia(F, V) :- fcall(F, G), writesVia(G, V).
 
 .decl topWrites(n:number, v:symbol)
-topWrites(N, V) :- writes(N, V).
+topWrites(N, V) :- formwrite(N, V).
 topWrites(N, V) :- formcalls(N, G), writesVia(G, V).
 
 .decl writtenBefore(n:number, v:symbol)
-writtenBefore(N, V) :- topWrites(M, V), before(M, N).
+writtenBefore(N, V) :- topWrites(M, V), succ(M, N), wantedGlobal(V).
+writtenBefore(N, V) :- writtenBefore(M, V), succ(M, N).
+
+// The direct half on its own: a STRICTLY earlier form whose own body says
+// (set V _), outside every lambda and freeze, with no call graph in between.
+// This is what separates a read the shake can vouch for from one an
+// over-approximation carried (D13, D15).
+.decl directWrittenBefore(n:number, v:symbol)
+directWrittenBefore(N, V) :- writes(M, V), succ(M, N), wantedGlobal(V).
+directWrittenBefore(N, V) :- directWrittenBefore(M, V), succ(M, N).
+
+// Everything that discharges a read of V by form N: an earlier write, or
+// one of form N's own (D15).
+.decl covered(n:number, v:symbol)
+covered(N, V) :- writtenBefore(N, V).
+covered(N, V) :- topWrites(N, V), wantedGlobal(V).
 
 .decl readBeforeWrite(n:number, v:symbol)
 .output readBeforeWrite
-readBeforeWrite(N, V) :- reads(N, V), !writtenBefore(N, V), !portGlobal(V).
+readBeforeWrite(N, V) :- reads(N, V), !covered(N, V), !portGlobal(V).
+
+// A read that only an over-approximation discharged. Empty means the shake
+// records init-order=checked; non-empty, init-order=checked-weak.
+.decl weakRead(n:number, v:symbol)
+.output weakRead
+weakRead(N, V) :- reads(N, V), covered(N, V),
+                  !directWrittenBefore(N, V), !portGlobal(V).

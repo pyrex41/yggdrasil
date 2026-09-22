@@ -52,13 +52,16 @@ INPUTS = {
     "reads": 2,
     "writes": 2,
     "portReads": 1,
-    # Initialisation order (stage 2). `before` is an EDB relation rather
-    # than an M < N side condition so that the shake's own engine, which has
-    # no arithmetic, can evaluate the same rules (D11).
+    # Initialisation order (stage 2). The form order arrives as the EDB
+    # relation `succ` rather than as an M < N side condition so that the
+    # shake's own engine, which has no arithmetic, can evaluate the same
+    # rules; it is the adjacent pairs, not every M < N pair, because that
+    # engine loads a quadratic EDB in cubic time (D11).
     "defwrite": 2,
     "fcall": 2,
     "formcalls": 2,
-    "before": 2,
+    "formwrite": 2,
+    "succ": 2,
     # The runtime trace: empty in an ordinary dump, filled by
     # `yggdrasil trace-check`. readGlobal lives in readglobal.facts, the name
     # stage 4 consumes (docs/analysis-rules.md, "Runtime trace").
@@ -196,13 +199,21 @@ def evaluate(db):
     live |= written & rawsym
     deadinit = {(n, v) for n, v in db["writes"] if v not in live}
 
-    # ---- initialisation order (stage 2, D11/D12/D13) ----------------
+    # ---- initialisation order (stage 2, D11-D15) --------------------
+    # wantedGlobal(V)      :- reads(_,V).
     # writesVia(F,V)       :- defwrite(F,V).
     # writesVia(F,V)       :- fcall(F,G), writesVia(G,V).
-    # topWrites(N,V)       :- writes(N,V).
+    # topWrites(N,V)       :- formwrite(N,V).
     # topWrites(N,V)       :- formcalls(N,G), writesVia(G,V).
-    # writtenBefore(N,V)   :- topWrites(M,V), before(M,N).
-    # readBeforeWrite(N,V) :- reads(N,V), !writtenBefore(N,V), !portGlobal(V).
+    # writtenBefore(N,V)   :- topWrites(M,V), succ(M,N), wantedGlobal(V).
+    # writtenBefore(N,V)   :- writtenBefore(M,V), succ(M,N).
+    # directWrittenBefore(N,V) :- writes(M,V), succ(M,N), wantedGlobal(V).
+    # directWrittenBefore(N,V) :- directWrittenBefore(M,V), succ(M,N).
+    # covered(N,V)         :- writtenBefore(N,V).
+    # covered(N,V)         :- topWrites(N,V), wantedGlobal(V).
+    # readBeforeWrite(N,V) :- reads(N,V), !covered(N,V), !portGlobal(V).
+    # weakRead(N,V)        :- reads(N,V), covered(N,V),
+    #                         !directWrittenBefore(N,V), !portGlobal(V).
     callers = {}
     for f, g in db["fcall"]:
         callers.setdefault(g, set()).add(f)
@@ -220,24 +231,59 @@ def evaluate(db):
     for f, v in writesvia:
         viawrites.setdefault(f, set()).add(v)
 
-    topwrites = set(db["writes"])
+    topwrites = set(db["formwrite"])
     for n, g in db["formcalls"]:
         for v in viawrites.get(g, ()):
             topwrites.add((n, v))
 
-    after = {}
-    for m, n in db["before"]:
-        after.setdefault(m, set()).add(n)
-    writtenbefore = set()
-    for m, v in topwrites:
-        for n in after.get(m, ()):
-            writtenbefore.add((n, v))
+    # succ is the adjacent pairs; the two writtenBefore clauses walk it, so
+    # the transitive closure is taken here rather than read out of the EDB.
+    # wantedGlobal restricts both closures to the globals a toplevel form
+    # reads, which is all either output relation can mention (D11).
+    wanted = {v for _, v in db["reads"]}
+    nxt_of = {}
+    for m, n in db["succ"]:
+        nxt_of.setdefault(m, set()).add(n)
+
+    def propagate(seed):
+        out = set()
+        delta = set()
+        for m, v in seed:
+            if v not in wanted:
+                continue
+            for n in nxt_of.get(m, ()):
+                if (n, v) not in out:
+                    out.add((n, v))
+                    delta.add((n, v))
+        while delta:
+            step = set()
+            for m, v in delta:
+                for n in nxt_of.get(m, ()):
+                    if (n, v) not in out:
+                        out.add((n, v))
+                        step.add((n, v))
+            delta = step
+        return out
+
+    writtenbefore = propagate(topwrites)
+    directwrittenbefore = propagate(set(db["writes"]))
+    covered = writtenbefore | {(n, v) for n, v in topwrites if v in wanted}
 
     portglobal = one("portGlobal")
     readbeforewrite = {
         (n, v)
         for n, v in db["reads"]
-        if (n, v) not in writtenbefore and v not in portglobal
+        if (n, v) not in covered and v not in portglobal
+    }
+    # weakRead(N,V) :- reads(N,V), covered(N,V),
+    #                  !directWrittenBefore(N,V), !portGlobal(V).
+    # Empty means the shake records init-order=checked (D13, D15).
+    weakread = {
+        (n, v)
+        for n, v in db["reads"]
+        if (n, v) in covered
+        and (n, v) not in directwrittenbefore
+        and v not in portglobal
     }
 
     # ---- runtime trace ----------------------------------------------
@@ -267,7 +313,11 @@ def evaluate(db):
         "writesVia": writesvia,
         "topWrites": topwrites,
         "writtenBefore": writtenbefore,
+        "directWrittenBefore": directwrittenbefore,
+        "covered": covered,
+        "wantedGlobal": {(v,) for v in wanted},
         "readBeforeWrite": readbeforewrite,
+        "weakRead": weakread,
         "called": {(f,) for f in called},
         "readGlobal": {(v,) for v in readglobal},
         "uncoveredCall": {(f,) for f in uncoveredcall},

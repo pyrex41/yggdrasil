@@ -141,7 +141,8 @@
                     Dead       (ygg.dead-init Kernel Reach TopsOut KL RawFs)
                     KeptTops   (ygg.prune-init TopsOut Dead)
                     NPruned    (- (ygg.len TopsOut) (ygg.len KeptTops))
-                    InitOrder2 (ygg.init-order-check KeptTops KL)
+                    InitOrder2 (ygg.init-order-recheck TopsOut KeptTops KL
+                                                       InitOrder)
                     InitDefun  (synthesize-initialise KeptTops)
                     \\ Weaving is the LAST thing before writing, and in
                     \\ particular after dead-init pruning: a trace has to
@@ -152,7 +153,8 @@
                     Prims      (find-primitives (append OutCode UserKL))
                     WriteK     (write-kl-file (@s Dir "/kernel.kl") OutCode)
                     UserOut    (write-user-files KLFiles UserKL Dir)
-                    WriteM     (write-manifest Dir UserOut UserKL Prims CNames NPruned)
+                    WriteM     (write-manifest Dir UserOut UserKL Prims CNames
+                                               NPruned InitOrder2)
                     Restore    (set *maximum-print-sequence-size* MaxPrint)
                     done))
 
@@ -1356,7 +1358,7 @@
 (set *global-primitives*   [*stinput* *stoutput*])
 
 (define write-manifest
-  Dir UserFiles UserKL Prims CNames NPruned ->
+  Dir UserFiles UserKL Prims CNames NPruned InitOrder ->
      (let NeedsEval (element? eval-kl Prims)
           Computed  (ygg.cn-report CNames)
           Fns       (user-arities UserKL)
@@ -1366,8 +1368,8 @@
                                                (element? P Optional)))) Prims)
           Reaches   (reaches-caps Prims)
           Cannot    (cannot-reach-caps Prims)
-          Sexp (write-manifest-sexp Dir UserFiles Fns Required Optional Globals NeedsEval Computed NPruned Reaches Cannot)
-          Txt  (write-manifest-txt Dir UserFiles Fns Required Optional Globals NeedsEval Computed NPruned Reaches Cannot)
+          Sexp (write-manifest-sexp Dir UserFiles Fns Required Optional Globals NeedsEval Computed NPruned Reaches Cannot InitOrder)
+          Txt  (write-manifest-txt Dir UserFiles Fns Required Optional Globals NeedsEval Computed NPruned Reaches Cannot InitOrder)
           done))
 
 (define user-arities
@@ -1382,7 +1384,7 @@
   [_ | Xs] -> (+ 1 (ygg.len Xs)))
 
 (define write-manifest-sexp
-  Dir UserFiles Fns Required Optional Globals NeedsEval Computed NPruned Reaches Cannot ->
+  Dir UserFiles Fns Required Optional Globals NeedsEval Computed NPruned Reaches Cannot InitOrder ->
     (let Sink (open (@s Dir "/yggdrasil.manifest") out)
          W1 (pr-kl-line ["yggdrasil-manifest" 4] Sink)
          W2 (pr-kl-line ["kernel-version" "42-s42.20260825"] Sink)
@@ -1394,7 +1396,7 @@
          W8 (pr-kl-line ["primitives-optional" | Optional] Sink)
          W9 (pr-kl-line ["globals" | Globals] Sink)
          WA (pr-kl-line ["needs-eval" NeedsEval] Sink)
-         WA2 (pr-kl-line ["init-order" (value ygg.*init-order*)] Sink)
+         WA2 (pr-kl-line ["init-order" InitOrder] Sink)
          WA3 (pr-kl-line ["computed-names" Computed] Sink)
          WA4 (pr-kl-line ["pruned-init" NPruned] Sink)
          WB (pr-kl-line ["reaches" | Reaches] Sink)
@@ -1404,7 +1406,7 @@
          (close Sink)))
 
 (define write-manifest-txt
-  Dir UserFiles Fns Required Optional Globals NeedsEval Computed NPruned Reaches Cannot ->
+  Dir UserFiles Fns Required Optional Globals NeedsEval Computed NPruned Reaches Cannot InitOrder ->
     (let Sink (open (@s Dir "/yggdrasil.manifest.txt") out)
          W1 (pr (make-string "manifest-version=4~%") Sink)
          W2 (pr (make-string "kernel-version=42-s42.20260825~%") Sink)
@@ -1416,7 +1418,7 @@
          W8 (ygg.mapc (/. P (pr (make-string "primitive-optional=~A~%" P) Sink)) Optional)
          W9 (ygg.mapc (/. P (pr (make-string "global=~A~%" P) Sink)) Globals)
          WA (pr (make-string "needs-eval=~A~%" NeedsEval) Sink)
-         WA2 (pr (make-string "init-order=~A~%" (value ygg.*init-order*)) Sink)
+         WA2 (pr (make-string "init-order=~A~%" InitOrder) Sink)
          WA3 (pr (make-string "computed-names=~A~%" Computed) Sink)
          WA4 (pr (make-string "pruned-init=~A~%" NPruned) Sink)
          WB (ygg.mapc (/. C (pr (make-string "reaches=~A~%" C) Sink)) Reaches)
@@ -1430,11 +1432,12 @@
 \\ program's initialisation, in order: the kernel's own init forms first
 \\ (as trim-top leaves them), then, after the synthesised initialiser, the
 \\ user files' toplevel forms in manifest order.  A form may evaluate
-\\ (value V) only if an EARLIER form wrote V - either directly, with its
-\\ own (set V _), or indirectly, by applying a function whose body sets V -
-\\ or V is a port global (*stinput*, *stoutput* - the port supplies those
-\\ before any Shen code runs).  Reads inside a defun do not count: a defun
-\\ body runs when it is called, not while the artifact boots.
+\\ (value V) only if some form up to and INCLUDING itself wrote V - either
+\\ directly, with its own (set V _), or indirectly, by applying a function
+\\ whose body sets V - or V is a port global (*stinput*, *stoutput* - the
+\\ port supplies those before any Shen code runs).  Reads inside a defun do
+\\ not count: a defun body runs when it is called, not while the artifact
+\\ boots.
 \\
 \\ The indirect half is the point.  A program that says
 \\     (define setup -> (set *cfg* 41))
@@ -1447,20 +1450,58 @@
 \\ transitive closure of "F's body sets V, or F applies something that
 \\ does", and a toplevel form covers V when it applies such an F.
 \\
-\\ That closure is an over-approximation - it says a call COULD write V, not
-\\ that it does, since it ignores branches, guards and argument values - so
-\\ a read discharged only that way is discharged more weakly than one that a
-\\ literal earlier (set V _) discharges.  The manifests say which:
-\\ init-order=checked when every read had a direct writer, and
-\\ init-order=checked-weak when at least one needed the call graph.
+\\ Two more programs run correctly and were refused for the same reason, so
+\\ the write side widens twice more:
+\\     (do (set *x* 1) (print (value *x*)))
+\\     (thaw (freeze (set *f* 1)))  ...  (print (value *f*))
+\\ The first has no EARLIER form to point at - the write and the read are
+\\ one toplevel form - so a form's own writes discharge its own reads.  The
+\\ second writes inside a freeze, and ygg.io-writes stops at a freeze on
+\\ purpose (stage 4 must not read an unthawed freeze as an initialisation),
+\\ so the write side gets its own deeper walk, `formwrite`.
+\\
+\\ All three widenings are over-approximations - a call COULD write V but
+\\ ignores branches, guards and argument values; nothing here knows in which
+\\ order a `do` runs or whether a freeze is ever thawed - so a read that
+\\ only they discharge is discharged more weakly than one a literal,
+\\ strictly earlier (set V _) discharges.  That difference is itself derived
+\\ - weakRead, below, against directWrittenBefore, which stays strictly
+\\ earlier and freeze-blind - and the manifests report it: init-order=checked
+\\ when every read had a direct writer, init-order=checked-weak when at
+\\ least one needed a widening.  What stays refused is a read with no write
+\\ anywhere up to and including its own form, which is exactly the program
+\\ a reordering can fix.
 \\
 \\ This is a Datalog rule set (analysis/analysis.dl, "initialisation order"),
 \\ evaluated here by ygg.dl and by analysis/refeval.py and Souffle over the
-\\ facts `yggdrasil facts` dumps, so the three engines agree on it the way
-\\ they already agree on reach and deadInit.  `before` is an EDB relation
-\\ rather than a `<` side condition precisely so that ygg.dl - which has no
-\\ arithmetic - can evaluate it unchanged; the form sequence is a few dozen
-\\ forms long, so materialising the order costs a few thousand tuples.
+\\ facts `yggdrasil facts` dumps, and checked across engines the way reach,
+\\ computedName and deadInit are: TestAnalysisOracleMatchesShake diffs
+\\ readBeforeWrite and weakRead refeval-against-the-shake on every fixture,
+\\ and souffle-against-refeval whenever Souffle is on PATH.  Souffle is NOT
+\\ installed on every dev box - a local `go test` then proves two of the
+\\ three - and the nightly analysis-oracle workflow, which is where Souffle
+\\ actually parses this file, diffs `reach` rather than these two relations.
+\\ The order arrives as an EDB
+\\ relation rather than a `<` side condition precisely so that ygg.dl -
+\\ which has no arithmetic - can evaluate the rules unchanged.
+\\
+\\ That EDB is `succ`, the LINEAR one: succ(M,M+1) for each adjacent pair,
+\\ and writtenBefore walks it transitively.  The first version of this
+\\ check used the obvious quadratic spelling - a before(M,N) tuple for
+\\ every M < N, 20,301 of them for tests/metaeval.shen's 202 forms - which
+\\ derives the identical relation and cost about 0.12s per run just to load,
+\\ ygg.dl-add being a dedupe against a bucket.  succ costs 201 tuples.
+\\
+\\ The bigger cost was the closure itself, and `wantedGlobal` is what fixes
+\\ it: see the rule set below.  The third was running the whole check twice
+\\ per shake for the same answer, which ygg.init-order-recheck now avoids
+\\ when stage 4 pruned nothing (every shake without --prune-init).
+\\ Together, measured on this machine as user CPU over three runs:
+\\ metaeval 1.02-1.07s at d1d1e23, ~1.9s with the first version of this
+\\ check, 0.91-0.94s here; partial-eval 0.94-1.04 -> ~2.0 -> 0.96-1.09;
+\\ fib 0.83-0.86 -> 0.84-0.91; interpreter 1.01-1.07 -> 1.16-1.25.  The
+\\ stage-2 check is back to costing about what it cost before it became a
+\\ rule set, and it now decides strictly more.
 \\
 \\ The check runs after trim-top and before anything is written, so a
 \\ violation aborts the shake with no kernel.kl - the Go driver's "missing
@@ -1470,11 +1511,13 @@
 \\ violation reported is the EARLIEST one, so the message points at the
 \\ first form that cannot run rather than an arbitrary member of the set.
 
-\\ Set by every run of ygg.init-order-check; read by both manifest writers.
-\\ A process-global rather than a return value so that the check keeps its
-\\ (Tops KL) signature and its two call sites in yggdrasil.shake.
-(set ygg.*init-order* checked)
-
+\\ Returns the manifest's init-order= value: `checked` when the direct half
+\\ of the rule discharged every read on its own, `checked-weak` when at least
+\\ one read needed one of the three widenings.  A return value rather than a
+\\ process global: the caller that writes the manifest is the caller that
+\\ ran the check, and the answer belongs to a particular form sequence -
+\\ a global would silently record whichever of the shake's two checks ran
+\\ last.
 (define ygg.init-order-check
   Tops UserKL
    -> (let Forms  (append Tops (ygg.user-tops UserKL))
@@ -1484,8 +1527,19 @@
                               (value ygg.*init-order-rules*))
            Bad    (ygg.io-least (ygg.dl-query readBeforeWrite) [])
            Report (ygg.io-report Bad)
-           Status (set ygg.*init-order* (ygg.io-status Rows))
-           checked))
+           (ygg.io-status)))
+
+\\ The shake checks the form sequence twice: once as trim-top leaves it, and
+\\ once after stage 4 has pruned dead initialisation, because pruning shifts
+\\ the indices `succ` is built from.  Pruning only DROPS forms, though, and
+\\ with (value ygg.*prune-init*) false it drops none - so when the two
+\\ sequences are the same sequence the second run closes the same four strata
+\\ over the same EDB to reach the same answer.  Reusing the first answer
+\\ there halves the stage-2 cost of every ordinary shake; a shake that
+\\ actually pruned something re-runs the check in full.
+(define ygg.init-order-recheck
+  Tops Kept _ Status -> Status  where (= Tops Kept)
+  _ Kept UserKL _ -> (ygg.init-order-check Kept UserKL))
 
 \\ The user files' toplevel (non-defun) forms, in manifest order.
 (define ygg.user-tops
@@ -1513,33 +1567,27 @@
 \\ ---------------------------- the manifest key --------------------------
 \\ `checked` only when the direct half of the rule discharged every read on
 \\ its own: reads(N,V) with some writes(M,V), M < N, or V a port global.
-\\ Otherwise the transitive path did some of the work and the answer is
-\\ weaker than it looks, so say so.  Computed from the same rows the EDB is
-\\ built from, and only reached once the check has passed, so every read is
-\\ covered one way or the other.
+\\ Otherwise one of the three widenings - the call graph, the form's own
+\\ writes, a write inside a freeze - did some of the work, the answer is
+\\ weaker than it looks, and the manifest says so.
+\\
+\\ That distinction is a relation, not a second implementation of the check:
+\\ `weakRead(N,V)` is derived by the same rule set, in the same stratum as
+\\ readBeforeWrite, from the same EDB - reads that `covered` covers but
+\\ `directWrittenBefore` does not.  Scanning the reads/writes rows again in
+\\ Shen would give the manifest key a private notion of "M < N" that nothing
+\\ checks against the rules; this way the key's basis is in all three
+\\ engines, and the oracle test diffs it like any other relation.
+\\
+\\ Read out of the database the check has just closed, so it is only ever
+\\ called from ygg.init-order-check, after ygg.io-report has passed.
 (define ygg.io-status
-  Rows -> (let Reads  (ygg.rows-of reads Rows)
-               Writes (ygg.rows-of writes Rows)
-               (if (ygg.io-direct-all? Reads Writes) checked checked-weak)))
-
-(define ygg.io-direct-all?
-  [] _ -> true
-  [R | Rs] Writes -> (ygg.io-direct-all? Rs Writes)  where (ygg.io-direct? R Writes)
-  _ _ -> false)
-
-(define ygg.io-direct?
-  [_ V] _ -> true  where (element? V (value *global-primitives*))
-  [N V] Writes -> (ygg.io-earlier? N V Writes))
-
-(define ygg.io-earlier?
-  _ _ [] -> false
-  N V [[M V] | _] -> true  where (< M N)
-  N V [_ | Ws] -> (ygg.io-earlier? N V Ws))
+  -> (if (empty? (ygg.dl-query weakRead)) checked checked-weak))
 
 \\ ------------------------------- the EDB --------------------------------
 \\ reads/writes come from ygg.io-rows, which is also what the fact dump
 \\ writes, so the engine here and the oracle there see the same tuples.
-\\ ygg.io-facts (in the fact-dump section) dumps the four relations below
+\\ ygg.io-facts (in the fact-dump section) dumps the five relations below
 \\ from these same extractors, for the same reason.
 
 (define ygg.io-edb
@@ -1549,8 +1597,9 @@
            (append (map (/. R [defwrite | R]) (ygg.io-defwrite-rows Defuns))
            (append (map (/. R [fcall | R])    (ygg.io-fcall-rows Defuns Names))
            (append (map (/. R [formcalls | R]) (ygg.io-formcall-rows Forms 1 Names))
-           (append (map (/. R [before | R])   (ygg.io-before-rows (ygg.len Forms)))
-                   (map (/. V [portGlobal V]) (value *global-primitives*)))))))))
+           (append (map (/. R [formwrite | R]) (ygg.io-formwrite-rows Forms 1))
+           (append (map (/. R [succ | R])     (ygg.io-succ-rows (ygg.len Forms)))
+                   (map (/. V [portGlobal V]) (value *global-primitives*))))))))))
 
 \\ The user files' defuns as [Name Body] pairs, in manifest order.
 (define ygg.io-defuns
@@ -1588,6 +1637,13 @@
 \\ names and never the user's own.  function-calls is the unfiltered walk;
 \\ restricting it to the user defun names is the same restriction
 \\ called-fns makes, against the other name set.
+\\
+\\ Both are symbol walks, so fcall/formcalls mean MENTIONS, not applies:
+\\ (set *names* [setup]) counts as a call to setup.  That is the same
+\\ precision graph-rows has for the kernel, and it errs the safe way for
+\\ this rule - an extra edge can only discharge a read the check would
+\\ otherwise refuse, never manufacture a violation - but it is an
+\\ over-approximation on top of D13's, and analysis.dl records it as D14.
 (define ygg.io-fcall-rows
   [] _ -> []
   [[F Body] | Ds] Names
@@ -1604,22 +1660,42 @@
                                (ygg.remove-dups (function-calls F))))
               (ygg.io-formcall-rows Fs (+ N 1) Names)))
 
-\\ before(M,N) for every 1 <= M < N <= Len.  Quadratic on purpose: it is the
-\\ `<` the engine does not have, and Len is the number of toplevel forms in
-\\ the artifact - a few dozen.
-(define ygg.io-before-rows
-  Len -> (ygg.io-before-h 1 Len))
+\\ (set V _) with a literal V anywhere in a toplevel form, INCLUDING inside
+\\ a lambda or a freeze, which is where ygg.io-writes stops.  ygg.io-writes
+\\ answers "what does this form certainly write", which is the question
+\\ stage 4's deadInit asks; formwrite answers "what could this form have
+\\ written by the time it returns", which is the question a read that comes
+\\ after it asks.  (thaw (freeze (set *f* 1))) is the difference.  A defun
+\\ is not a toplevel form here, but the exclusion is written out anyway so
+\\ that the walk cannot pick up a defun body if one is ever nested.
+(define ygg.io-form-writes
+  [defun _ _ _] -> []
+  [set V Val] -> [V | (ygg.io-form-writes Val)]  where (ygg.cn-literal-sym? V)
+  [X | Y] -> (append (ygg.io-form-writes X) (ygg.io-form-writes Y))
+  _ -> [])
 
-(define ygg.io-before-h
+(define ygg.io-formwrite-rows
+  [] _ -> []
+  [F | Fs] N -> (append (map (/. V [N V])
+                             (ygg.remove-dups (ygg.io-form-writes F)))
+                        (ygg.io-formwrite-rows Fs (+ N 1))))
+
+\\ succ(M,M+1) for every adjacent pair of toplevel forms: the order as an
+\\ EDB relation, which is how the rules get a `<` out of an engine that has
+\\ no arithmetic.  LINEAR on purpose - writtenBefore walks it transitively.
+\\ The quadratic spelling (a tuple per M < N pair) derives exactly the same
+\\ relation and was what this check first shipped with; 201 tuples instead
+\\ of 20,301 for tests/metaeval.shen, and loading the big one is cubic in
+\\ the form count, since ygg.dl-add dedupes each incoming tuple against its
+\\ first-argument bucket.
+(define ygg.io-succ-rows
+  Len -> (ygg.io-succ-h 1 Len))
+
+(define ygg.io-succ-h
   M Len -> []  where (>= M Len)
-  M Len -> (append (ygg.io-before-row M (+ M 1) Len)
-                   (ygg.io-before-h (+ M 1) Len)))
+  M Len -> [[M (+ M 1)] | (ygg.io-succ-h (+ M 1) Len)])
 
-(define ygg.io-before-row
-  _ N Len -> []  where (> N Len)
-  M N Len -> [[M N] | (ygg.io-before-row M (+ N 1) Len)])
-
-\\ The four stage-2 relations as .facts files, for Souffle and refeval.py.
+\\ The five stage-2 relations as .facts files, for Souffle and refeval.py.
 \\ reads/writes are dumped beside them by yggdrasil.facts from the same
 \\ ygg.io-rows the check uses.
 (define ygg.io-facts
@@ -1629,7 +1705,8 @@
            F1 (ygg.facts-file Dir "defwrite"  (ygg.io-defwrite-rows Defuns))
            F2 (ygg.facts-file Dir "fcall"     (ygg.io-fcall-rows Defuns Names))
            F3 (ygg.facts-file Dir "formcalls" (ygg.io-formcall-rows Forms 1 Names))
-           F4 (ygg.facts-file Dir "before"    (ygg.io-before-rows (ygg.len Forms)))
+           F4 (ygg.facts-file Dir "formwrite" (ygg.io-formwrite-rows Forms 1))
+           F5 (ygg.facts-file Dir "succ"      (ygg.io-succ-rows (ygg.len Forms)))
            done))
 
 \\ ------------------------------ the rules -------------------------------
@@ -1637,26 +1714,58 @@
 \\ same relation names, same clause order, logic variables written as the
 \\ lowercase names ygg.*dl-vars* maps (see (value *shake-rules*)).
 \\
-\\   writesVia(F,V)      :- defwrite(F,V).
-\\   writesVia(F,V)      :- fcall(F,G), writesVia(G,V).
-\\   topWrites(N,V)      :- writes(N,V).
-\\   topWrites(N,V)      :- formcalls(N,G), writesVia(G,V).
-\\   writtenBefore(N,V)  :- topWrites(M,V), before(M,N).
-\\   readBeforeWrite(N,V):- reads(N,V), !writtenBefore(N,V), !portGlobal(V).
+\\   wantedGlobal(V)         :- reads(_,V).
+\\   writesVia(F,V)          :- defwrite(F,V).
+\\   writesVia(F,V)          :- fcall(F,G), writesVia(G,V).
+\\   topWrites(N,V)          :- formwrite(N,V).
+\\   topWrites(N,V)          :- formcalls(N,G), writesVia(G,V).
+\\   writtenBefore(N,V)      :- topWrites(M,V), succ(M,N), wantedGlobal(V).
+\\   writtenBefore(N,V)      :- writtenBefore(M,V), succ(M,N).
+\\   directWrittenBefore(N,V):- writes(M,V), succ(M,N), wantedGlobal(V).
+\\   directWrittenBefore(N,V):- directWrittenBefore(M,V), succ(M,N).
+\\   covered(N,V)            :- writtenBefore(N,V).
+\\   covered(N,V)            :- topWrites(N,V), wantedGlobal(V).
+\\   readBeforeWrite(N,V)    :- reads(N,V), !covered(N,V), !portGlobal(V).
+\\   weakRead(N,V)           :- reads(N,V), covered(N,V),
+\\                              !directWrittenBefore(N,V), !portGlobal(V).
 \\
-\\ Four strata, and the order is forced: writtenBefore must be closed before
-\\ readBeforeWrite negates it, or ygg.dl-check-neg would (rightly) refuse
-\\ the rule set as unstratified.
+\\ Four strata, and the order is forced: covered and directWrittenBefore
+\\ must both be closed before the last stratum negates them, or
+\\ ygg.dl-check-neg would (rightly) refuse the rule set as unstratified.
+\\ readBeforeWrite decides the shake; weakRead decides the manifest key.
+\\ The two `succ` recursions are what make the linear order EDB enough;
+\\ `covered` is writtenBefore plus the form's own writes, which is the
+\\ same-form case, and it is deliberately NOT part of directWrittenBefore,
+\\ so a read discharged by its own form reads checked-weak.
+\\
+\\ `wantedGlobal` is the demand set, and it is in the rules rather than in
+\\ the extractors so that all three engines derive the same tuples.  Only a
+\\ global some toplevel form READS can appear in readBeforeWrite or
+\\ weakRead, and the two order closures are the only expensive relations
+\\ here: unrestricted they are (globals written) x (forms after the write),
+\\ which on tests/metaeval.shen is ~14,000 tuples derived to answer a
+\\ question about that program's single toplevel read.  Restricted it is
+\\ ~200, and the whole check costs about 0.02s there instead of 0.55s.
 (set ygg.*init-order-rules*
   (ygg.dl-varify
-   [[[[writesVia f v] [defwrite f v]]
+   [[[[wantedGlobal v] [reads n v]]
+     [[writesVia f v] [defwrite f v]]
      [[writesVia f v] [fcall f g] [writesVia g v]]]
-    [[[topWrites n v] [writes n v]]
+    [[[topWrites n v] [formwrite n v]]
      [[topWrites n v] [formcalls n g] [writesVia g v]]]
-    [[[writtenBefore n v] [topWrites m v] [before m n]]]
+    [[[writtenBefore n v] [topWrites m v] [succ m n] [wantedGlobal v]]
+     [[writtenBefore n v] [writtenBefore m v] [succ m n]]
+     [[directWrittenBefore n v] [writes m v] [succ m n] [wantedGlobal v]]
+     [[directWrittenBefore n v] [directWrittenBefore m v] [succ m n]]
+     [[covered n v] [topWrites n v] [wantedGlobal v]]
+     [[covered n v] [writtenBefore n v]]]
     [[[readBeforeWrite n v] [reads n v]
-                            [not [writtenBefore n v]]
-                            [not [portGlobal v]]]]]))
+                            [not [covered n v]]
+                            [not [portGlobal v]]]
+     [[weakRead n v] [reads n v]
+                     [covered n v]
+                     [not [directWrittenBefore n v]]
+                     [not [portGlobal v]]]]]))
 
 \\ (value V) / (set V _) occurrences in a form's own expression, at any
 \\ depth (let, do, if, ...), but never inside a defun, a lambda or a
@@ -2519,13 +2628,16 @@
                     Prims     (find-primitives (append OutCode KL))
                     WriteK    (write-kl-file (@s Dir "/kernel.kl") OutCode)
                     UserOut   (write-user-files KLFiles KL Dir)
-                    \\ A full build prunes nothing, so pruned-init is 0.  The
-                    \\ argument is not optional: write-manifest took a fifth
-                    \\ argument when this was written and a sixth once stage 4
-                    \\ landed, and a short call here does not fail - Shen
+                    \\ A full build prunes nothing, so pruned-init is 0, and
+                    \\ InitOrder carries the check's own answer.  Neither
+                    \\ argument is optional: write-manifest took a fifth
+                    \\ argument when this was written, a sixth once stage 4
+                    \\ landed and a seventh once init-order= stopped being a
+                    \\ constant, and a short call here does not fail - Shen
                     \\ curries it into a closure this `let` then discards, so
                     \\ the full build silently wrote no manifest at all.
-                    WriteM    (write-manifest Dir UserOut KL Prims CNames 0)
+                    WriteM    (write-manifest Dir UserOut KL Prims CNames 0
+                                              InitOrder)
                     Restore   (set *maximum-print-sequence-size* MaxPrint)
                     Report    (pr (make-string "yggdrasil-shake: shaken=false defuns=~A~%"
                                                (ygg.len FootCode))
