@@ -52,20 +52,20 @@ jobs:
   oracle:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    env:
-      # shen-go stage-1 host, PINNED, for exactly the reason the Soufflé
-      # version below is pinned: an oracle whose host is "whatever master was
-      # that night" cannot attribute a red run to the rules, to the shake, or
-      # to the host. Taken 2026-09-22 from
-      #   git ls-remote https://github.com/pyrex41/shen-go.git refs/heads/master
-      # Moving this SHA is a deliberate act. docs/analysis-rules.md records
-      # that shen-go master has been broken before (`5edf47e` panics in
-      # cmd/yggdrasil-build; `24b2c00` was the last good one, and the numbers
-      # in that document were taken there). This job needs only `cmd/shen`,
-      # which builds and boots at the pin below.
-      SHEN_GO_REF: "22e6beca3c151c2d0c42c71286327338b0febc71"
     steps:
       - uses: actions/checkout@v4
+
+      # The stage-1 host is PINNED, for exactly the reason the Soufflé version
+      # below is pinned: an oracle whose host is "whatever master was that
+      # night" cannot attribute a red run to the rules, to the shake, or to the
+      # host. The SHA itself, and the note on moving it, live in
+      # .github/shen-go.ref -- one copy for the three workflows that need it.
+      - name: read the pinned shen-go SHA
+        run: |
+          set -euo pipefail
+          ref="$(grep -Eom1 '^[0-9a-f]{40}$' .github/shen-go.ref)"
+          echo "SHEN_GO_REF=$ref" >> "$GITHUB_ENV"
+          echo "shen-go pinned at $ref (.github/shen-go.ref)"
 
       - uses: actions/setup-go@v5
         with:

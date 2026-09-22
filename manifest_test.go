@@ -32,11 +32,23 @@ package main
 // emits one line per ELEMENT via ygg.mapc, so the same empty list prints
 // nothing at all and the key vanishes from the .txt. That is real: a full
 // build reaches every capability, so its cannot-reach list is empty and its
-// .txt has no cannot-reach= line, while the shaken build's does. So:
+// .txt has no cannot-reach= line, while the shaken build's does.
 //
-//	sexp: key sets identical, modulo `shaken` (full-build-only by design)
-//	txt:  a key may be missing from one build ONLY IF that build's sexp line
-//	      for the same key carries no values
+// So the test checks three things, in this order of strength:
+//
+//	WITHIN a build   every sexp key whose line carries values has its .txt
+//	                 key, and every .txt key has a sexp line. This is the
+//	                 direction that catches a writer which stops writing a key
+//	                 in BOTH modes -- symmetric, and still wrong.
+//	ACROSS the modes the sexp key sets are identical modulo `shaken`
+//	                 (full-build-only by design), and a .txt key missing from
+//	                 one mode only is legitimate only when that mode's sexp
+//	                 line for it is empty.
+//	A FLOOR          the handful of keys this repo's own consumers read by
+//	                 name must be present; see requiredTxtKeys. This is what
+//	                 catches a key dropped from write-manifest-sexp AND
+//	                 write-manifest-txt at once, where there is no surviving
+//	                 half to compare against.
 //
 // which pins the shape without pretending the two files have the same one.
 
@@ -57,6 +69,31 @@ var txtToSexpKey = map[string]string{
 	"primitive":          "primitives",
 	"primitive-optional": "primitives-optional",
 	"global":             "globals",
+}
+
+// sexpToTxtKey is the inverse, built once so the two directions cannot drift.
+var sexpToTxtKey = func() map[string]string {
+	inv := make(map[string]string, len(txtToSexpKey))
+	for txt, sexp := range txtToSexpKey {
+		inv[sexp] = txt
+	}
+	return inv
+}()
+
+// requiredTxtKeys are the manifest keys something in this repo reads BY NAME,
+// with the reader named. They are the floor under the two key-set comparisons
+// below: a key dropped from write-manifest-sexp and write-manifest-txt in the
+// same edit is symmetric in every comparison this file makes, and would sail
+// through -- while a stage-2 builder that greps for it gets nothing and builds
+// the wrong thing, or nothing, without a word. Adding a reader to this list is
+// cheap; removing an entry means the consumer went away, and the commit should
+// say so.
+var requiredTxtKeys = map[string]string{
+	"user":           "builders/{scheme,erlang,swift}/build.sh and builders/joy/lower.py read `user=` to find the program's KL",
+	"needs-eval":     "main.go webPreflight refuses a --web build on needs-eval=true, and builders.json gates conditional steps on `needs-eval=`",
+	"fn":             "scip.go userDefuns reads `fn=` for the user program's own defuns",
+	"init-order":     "initorder_test.go pins `init-order=checked`",
+	"computed-names": "analysis_test.go and footprint_test.go read `computed-names=`",
 }
 
 // txtManifestKeys is the key half of the line-oriented manifest, as a set.
@@ -118,6 +155,60 @@ func sexpManifestKeys(t *testing.T, dir string) map[string]bool {
 
 // sexpKeySet drops the values-present flag, leaving the key set.
 func sexpKeySet(m map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(m))
+	for k := range m {
+		out[k] = true
+	}
+	return out
+}
+
+// checkWithinBuild is the assertion the cross-mode comparisons cannot make.
+// They compare one build against the other, so a writer that stops writing a
+// key in BOTH modes stays perfectly symmetric and passes. Here the two FILES
+// of a single build are checked against each other instead: write-manifest-sexp
+// and write-manifest-txt are two renderings of the same data, so a key present
+// with values in one must be present in the other.
+//
+// sexp is the key -> "line carried values" map from sexpManifestKeys; the flag
+// is what makes an absent .txt key legitimate (ygg.mapc over [] prints nothing).
+func checkWithinBuild(t *testing.T, what string, txt, sexp map[string]bool) {
+	t.Helper()
+	for _, sk := range sortedKeys(sexp) {
+		if !sexp[sk] {
+			continue // empty list: the .txt legitimately has no line
+		}
+		tk := sk
+		if mapped, ok := sexpToTxtKey[sk]; ok {
+			tk = mapped
+		}
+		if !txt[tk] {
+			t.Errorf("%s build: yggdrasil.manifest has (%q ...) WITH values but "+
+				"yggdrasil.manifest.txt has no %s= line -- write-manifest-txt stopped "+
+				"writing a key write-manifest-sexp still writes", what, sk, tk)
+		}
+	}
+	for _, tk := range sortedKeys(txt) {
+		sk := tk
+		if mapped, ok := txtToSexpKey[tk]; ok {
+			sk = mapped
+		}
+		if _, ok := sexp[sk]; !ok {
+			t.Errorf("%s build: yggdrasil.manifest.txt has %s= lines but "+
+				"yggdrasil.manifest has no (%q ...) line -- either write-manifest-sexp "+
+				"stopped writing it, or the key was renamed in one file only "+
+				"(txtToSexpKey in this file is the spelling map)", what, tk, sk)
+		}
+	}
+	for _, k := range sortedKeys(mapKeys(requiredTxtKeys)) {
+		if !txt[k] {
+			t.Errorf("%s build: yggdrasil.manifest.txt has no %s= line at all.\n  %s",
+				what, k, requiredTxtKeys[k])
+		}
+	}
+}
+
+// mapKeys adapts a documented key list to sortedKeys' map[string]bool.
+func mapKeys(m map[string]string) map[string]bool {
 	out := make(map[string]bool, len(m))
 	for k := range m {
 		out[k] = true
@@ -214,6 +305,11 @@ func TestManifestKeySetsMatch(t *testing.T) {
 	}
 	checkTxt("full", fullTxt, shakenTxt, fullSexp)
 	checkTxt("shaken", shakenTxt, fullTxt, shakenSexp)
+
+	// And the direction the two calls above cannot see: each build's own two
+	// files against each other, plus the floor of keys this repo reads by name.
+	checkWithinBuild(t, "shaken", shakenTxt, shakenSexp)
+	checkWithinBuild(t, "full (--no-shake)", fullTxt, fullSexp)
 
 	// The one key only the full build may carry must actually be there, in
 	// both files: a full build that forgot to say shaken=false is a full

@@ -11,9 +11,10 @@ name: go
 #               intended, and the job asserts HOW MANY skip so the pipeline
 #               cannot quietly become 100% skips.
 #   host-test   ubuntu only, WITH a shen-go stage-1 host built the way
-#               parity-gate.yml builds it.  This is the job that actually
-#               runs the shake, the typecheck gate, the footprint/trace/scip
-#               checks and the analysis engines.
+#               parity-gate.yml builds it, and with scip-go installed so the
+#               scip check runs instead of skipping.  This is the job that
+#               actually runs the shake, the typecheck gate, the
+#               footprint/trace/scip checks and the analysis engines.
 #
 # Before this file grew host-test, every run of this workflow was green with
 # twenty SKIPs and zero shakes: per test nothing passed vacuously, per
@@ -37,26 +38,31 @@ env:
   #                     TestComputedNameNoneIsRecorded TestComputedNameWarnSentinel
   #   initorder_test.go TestInitOrderBadIsRefused TestInitOrderOKShakesAndRecords
   #   manifest_test.go  TestManifestKeySetsMatch
-  #   portable_test.go  TestRunCaptureHelper (helper subprocess, skips WITH a
+  #   parity_test.go    TestRunCaptureHelper (helper subprocess, defined at
+  #                     parity_test.go:78 and skipping at :80; it skips WITH a
   #                     host too -- it is re-executed by its parent test)
   #   prune_test.go     TestPruneInitDefaultIsInert TestPruneInitDropsOnlyWholeSets
   #                     TestPruneInitGoArtifactStillRuns
   #   scip_test.go      TestScipCheckFixtures
   #   trace_test.go     TestTraceIsOptional TestTraceCheckRules TestTraceCheckFixtures
   #   why_test.go       TestWhyPartialFixtures
-  # Raising this number is a deliberate act: it means a test that used to run
-  # everywhere now needs a host, and the reviewer should ask why.
-  NO_HOST_MAX_SKIPS: "21"
-  # With a host, only the helper subprocess above may skip.
+  # This is an EXACT count on ubuntu-latest, not a ceiling: a ceiling only
+  # catches a test that becomes host-gated, and lets a test that stops being
+  # host-gated -- or that stops existing -- slide under it unnoticed.  Moving
+  # this number in either direction is a deliberate act, and the commit that
+  # moves it should say which test moved and why.  (Merging two branches that
+  # each add a host-gated test therefore needs the count re-measured and the
+  # enumeration above re-written; that is the intended cost.)
+  NO_HOST_EXPECTED_SKIPS: "21"
+  # macos-latest and windows-latest may skip MORE than that, for reasons that
+  # have nothing to do with a host: portable_test.go:138 skips without python3
+  # and portable_test.go:382 skips without node.  Both are present on the
+  # ubuntu image, which is why the exact count is asserted there and a named
+  # slack of two is allowed on the other two runners.  The 21 was measured on
+  # macOS with both tools installed; it has never been measured on Windows.
+  NO_HOST_ENV_SLACK: "2"
+  # With a host AND scip-go, only the helper subprocess above may skip.
   HOST_MAX_SKIPS: "1"
-  # shen-go stage-1 host, pinned.  Taken from
-  #   git ls-remote https://github.com/pyrex41/shen-go.git refs/heads/master
-  # on 2026-09-22.  An unpinned "whatever master is tonight" host makes a red
-  # run unattributable; moving this SHA is a deliberate act, and the mover
-  # owns whatever the new host changes.  (docs/analysis-rules.md records a
-  # separate shen-go regression in cmd/yggdrasil-build; this job needs only
-  # cmd/shen, which builds and boots at this pin.)
-  SHEN_GO_REF: "22e6beca3c151c2d0c42c71286327338b0febc71"
 
 jobs:
   # Job id and check name deliberately unchanged: this is the check that
@@ -77,18 +83,37 @@ jobs:
       - run: go vet ./...
       - name: go test, and assert the skip count
         shell: bash
+        env:
+          RUNNER_OS_NAME: ${{ matrix.os }}
         run: |
           set -euo pipefail
           go test ./... -count=1 -v 2>&1 | tee out.txt
           # grep -c exits 1 on zero matches, which is a pass, not an error.
+          # '^--- SKIP' is anchored on purpose: a SUBtest skip is indented, and
+          # subtests skip for per-target reasons this count is not about.
           skips=$(grep -c '^--- SKIP' out.txt || true)
-          echo "host-less skips: $skips (max $NO_HOST_MAX_SKIPS)"
           grep '^--- SKIP' out.txt || true
-          if [ "$skips" -gt "$NO_HOST_MAX_SKIPS" ]; then
-            echo "::error::$skips tests skipped without a host, max is $NO_HOST_MAX_SKIPS."
+          lo="$NO_HOST_EXPECTED_SKIPS"
+          hi="$NO_HOST_EXPECTED_SKIPS"
+          if [ "$RUNNER_OS_NAME" != "ubuntu-latest" ]; then
+            hi=$((NO_HOST_EXPECTED_SKIPS + NO_HOST_ENV_SLACK))
+          fi
+          echo "host-less skips on $RUNNER_OS_NAME: $skips (expected $lo..$hi)"
+          if [ "$skips" -gt "$hi" ]; then
+            echo "::error::$skips tests skipped without a host, expected at most $hi."
             echo "::error::A pipeline that skips more than it runs is not a pass. Either the"
-            echo "::error::new test should not be host-gated, or bump NO_HOST_MAX_SKIPS in this"
-            echo "::error::file and say in the commit message which test moved and why."
+            echo "::error::new test should not be host-gated, or raise NO_HOST_EXPECTED_SKIPS"
+            echo "::error::in this file and say in the commit message which test moved and why."
+            echo "::error::If the extra skip is an environment one (python3, node), it belongs"
+            echo "::error::in NO_HOST_ENV_SLACK with the tool named, not in the host count."
+            exit 1
+          fi
+          if [ "$skips" -lt "$lo" ]; then
+            echo "::error::only $skips tests skipped without a host, expected $lo."
+            echo "::error::Fewer skips is not automatically good news: a host-gated test that"
+            echo "::error::stopped being host-gated, or that was deleted, lands here too. Check"
+            echo "::error::the enumeration in this file against the suite, then lower"
+            echo "::error::NO_HOST_EXPECTED_SKIPS in the same commit that explains it."
             exit 1
           fi
       - name: targets smoke (no host needed)
@@ -98,13 +123,26 @@ jobs:
   host-test:
     name: with a Shen stage-1 host
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Generous on purpose. The hosted suite is ~9 minutes on an idle M-series
+    # laptop and 1483s (24.7 min) on the same laptop with two other builds
+    # running; a 2-vCPU ubuntu runner is closer to the second number than the
+    # first. See the -timeout below -- the job timeout alone does not save us,
+    # because the test binary aborts itself at Go's default 10m first.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version: "1.27.x"
+
+      # One pin, one file, read by all three workflows that need a host.
+      - name: read the pinned shen-go SHA
+        run: |
+          set -euo pipefail
+          ref="$(grep -Eom1 '^[0-9a-f]{40}$' .github/shen-go.ref)"
+          echo "SHEN_GO_REF=$ref" >> "$GITHUB_ENV"
+          echo "shen-go pinned at $ref (.github/shen-go.ref)"
 
       # Pinned checkout, then checkout by SHA -- not `--depth 1 -b master`.
       # Full clone because a shallow one has no object to check out by SHA.
@@ -121,19 +159,50 @@ jobs:
         run: go build -o "$GITHUB_WORKSPACE/../shen-go-host" ./cmd/shen
         working-directory: ${{ github.workspace }}/../shen-go
 
+      # scip-go is a TEST-harness dependency, not a CLI one: README.md records
+      # that yggdrasil falls back to go/ast without it.  But scip_test.go gates
+      # TestScipCheckFixtures on `exec.LookPath("scip-go")` at top level, and
+      # the ubuntu image does not ship it -- so without this step the scip
+      # check silently skips here exactly as it did before this job existed,
+      # which is the thing this workflow is for.  Version pinned for the same
+      # reason as the host.  The module moved from the `sourcegraph` path to
+      # `scip-code` (docs/verification-guide.md); v0.2.7 is the version the
+      # guide's numbers were taken with.
+      - name: install scip-go (pinned)
+        run: |
+          set -euo pipefail
+          go install github.com/scip-code/scip-go/cmd/scip-go@v0.2.7
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      # Fail here, with a clear cause, rather than one step later as a
+      # mystery extra SKIP.
+      - name: scip-go is on PATH
+        run: command -v scip-go
+
       - name: go test with a host, and assert the skip count
         env:
           YGGDRASIL_HOST: ${{ github.workspace }}/../shen-go-host
           YGGDRASIL_SHEN_GO_DIR: ${{ github.workspace }}/../shen-go
         run: |
           set -euo pipefail
-          go test ./... -count=1 -v 2>&1 | tee host-out.txt
+          # -timeout is NOT optional here. Go's default is 10 minutes per test
+          # BINARY and the hosted suite does not fit in it: measured 1483s on
+          # an M-series laptop, where TestTraceCheckFixtures alone runs four
+          # fixtures on every usable stage-2 runtime. Without this flag the
+          # binary panics with "test timed out after 10m0s" mid-test and the
+          # job goes red having found nothing -- which is exactly what the
+          # first version of this job did.
+          go test ./... -count=1 -v -timeout 60m 2>&1 | tee host-out.txt
           skips=$(grep -c '^--- SKIP' host-out.txt || true)
           echo "hosted skips: $skips (max $HOST_MAX_SKIPS)"
           grep '^--- SKIP' host-out.txt || true
           if [ "$skips" -gt "$HOST_MAX_SKIPS" ]; then
             echo "::error::$skips tests skipped WITH a host, max is $HOST_MAX_SKIPS."
             echo "::error::A host-gated test that still skips here is a test that never runs"
-            echo "::error::anywhere. Fix the gate, or the host, before touching this number."
+            echo "::error::anywhere. The skipped names are printed above; the usual causes are"
+            echo "::error::(a) a tool this job does not install -- scip-go, python3, node --"
+            echo "::error::in which case install it here rather than raising this number, and"
+            echo "::error::(b) the pinned shen-go failing to build a stage-2 artifact, which is"
+            echo "::error::a real regression at the pin and not a reason to relax the gate."
             exit 1
           fi
