@@ -1,0 +1,18 @@
+# The shen-go stage-1 host pin: ONE SHA, read by every workflow that needs a
+# Shen host.  Three workflows need it (go.yml's host-test, analysis-oracle.yml,
+# parity-gate.yml); three hand-copied constants with three hand-written
+# comments would drift, and the next mover would have to find all three.  The
+# steps that read this file take the first bare 40-hex line below.
+#
+# Why pinned at all: shen-go doubles as the stage-1 host, so an unpinned
+# "whatever master is tonight" makes a red run unattributable -- rules, shake,
+# rendering, or host?  It is the same reason analysis-oracle.yml pins its
+# Soufflé version.  docs/analysis-rules.md records that shen-go master has been
+# broken before (`5edf47e` panics in cmd/yggdrasil-build; `24b2c00` was the
+# last good one).  The jobs here need `cmd/shen`, which builds and boots at the
+# pin below.
+#
+# Moving this SHA is a deliberate act, and the mover owns whatever the new host
+# changes.  Taken 2026-09-22 from
+#   git ls-remote https://github.com/pyrex41/shen-go.git refs/heads/master
+22e6beca3c151c2d0c42c71286327338b0febc71
