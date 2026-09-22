@@ -527,7 +527,7 @@ declare and satisfy for them to apply is a five-level ladder:
 | level | what | port obligation |
 |---|---|---|
 | 0 | builder contract | load `kernel.kl`, call `shen.initialise`, run user files in order |
-| 1 | self-description in `builders.json` | truthful `port_reads`, `port_writes`, `special_forms`, `native_overrides` (+ what they call back into), `call_style`, `dispatch`, each with a verified flag and provenance |
+| 1 | self-description in `builders.json` | truthful `port_reads`, `port_writes`, `special_forms`, `native_overrides` (+ what they call back into), `call_style`, `dispatch`, each with a `<key>_source` saying where it was read off and a `<key>_checked_by` naming the test that fails when it drifts, or `none` |
 | 2 | runtime trace | flush open streams at exit, or declare that you cannot |
 | 3 | static inclusion | an extractor producing `node`/`edge`/`body` facts from a built artifact |
 | 4 | behavioural parity | already met by every target with a golden |
@@ -539,10 +539,20 @@ port must enumerate them or be reported unsound at level 1. And
 **dispatch**: a port that links the whole kernel behind the slice is not
 running the shaken program, and every higher check is vacuous for it.
 
-The output is a conformance table per port, one line per obligation,
-marked verified, declared, unsupported, or vacuous. The rows marked
-*declared* rather than *verified* are, exactly, what that port adds to the
-core of trust.
+The output is `yggdrasil contract --target P`: one line per level-1 fact,
+marked **verified** (a `_checked_by` names a test; read the string for what
+that test catches and in which direction), **declared** (stated, with or
+without a source, and nothing checks it), or **unknown** (the key is
+absent, which is not the same claim as "this port has none"). Levels 2 to 4
+are commands rather than declarations, and the report names them rather
+than pretending to have run them. The rows marked *declared* rather than
+*verified* are, exactly, what that port adds to the core of trust.
+
+There is no `_verified` boolean. There were two, spelling one word over two
+unrelated predicates -- "each entry was read off a named source line" and
+"the list equals the symbols `InstallKernelFast` rebinds" -- and one of the
+two was false at the time it was read. Provenance and the name of the check
+are now separate strings, because they are separate facts.
 
 Design note: [port-contract.md](port-contract.md), including a staging
 plan whose last step is taking shen-lua through the ladder.
@@ -567,7 +577,7 @@ down and reported but not established by anything here.
 | The backend compiled the same kept functions the same way in the full and shaken builds | evidence, and only for compositional backends | the KL-level graph recovered from the generated Go, with the two-name delta accounted for | 9 |
 | The shaken artifact computes what the full program computes | evidence | the parity gate against goldens, across targets, boots and passes | 10 |
 | No function name is computed at runtime | assumed, reported | `computed-names=` in the manifest; the shake warns when it is not `none` | 7 |
-| The port's self-description is truthful | assumed, reported | each `builders.json` fact carries a verified flag and a provenance; only shen-go's `port_reads` is verified today | 11 |
+| The port's self-description is truthful | assumed, reported | each `builders.json` fact carries a `_source` and a `_checked_by`, and `yggdrasil contract --target P` prints both; only shen-go's `port_reads` and `native_overrides` name a test today, and twelve targets declare no list of their own and inherit `_default`, whose `_checked_by` is `none` | 11 |
 | The backend compiles KL correctly | assumed | the port's own kernel test suite; the same assumption for the full and the shaken program | 2, 9 |
 
 The last row is the one Bruno Deferrari raised on

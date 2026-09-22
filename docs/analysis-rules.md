@@ -664,11 +664,15 @@ cannot drift apart.
    them — which is what `prune_test.go` asserts.
 
    **`port_reads` provenance.** `portReads` is a fact about a backend, so it
-   lives next to the backend: a `"port_reads"` array on each target in
-   `builders.json`, with `"port_reads_verified"` saying whether it was read
-   off that port's runtime. Today exactly one target is verified:
+   lives next to the backend: a `"port_reads"` array in `builders.json`,
+   with `"port_reads_source"` naming the runtime lines it was read off and
+   `"port_reads_checked_by"` naming the test that fails when it drifts (or
+   `none`). A list whose `_checked_by` is `none` is *declared*, never
+   verified — see docs/port-contract.md for why the old
+   `port_reads_verified` boolean had to go. Today exactly one target
+   declares a list of its own:
 
-   - **`go`** (`port_reads_verified: true`), five entries, each read out of
+   - **`go`**, five entries, each read out of
      shen-go's `kl/` package: `*stinput*` (`PrimReadByte`'s EOF sentinel in
      `kl/primitives.go`), `*stoutput*` (the port global bound in the same
      file), `*home-directory*` (`ResolveHomePath`, which `open`, `load-file`
@@ -679,13 +683,22 @@ cannot drift apart.
      table and the arity table are therefore live on `go` because its port
      reads them, not because a rule says tables are special; the
      external-symbols `put` is not a `set` and so is never prunable anyway.
-   - **every other target** (`port_reads_verified: false`) carries a
-     conservative superset: `go`'s five plus every global the kernel's own
-     defuns read in the full boot (`readsIn` over the unshaken kernel,
-     intersected with what the initialiser writes) — 35 entries. Against that
-     list only `shen.*call*` and `shen.*system*` are ever dead, so pruning is
-     nearly a no-op until someone reads those runtimes. A `shake` with no
-     `--target` uses the union of every list, which is that same superset.
+   - **every other target** declares no `port_reads` at all and inherits
+     the `_default` block, which holds one conservative superset: `go`'s
+     five plus every global the kernel's own defuns read in the full boot
+     (`readsIn` over the unshaken kernel, intersected with what the
+     initialiser writes) — 35 entries, `port_reads_checked_by: none`.
+     Against that list only `shen.*call*` and `shen.*system*` are ever dead,
+     so pruning is nearly a no-op until someone reads those runtimes. A
+     `shake` with no `--target` uses the union of every target's *effective*
+     list, which is that same superset.
+
+     The superset is stated once. It used to be pasted byte-for-byte into
+     twelve target entries, which made one heuristic look like twelve
+     independent measurements; a target that has declared nothing now looks
+     like a target that has declared nothing. `yggdrasil.shen` keeps its own
+     copy for a direct host invocation with no Go driver to push a list in,
+     and `TestPortReadsDefaultMatchesShen` fails if the two diverge.
 
    **Measured**, `--prune-init --target go`, over all sixteen fixtures that
    shake (init-order-bad is refused on purpose). Of the 35 forms the
@@ -719,8 +732,9 @@ cannot drift apart.
    **Why it is not on by default.** The parity gate decides that per target,
    and it cannot decide it from a design note. A `port_reads` list that is
    missing an entry is a silent miscompile — the artifact boots with a global
-   unbound and fails only when something reaches it — so `port_reads_verified`
-   is the gate's precondition, and only `go` has it.
+   unbound and fails only when something reaches it — so a `port_reads` the
+   port declared itself *and* a test checks (`portReadsVerified` in
+   `prune.go`) is the gate's precondition, and only `go` has both.
 5. **SCIP level-2 oracle.** — **done.**
    `yggdrasil scip-check PROG OUTDIR --target go` builds the program twice
    with the *same* stage-2 builder — `A*`, the shaken slice, and `A`, the

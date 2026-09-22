@@ -93,6 +93,7 @@ yggdrasil run   prog.shen out/ --target js     # build, then run it (prints stdo
 yggdrasil parity prog.shen out/                # behavioural parity gate across targets
 yggdrasil scip-check prog.shen out/ --target go # stage-5 oracle: the shake's footprint vs the artifact's own graph, by name
 yggdrasil why    prog.shen --trace read        # what each part of the program costs in kernel defuns
+yggdrasil contract --target go                 # what the port declares, where it came from, what checks it
 yggdrasil targets                              # list stage-2 targets
 ```
 
@@ -109,6 +110,7 @@ yggdrasil targets                              # list stage-2 targets
 | `shake\|build\|run … --trace` | weave the trace advice into the emitted KL: every defun records its entry and every `(value V)` its read, to `./yggdrasil.trace` at run time. Records `traced=true` / `trace-file=` in both manifests; the default (untraced) output is byte-identical to a build without the flag. (Unrelated to `why --trace FN`, which takes a function name and prints a call chain.) |
 | `shake … --no-shake` | emit the FULL program instead of the shaken slice: every kernel defun and the eval-capable initialiser, no trimming, manifest `shaken=false`. The reference build for `scip-check`; the default path is unchanged and its artifacts are byte-identical. Mutually exclusive with `--trace`, which weaves into a slice |
 | `scip-check PROG OUTDIR --target go` | stage-5 level-2 oracle: build the shaken program and the full program with the same builder, recover the KL-level call graph from each generated module with `go/ast` (the run-time defun bindings are the nodes, the symbol occurrences in their bodies — in any position, as the shake's own rules count them — are the edges), and assert by name that every defun the shake kept is reachable in the graph the backend emitted, and that everything the shaken build reaches the full build reaches too. The only subtraction is the target's declared `special_forms` in [`builders.json`](builders.json) — the names the port lowers with no symbol lookup, each cited to a line of the port — together with whatever only those reach, plus the user's own defuns and the synthesised `shen.initialise`; the declaration is itself audited, and any other residue is printed name by name and fails. Prints `OK footprint=N reachable=N accounted=N` or `FAIL` with `kl-delta-missing` / `kl-delta-extra` / `kl-missing-in-full` / `special-forms-unknown` lines — see [`docs/analysis-rules.md`](docs/analysis-rules.md) |
+| `contract --target T` | the level-1 half of the port contract for `T`: one line per declared fact with its status (`verified` = a named test fails when it drifts, `declared` = stated and unchecked, `unknown` = not declared at all), its `_source`, its `_checked_by`, and for `native_overrides` the boot phase after which the natives are installed — see [`docs/port-contract.md`](docs/port-contract.md) |
 | `targets` | list available targets (`lisp`/`lua`/`go`/`joy`/`erlang`/`rust`/`js`/`julia`/`scheme`/`swift`/`truffle`/`truffle-native`/`c`) |
 
 The stage-1 **host** defaults to the sibling `../shen-cl/bin/sbcl/shen`
@@ -208,12 +210,15 @@ program, or when the **port's own runtime** reads it natively — shen-go's
 `fn` reads `shen.*lambdatable*` from Go, its `arity` reads
 `*property-vector*`, its `open` resolves paths through `*home-directory*`.
 That last list is per-backend data, so it lives in `builders.json` next to
-the backend, as a **`"port_reads"`** array with a `"port_reads_verified"`
-flag saying whether it was read off that port's runtime (today only `go`'s
-was; every other target carries a conservative superset). With no `--target`
-the union of every list is used, which is the only choice sound for a slice
-that may be built anywhere; `--target T` uses `T`'s own, which is smaller
-and prunes more.
+the backend, as a **`"port_reads"`** array with a `"port_reads_source"`
+naming the runtime lines it was read off and a `"port_reads_checked_by"`
+naming the test that fails when it drifts. Today only `go` declares one;
+every other target inherits the `_default` block's conservative superset,
+stated once, with `checked_by: none` — declared, not verified.
+`yggdrasil contract --target T` prints which is which. With no `--target`
+the union of every target's effective list is used, which is the only
+choice sound for a slice that may be built anywhere; `--target T` uses
+`T`'s own, which is smaller and prunes more.
 
 Only a form that is exactly `(set V Lit)` for an atomic `Lit` is ever
 dropped. A form whose value is a call — `(set *property-vector* (vector

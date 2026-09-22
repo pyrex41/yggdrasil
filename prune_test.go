@@ -18,6 +18,7 @@ package main
 //     otherwise a broken stage-2 environment would read as a pruning bug.
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -231,13 +232,25 @@ func TestPruneInitGoArtifactStillRuns(t *testing.T) {
 	}
 }
 
-// Every target must carry a port_reads list, and the union a target-agnostic
-// shake uses must contain every one of them. A target added without the key
-// would otherwise prune against an empty list and drop everything.
+// Every target must RESOLVE to a port_reads list, and the union a
+// target-agnostic shake uses must contain every one of them. A target added
+// without a resolvable list would prune against an empty list and drop
+// everything.
+//
+// Note what this does NOT require any more: that every target carry its own
+// copy of the key. Twelve of them used to, byte for byte, which made a
+// placeholder look like thirteen independent measurements. They now declare
+// nothing and inherit builders.json's `_default`, and the assertion moved from
+// "the key is present" to "the effective list is non-empty and inside the
+// union" -- the property stage 4 actually needs.
 func TestPortReadsAreDeclaredForEveryTarget(t *testing.T) {
-	builders, err := loadBuilders()
+	builders, defaults, err := parseBuilders()
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(defaults.PortReads) == 0 {
+		t.Fatalf("builders.json has no %s.port_reads: every target without its own list "+
+			"would prune against nothing", builderDefaultsKey)
 	}
 	union, err := portReadsFor("")
 	if err != nil {
@@ -247,21 +260,482 @@ func TestPortReadsAreDeclaredForEveryTarget(t *testing.T) {
 	for _, v := range union {
 		inUnion[v] = true
 	}
-	for name, b := range builders {
-		if len(b.PortReads) == 0 {
-			t.Errorf("target %s has no port_reads in builders.json (stage 4 would prune against an empty list)", name)
+	for name := range builders {
+		reads, err := portReadsFor(name)
+		if err != nil {
+			t.Errorf("portReadsFor(%s): %v", name, err)
 			continue
 		}
-		for _, v := range b.PortReads {
+		if len(reads) == 0 {
+			t.Errorf("target %s resolves to no port_reads (stage 4 would prune against an empty list)", name)
+			continue
+		}
+		for _, v := range reads {
 			if !inUnion[v] {
 				t.Errorf("target %s reads %s but the union does not contain it", name, v)
 			}
 		}
-		if b.PortReadsVerified && name != "go" {
-			t.Errorf("target %s claims port_reads_verified; only go's list has been read off a runtime", name)
+		if portReadsVerified(name) && name != "go" {
+			t.Errorf("target %s claims a verified port_reads; only go's list has been read off a runtime", name)
 		}
 	}
 	if !portReadsVerified("go") {
-		t.Errorf("go's port_reads was verified against shen-go's kl/ package; builders.json should say so")
+		t.Errorf("go's port_reads was read off shen-go's kl/ package and is covered by a named " +
+			"test; builders.json's port_reads_checked_by should say so")
+	}
+}
+
+// The twelve copies are gone, and must stay gone. A target that re-adds the
+// default list verbatim has added no information and reintroduced the drift
+// the `_default` block exists to prevent.
+func TestOnlyDeclaredPortReadsDifferFromTheDefault(t *testing.T) {
+	builders, defaults, err := parseBuilders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	same := func(a, b []string) bool {
+		if len(a) != len(b) {
+			return false
+		}
+		for i := range a {
+			if a[i] != b[i] {
+				return false
+			}
+		}
+		return true
+	}
+	raw, err := rawBuilders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, b := range builders {
+		if len(b.PortReads) == 0 {
+			// Inheriting is the point -- but an EMPTY list is not the same
+			// thing as an absent key to a reader, and the file must not
+			// contain one. effectivePortReads reads `[]` as "declares
+			// nothing"; a human reading builders.json reads it as "this port
+			// reads no globals", which would be a licence to prune every
+			// init form. Keep the two readings from ever meeting.
+			if _, present := raw[name]["port_reads"]; present {
+				t.Errorf("target %s declares an EMPTY port_reads. Delete the key: "+
+					"effectivePortReads treats it as no declaration and inherits %s, "+
+					"so the file would say one thing and the shake do another.",
+					name, builderDefaultsKey)
+			}
+			continue
+		}
+		if same(b.PortReads, defaults.PortReads) {
+			t.Errorf("target %s repeats builders.json %s.port_reads verbatim. Delete the key: "+
+				"a copy of the default is not a declaration, and two copies drift.",
+				name, builderDefaultsKey)
+		}
+		if !factSourced(b.PortReadsSource) {
+			t.Errorf("target %s declares its own port_reads but no port_reads_source. "+
+				"A list with no provenance is the placeholder again, wearing a target's name.", name)
+		}
+	}
+}
+
+// yggdrasil.shen carries the same conservative list, for a direct host
+// invocation with no Go driver to push one in. builders.json's `_default` is
+// the authority; this is what catches the copy drifting from it.
+func TestPortReadsDefaultMatchesShen(t *testing.T) {
+	_, defaults, err := parseBuilders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := os.ReadFile("yggdrasil.shen")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shen := shenPortReadsDefault(t, string(src))
+
+	want, got := defaults.PortReads, shen
+	if len(want) != len(got) {
+		t.Errorf("builders.json %s.port_reads has %d names, yggdrasil.shen's "+
+			"(set ygg.*port-reads* ...) has %d", builderDefaultsKey, len(want), len(got))
+	}
+	for i := 0; i < len(want) && i < len(got); i++ {
+		if want[i] != got[i] {
+			t.Fatalf("the two default port_reads lists diverge at position %d: "+
+				"builders.json says %q, yggdrasil.shen says %q", i, want[i], got[i])
+		}
+	}
+	if t.Failed() {
+		inShen := map[string]bool{}
+		for _, v := range got {
+			inShen[v] = true
+		}
+		for _, v := range want {
+			if !inShen[v] {
+				t.Errorf("  only in builders.json %s: %s", builderDefaultsKey, v)
+			}
+		}
+		inJSON := map[string]bool{}
+		for _, v := range want {
+			inJSON[v] = true
+		}
+		for _, v := range got {
+			if !inJSON[v] {
+				t.Errorf("  only in yggdrasil.shen: %s", v)
+			}
+		}
+	}
+}
+
+// shenPortReadsDefault reads the symbol list out of yggdrasil.shen's
+// (set ygg.*port-reads* [...]) form. The form is one bracketed list of
+// self-evaluating symbols with `\\` line comments in it, so dropping the
+// comments and splitting on whitespace is the whole parse.
+func shenPortReadsDefault(t *testing.T, src string) []string {
+	t.Helper()
+	const open = "(set ygg.*port-reads*"
+	i := strings.Index(src, open)
+	if i < 0 {
+		t.Fatalf("yggdrasil.shen has no %s form", open)
+	}
+	rest := src[i+len(open):]
+	lb := strings.Index(rest, "[")
+	rb := strings.Index(rest, "]")
+	if lb < 0 || rb < lb {
+		t.Fatalf("yggdrasil.shen's %s form has no [...] list", open)
+	}
+	var out []string
+	for _, line := range strings.Split(rest[lb+1:rb], "\n") {
+		if c := strings.Index(line, `\\`); c >= 0 {
+			line = line[:c]
+		}
+		for _, f := range strings.Fields(line) {
+			if f = strings.TrimLeft(f, "["); f != "" {
+				out = append(out, f)
+			}
+		}
+	}
+	if len(out) == 0 {
+		t.Fatalf("yggdrasil.shen's %s form parsed as empty", open)
+	}
+	return out
+}
+
+// native_overrides had a `_verified: true` flag, a provenance string, and no
+// consumer whatsoever -- nothing read the key, so nothing could contradict it.
+// It was wrong: the declared list was four symbols short of what
+// InstallKernelFast actually rebinds (<-vector, ==, @p, shen.hds=?). This is
+// the test the report's `checked_by` names, and the reason the word "verified"
+// now costs something.
+//
+// Skipped without a sibling shen-go checkout: the fact is about that source,
+// and there is nothing to compare against when it is absent.
+func TestNativeOverridesMatchKernelFast(t *testing.T) {
+	builders, err := loadBuilders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := builders["go"]
+	if len(b.NativeOverrides) == 0 {
+		t.Fatal("builders.json's go entry declares no native_overrides")
+	}
+	if b.NativeOverridesInstalledAfter != "shen.initialise" {
+		t.Errorf("go's native_overrides_installed_after is %q; shen-go's generated main runs "+
+			"shen.initialise before InstallKernelFast, so the overrides are installed AFTER "+
+			"boot and the kernel's KL bodies do run", b.NativeOverridesInstalledAfter)
+	}
+
+	path := filepath.Join(siblingDir("go", b), "kl", "kernelfast.go")
+	src, err := os.ReadFile(path)
+	if err != nil {
+		t.Skipf("no sibling shen-go checkout to read %s from", path)
+	}
+	got := kernelFastRebindings(t, string(src))
+
+	declared := map[string]bool{}
+	for _, n := range b.NativeOverrides {
+		declared[n] = true
+	}
+	for n := range got {
+		if !declared[n] {
+			t.Errorf("InstallKernelFast rebinds %q, which builders.json's native_overrides "+
+				"does not list. Level-3 delta accounting would then treat %q as a kept "+
+				"defun that is never entered, i.e. a finding.", n, n)
+		}
+	}
+	for n := range declared {
+		if !got[n] {
+			t.Errorf("builders.json lists %q as a native override, but InstallKernelFast in "+
+				"%s does not rebind it", n, path)
+		}
+	}
+	if !t.Failed() {
+		t.Logf("%d native overrides, matching InstallKernelFast in %s", len(declared), path)
+	}
+}
+
+// kernelFastRebindings returns the kernel names InstallKernelFast binds to
+// natives. Every rebinding in that function goes through one of five calls,
+// each taking the KL name as its first string literal.
+var kernelFastRebindRe = regexp.MustCompile(
+	`(?:overridePrimitive|overrideNative|restoreCanonicalPrimitive|canonicalOrMake)\("([^"]+)"|` +
+		`BindSymbolFunc\(MakeSymbol\("([^"]+)"\)`)
+
+func kernelFastRebindings(t *testing.T, src string) map[string]bool {
+	t.Helper()
+	const fn = "func InstallKernelFast()"
+	i := strings.Index(src, fn)
+	if i < 0 {
+		t.Skipf("the sibling shen-go's kl/kernelfast.go has no %s; it has been restructured "+
+			"and native_overrides needs re-deriving by hand", fn)
+	}
+	// Bound the scan at the function's closing brace. gofmt puts it at column
+	// zero, so the first "\n}" after the header ends the body. Scanning to EOF
+	// happened to be correct only because InstallKernelFast is the last
+	// function in the file; a helper appended after it that called
+	// overridePrimitive would have been counted as a kernel rebinding.
+	body := src[i:]
+	if j := strings.Index(body, "\n}"); j >= 0 {
+		body = body[:j+2]
+	} else {
+		t.Skipf("%s has no closing brace at column zero; kl/kernelfast.go is not gofmt'd "+
+			"and this parser cannot tell the function's body from the rest of the file", fn)
+	}
+	out := map[string]bool{}
+	for _, m := range kernelFastRebindRe.FindAllStringSubmatch(body, -1) {
+		if m[1] != "" {
+			out[m[1]] = true
+		} else if m[2] != "" {
+			out[m[2]] = true
+		}
+	}
+	if len(out) == 0 {
+		t.Skipf("parsed no rebindings out of %s; the parser no longer matches its shape", fn)
+	}
+	return out
+}
+
+// The contract report is the consumer native_overrides did not have. It must
+// print the phase: an override list with no "installed after what" reads as
+// "these KL bodies never run", and on shen-go they do run -- shen.initialise
+// executes before InstallKernelFast.
+func TestContractReportNamesSourceAndPhase(t *testing.T) {
+	builders, defaults, err := parseBuilders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := rawBuilders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := func(target string) map[string]contractRow {
+		out := map[string]contractRow{}
+		for _, r := range contractRows(raw[target], raw[builderDefaultsKey], builders[target], defaults) {
+			out[r.key] = r
+		}
+		return out
+	}
+
+	goRows := rows("go")
+	for _, key := range []string{"port_reads", "native_overrides"} {
+		r, ok := goRows[key]
+		if !ok {
+			t.Fatalf("the contract report has no %s row for go", key)
+		}
+		if r.status != "verified" {
+			t.Errorf("go's %s reports %q; it has a source and a named test, so it is verified",
+				key, r.status)
+		}
+		if !factSourced(r.source) {
+			t.Errorf("go's %s row prints no source", key)
+		}
+		if !factChecked(r.checkedBy) {
+			t.Errorf("go's %s row prints no checked_by", key)
+		}
+	}
+	if nov := goRows["native_overrides"]; !strings.Contains(nov.summary, "installed_after=shen.initialise") {
+		t.Errorf("go's native_overrides row does not say when the natives are installed: %q", nov.summary)
+	}
+
+	// A fact nobody declared must read as unknown, not as a silent absence
+	// and not as a pass.
+	for _, key := range []string{"port_writes", "native_deps", "call_style", "dispatch"} {
+		r, ok := goRows[key]
+		if !ok {
+			t.Fatalf("the contract report omits the undeclared key %s entirely; absence of a "+
+				"fact must look like absence, which means a row saying unknown", key)
+		}
+		if r.status != "unknown" {
+			t.Errorf("%s is not declared for go but the report says %q", key, r.status)
+		}
+	}
+
+	// An inheriting target must say so, and must never read as verified.
+	luaRows := rows("lua")
+	pr := luaRows["port_reads"]
+	if !pr.inherited {
+		t.Errorf("lua inherits port_reads from %s; the report must say so", builderDefaultsKey)
+	}
+	if pr.status != "declared" {
+		t.Errorf("lua's inherited port_reads reports %q; an unmeasured placeholder is declared, "+
+			"never verified", pr.status)
+	}
+	if factChecked(defaults.PortReadsCheckedBy) {
+		t.Errorf("builders.json %s.port_reads claims a checked_by (%q); nothing checks the "+
+			"conservative default against any runtime", builderDefaultsKey, defaults.PortReadsCheckedBy)
+	}
+}
+
+// The declared-empty case, on both readers at once. This is the case the file
+// does not contain (TestOnlyDeclaredPortReadsDifferFromTheDefault keeps it
+// out) and the one where the two implementations of the inheritance rule used
+// to disagree: the report said "declared, 0 entries" while portReadsFor
+// returned the 35-name default, i.e. the report built to make the data
+// trustworthy stated the opposite of what the shaker would do. Synthetic
+// inputs, because the point is precisely that builders.json has no such target
+// and never should.
+func TestDeclaredEmptyPortReadsInheritsInBothReaders(t *testing.T) {
+	_, defaults, err := parseBuilders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(defaults.PortReads) == 0 {
+		t.Fatalf("builders.json %s carries no port_reads to inherit", builderDefaultsKey)
+	}
+	empty := builder{PortReads: []string{}}
+
+	// Reader 1: the shaker.
+	eff := effectivePortReads(empty, defaults)
+	if len(eff) != len(defaults.PortReads) {
+		t.Fatalf("effectivePortReads on a declared-empty target returned %d names, want the "+
+			"%d-name default", len(eff), len(defaults.PortReads))
+	}
+
+	// Reader 2: the contract report, on a raw block that states the key as an
+	// empty list.
+	block := map[string]json.RawMessage{
+		"port_reads":        json.RawMessage(`[]`),
+		"port_reads_source": json.RawMessage(`"a port that measured nothing"`),
+	}
+	raw, err := rawBuilders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := contractFactRow("port_reads", block, raw[builderDefaultsKey], empty, defaults)
+	if !r.inherited {
+		t.Errorf("the contract report calls a declared-empty port_reads a declaration of its "+
+			"own (%q); effectivePortReads inherits %s, and the report must say what the "+
+			"shaker will do", r.summary, builderDefaultsKey)
+	}
+	if want := describeStrings(defaults.PortReads); r.summary != want {
+		t.Errorf("the contract report summarises a declared-empty port_reads as %q, "+
+			"effectivePortReads resolves it to %q", r.summary, want)
+	}
+	if r.status == "verified" {
+		t.Errorf("a target that declared nothing reports %q", r.status)
+	}
+	var noted bool
+	for _, n := range r.notes {
+		if strings.Contains(n, "empty list") {
+			noted = true
+		}
+	}
+	if !noted {
+		t.Errorf("the report inherits over a declared-empty list without saying it did; "+
+			"the reader sees `\"port_reads\": []` in the file and a 35-name row here. notes=%v",
+			r.notes)
+	}
+
+	// And a target that DOES declare a list is still its own, on both sides.
+	own := builder{PortReads: []string{"*stinput*"}}
+	if got := effectivePortReads(own, defaults); len(got) != 1 {
+		t.Errorf("effectivePortReads overrode a declared one-name list: %v", got)
+	}
+	ownBlock := map[string]json.RawMessage{
+		"port_reads":        json.RawMessage(`["*stinput*"]`),
+		"port_reads_source": json.RawMessage(`"measured"`),
+	}
+	if r := contractFactRow("port_reads", ownBlock, raw[builderDefaultsKey], own, defaults); r.inherited {
+		t.Errorf("the contract report inherited over a target's own declared list: %q", r.summary)
+	}
+}
+
+// The parser that produces the `verified` in `native_overrides verified` must
+// read InstallKernelFast's body and nothing else. It used to scan from the
+// function header to END OF FILE, which was correct only by the accident that
+// InstallKernelFast is the last function in kl/kernelfast.go: a helper
+// appended after it that called overridePrimitive would have been counted as a
+// kernel rebinding, and the fact would have gone on reading `verified` while
+// the test compared against a list that is not the one the kernel installs.
+// shen-go is read-only, so the reintroduction is caught here on synthetic
+// source rather than by waiting for that file to grow a helper.
+func TestKernelFastRebindingsStopsAtTheClosingBrace(t *testing.T) {
+	const src = `package kl
+
+func InstallKernelFast() {
+	overridePrimitive("inside-one", nil)
+	BindSymbolFunc(MakeSymbol("inside-two"), nil)
+}
+
+func someHelperAddedLater() {
+	overridePrimitive("outside", nil)
+	overrideNative("also-outside", nil)
+}
+`
+	got := kernelFastRebindings(t, src)
+	want := map[string]bool{"inside-one": true, "inside-two": true}
+	for n := range want {
+		if !got[n] {
+			t.Errorf("kernelFastRebindings missed %q, which is inside InstallKernelFast", n)
+		}
+	}
+	for n := range got {
+		if !want[n] {
+			t.Errorf("kernelFastRebindings returned %q, which is in a function AFTER "+
+				"InstallKernelFast. The scan is unbounded again, so native_overrides is "+
+				"being compared against rebindings the kernel install does not perform.", n)
+		}
+	}
+}
+
+// The legend is a claim like any other row, and it was the last place the old
+// one-word-over-two-predicates problem survived: it read "verified = a named
+// test fails when the fact drifts", which asserts a DIRECTION that one of the
+// two checked_by strings does not have. go's port_reads is checked by building
+// the pruned slice -- adding a name it does not read can break that build, but
+// removing one from a list that is already a superset only prunes less and
+// nothing fails. So the legend may not promise a direction; it must send the
+// reader to the string that states one, and the strings must state it.
+func TestContractLegendPromisesNoMoreThanCheckedBySays(t *testing.T) {
+	legend := strings.ToLower(strings.Join(contractLegend, " "))
+	for _, banned := range []string{"fails when the fact drifts", "always", "guarantees"} {
+		if strings.Contains(legend, banned) {
+			t.Errorf("the contract legend claims %q. The two checked_by strings in "+
+				"builders.json do not have the same strength, so the legend may only "+
+				"point at them: %v", banned, contractLegend)
+		}
+	}
+	if !strings.Contains(legend, "checked_by") || !strings.Contains(legend, "direction") {
+		t.Errorf("the legend must name checked_by and tell the reader to read it for the "+
+			"direction of the check; got %v", contractLegend)
+	}
+
+	builders, _, err := parseBuilders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Every fact whose row will read `verified` must disclose the direction in
+	// its own checked_by, since the legend no longer does it for them.
+	checks := map[string]string{
+		"go.port_reads":       builders["go"].PortReadsCheckedBy,
+		"go.native_overrides": builders["go"].NativeOverridesCheckedBy,
+	}
+	for name, s := range checks {
+		if !factChecked(s) {
+			t.Errorf("%s has no checked_by, so its row cannot read verified", name)
+			continue
+		}
+		low := strings.ToLower(s)
+		if !strings.Contains(low, "direction") && !strings.Contains(low, "both ways") &&
+			!strings.Contains(low, "removed") {
+			t.Errorf("%s's checked_by does not say in which direction the named test "+
+				"catches drift, and the legend no longer says it for them: %q", name, s)
+		}
 	}
 }
