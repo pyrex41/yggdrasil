@@ -247,7 +247,12 @@
       "vector?"
     ],
     "native_overrides_verified": true,
-    "native_overrides_source": "kl/kernelfast.go InstallKernelFast (shen-go 24b2c00): every symbol rebound to a native there"
+    "native_overrides_source": "kl/kernelfast.go InstallKernelFast (shen-go 24b2c00): every symbol rebound to a native there",
+    "special_forms": [
+      "do",
+      "not"
+    ],
+    "special_forms_source": "src/compiler.shen:6 `Env [do X Y] -> [$do (parse Env X) (parse Env Y)]` lowers `do` syntactically, and codegen/codegen.go:958 `\"not\": {1, \"PrimNot\"}` in shenPrimitive lowers `not` to an inline PrimNot call (shen-go da55c5d): neither emits a PrimFunc symbol lookup, so neither is a call edge in the generated module"
   },
   "joy": {
     "run_impl": "shen-joy",

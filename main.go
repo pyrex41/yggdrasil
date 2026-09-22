@@ -474,6 +474,13 @@ type builder struct {
 	// port's source. See prune.go.
 	PortReads         []string `json:"port_reads"`
 	PortReadsVerified bool     `json:"port_reads_verified"`
+	// Stage 5 (docs/analysis-rules.md): the KL names this port lowers
+	// syntactically, with no symbol lookup, so they never appear as a call
+	// edge in the graph recovered from its output. scip-check subtracts
+	// exactly these from the shake's footprint and fails on any other
+	// residue. See scip.go. A port that declares none subtracts none.
+	SpecialForms       []string `json:"special_forms"`
+	SpecialFormsSource string   `json:"special_forms_source"`
 }
 
 type capabilityError struct{ message string }
