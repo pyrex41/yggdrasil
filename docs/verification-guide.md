@@ -308,8 +308,12 @@ the KL level rather than in any target language, so it works on every
 port without port code:
 
 - pointcut: every emitted defun's entry, and every `(value V)`;
-- advice: append `f<TAB>name` or `v<TAB>name` to a trace file;
-- weaver: `--trace` on `shake`, `build` and `run`.
+- advice: append `f<TAB>name<TAB>phase` or `v<TAB>name<TAB>phase` to a
+  trace file, where the phase byte is `b` while `shen.initialise` runs and
+  `p` afterwards;
+- weaver: `--trace` on `shake`, `build` and `run`, plus one extra toplevel
+  form after the last form of the last user file, which writes the
+  end-of-run record `e<TAB>end` and closes the stream.
 
 The advice uses only primitives, deliberately not `pr`, which is a kernel
 function that reads `*hush*` and need not be in the footprint. The trace
@@ -339,9 +343,29 @@ visible: about twenty kept functions per program are never entered on that
 path. Injected violations, an out-of-footprint call and an unwritten
 global, are both caught, and all three engines agree.
 
-This is evidence, not proof: one run exercises one path. It is also the
-floor of the port contract in section 11, because it is identical in form
-on every target.
+This is evidence, not proof: one run exercises one path. It is narrower
+than that, even. On a port whose artifact *is* the slice, `uncoveredCall`
+is empty **by construction** — a call to a kernel defun outside `reach` is
+a name the artifact does not contain, so it is an undefined-function crash
+and there is no finished run to read facts from. The query has teeth on a
+`dispatch: full-kernel` build, on a host-side facts dump, and against a
+`reach` computed from a different program than the one that ran, which is
+the injected-violation case above. What the instrument measures on every
+target is *coverage*, and `trace-check` says so on its own report line.
+
+What it can now also do is fail for the reasons it claims to check. The
+trace carries an end-of-run record, so a run that did not finish is
+refused rather than read as a shorter one; the run's stdout is compared
+with `tests/<name>.expected` in the same invocation, on the same artifact,
+so a trace of a run that produced the wrong answer is not counted as
+evidence; and the fact writer declares its row counts in
+`FactsDir/trace.meta`, so a `called.facts` that is a strict prefix of the
+run is caught by the host half alone. A case where no evidence can be
+obtained at all — `--target kl` on a fixture with stdin, which shen-go's
+`cmd/kl` cannot be fed separately — is a named skip, not a pass.
+
+It is also the floor of the port contract in section 11, because it is
+identical in form on every target.
 
 Design note: [analysis-rules.md](analysis-rules.md), "Runtime trace".
 

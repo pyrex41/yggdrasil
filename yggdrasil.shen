@@ -2338,13 +2338,13 @@
 \\ Weaving runs AFTER the footprint, the rewrites, trim-top and the
 \\ init-order check, and just before anything is written, so it cannot
 \\ perturb any decision the shake made: the traced kernel.kl has exactly
-\\ the defuns of the untraced one, plus the five helpers.
+\\ the defuns of the untraced one, plus the six helpers.
 \\
 \\ The helpers must not be traced (infinite recursion: ygg.traced calling
 \\ ygg.traced) and must not depend on the footprint, because the footprint
 \\ was decided before they existed.  They therefore use only KL primitives
-\\ - open, write-byte, string->n, pos, tlstr, str, value, set, plus the
-\\ special forms if/let/do - and in particular NOT `pr`, which is a kernel
+\\ - open, close, write-byte, string->n, pos, tlstr, str, value, set, plus
+\\ the special forms if/let/do - and in particular NOT `pr`, which is a kernel
 \\ defun (writer.kl) that reads *hush* and need not be in the footprint.
 \\
 \\ Default is off, and the whole of this section is inert then:
@@ -2371,17 +2371,41 @@
   Code -> Code  where (not (value ygg.*trace*))
   Code -> (append (map (fn ygg.trace-defun) Code) (ygg.trace-helpers)))
 
+\\ The LAST user file gains one extra toplevel form, (ygg.trace-end), after
+\\ its own last form.  That is the end-of-run record and the close of the
+\\ stream: the only thing a reader of the trace file can use to tell a
+\\ complete run from one that died, or from a tail the port never flushed.
+\\ A program that errors or exits before it gets there legitimately writes
+\\ no end record, and the check says exactly that rather than blaming the
+\\ containment rules.
 (define ygg.trace-user
   Files -> Files  where (not (value ygg.*trace*))
-  Files -> (map (/. Forms (map (fn ygg.trace-defun) Forms)) Files))
+  Files -> (ygg.trace-end-last
+            (map (/. Forms (map (fn ygg.trace-defun) Forms)) Files)))
+
+(define ygg.trace-end-last
+  [] -> []
+  [Last] -> [(append Last [[ygg.trace-end]])]
+  [F | Fs] -> [F | (ygg.trace-end-last Fs)])
 
 \\ A user file's toplevel (non-defun) forms get the (value V) rewrite but
 \\ no entry advice: they are not a join point, they are the boot itself.
+\\
+\\ shen.initialise is the phase boundary.  ygg.trace-open runs first (so the
+\\ stream exists before any entry advice, including the initialiser's own)
+\\ and sets the phase to boot; the flip to program is the LAST thing the
+\\ woven body does, through a let so the initialiser's own value is still
+\\ what it returns.  Everything the initialiser does - the 20,000
+\\ shen.fillvector calls among it - is therefore tagged b, and everything
+\\ the user's program does is tagged p.
 (define ygg.trace-defun
   [defun shen.initialise Args Body]
-   -> [defun shen.initialise Args
-       [do [ygg.trace-open]
-           [do [ygg.traced shen.initialise] (ygg.trace-values Body)]]]
+   -> (let R (intern "R")
+        [defun shen.initialise Args
+         [do [ygg.trace-open]
+             [do [ygg.traced shen.initialise]
+                 [let R (ygg.trace-values Body)
+                   [do [set ygg.*trace-phase* 112] R]]]]])
   [defun F Args Body]
    -> [defun F Args [do [ygg.traced F] (ygg.trace-values Body)]]
   Form -> (ygg.trace-values Form))
@@ -2404,8 +2428,19 @@
 \\
 \\ Line format, one record per line, chosen so the dedup on the Go side is
 \\ a string split and so a human can read the file:
-\\   f<TAB>NAME      a defun entry
-\\   v<TAB>NAME      a global read
+\\   f<TAB>NAME<TAB>PHASE   a defun entry
+\\   v<TAB>NAME<TAB>PHASE   a global read
+\\   e<TAB>end              the end-of-run record, written once
+\\ PHASE is one byte: b while shen.initialise is running, p afterwards.
+\\ Without it the trace conflates the boot with the program, and the
+\\ overwhelming majority of records in any run belong to the boot.
+\\
+\\ The end record is what makes a truncated trace detectable: it is written
+\\ from the last user toplevel form, immediately before the stream is
+\\ closed, so a trace without it is a run that did not finish or a tail the
+\\ port never flushed.  `close` is a KL primitive already in the manifest's
+\\ primitive list, so the fallback introduces no new capability.
+\\
 \\ The KL variable names are interned rather than written literally: a bare
 \\ uppercase S in a Shen body is a free variable and `define` rejects it,
 \\ the same reason (value *shake-rules*) goes through ygg.dl-varify.
@@ -2416,21 +2451,34 @@
           F   (intern "F")
           V   (intern "V")
        [[defun ygg.trace-open []
-          [set ygg.*trace-stream* [open (value ygg.*trace-file*) out]]]
+          [do [set ygg.*trace-phase* 98]
+              [set ygg.*trace-stream* [open (value ygg.*trace-file*) out]]]]
         [defun ygg.trace-str [S Stm]
           [if [= S ""]
               Stm
               [do [write-byte [string->n [pos S 0]] Stm]
                   [ygg.trace-str [tlstr S] Stm]]]]
-        \\ Tag is a byte (102 = "f", 118 = "v"), and the separator and
-        \\ terminator are written as bytes too, so kernel.kl carries no
-        \\ string literal with a control character in it.
+        \\ Tag is a byte (102 = "f", 118 = "v", 101 = "e"), and the
+        \\ separators, the phase byte and the terminator are written as
+        \\ bytes too, so kernel.kl carries no string literal with a
+        \\ control character in it.
         [defun ygg.trace-line [Tag S]
           [let Stm [value ygg.*trace-stream*]
             [do [write-byte Tag Stm]
                 [do [write-byte 9 Stm]
                     [do [ygg.trace-str S Stm]
-                        [write-byte 10 Stm]]]]]]
+                        [do [write-byte 9 Stm]
+                            [do [write-byte [value ygg.*trace-phase*] Stm]
+                                [write-byte 10 Stm]]]]]]]]
+        \\ The end-of-run record carries no phase: it is the boundary, not
+        \\ something that happened inside one.
+        [defun ygg.trace-end []
+          [let Stm [value ygg.*trace-stream*]
+            [do [write-byte 101 Stm]
+                [do [write-byte 9 Stm]
+                    [do [ygg.trace-str "end" Stm]
+                        [do [write-byte 10 Stm]
+                            [close Stm]]]]]]]
         [defun ygg.traced [F]
           [do [ygg.trace-line 102 [str F]] F]]
         [defun ygg.traced-value [V]
@@ -2513,8 +2561,39 @@
 \\ Files, load the run's called/readglobal facts out of FactsDir, close the
 \\ trace rules over the lot and report.  Output contract, the Go driver
 \\ parses these and nothing else:
-\\   yggdrasil-trace-check: OK called=N reach=M
+\\   yggdrasil-trace-check: OK called=N reach=M counts=verified
+\\   yggdrasil-trace-check: OK called=N reach=M counts=unverified
 \\   yggdrasil-trace-check: FAIL uncovered=F,G
+\\   yggdrasil-trace-check: FAIL truncated=shen.initialise-not-entered
+\\   yggdrasil-trace-check: FAIL truncated=called-count read=25 declared=34
+\\   yggdrasil-trace-check: FAIL truncated=no-end-record
+\\
+\\ The truncated= forms are the host half's own guard against a called.facts
+\\ that is not the run's, and they are what stops a cut-off relation from
+\\ reading as a clean run.  There are two, because one alone was not a
+\\ prefix detector:
+\\
+\\   shen.initialise-not-entered.  Every traced run enters shen.initialise -
+\\   the weaver puts the entry advice inside it - so its absence means the
+\\   relation is not a run's.  called.facts is written SORTED, though, so
+\\   this catches only a cut short enough to drop that one name: for fib it
+\\   is line 21 of 34, and `head -25` sailed past it.
+\\
+\\   called-count.  The writer of the facts declares, in FactsDir/trace.meta,
+\\   how many rows it wrote and whether the trace it read carried its
+\\   end-of-run record; a called.facts with a different number of rows is not
+\\   the file that was written.  THIS is the strict-prefix detector, and it
+\\   catches any truncation, not a chosen name's.  It detects LOSS, not
+\\   forgery: a hand that rewrites trace.meta too is writing a fiction, and
+\\   no check on the same directory can say otherwise.
+\\
+\\ A FactsDir with no trace.meta - a bare `yggdrasil facts` dump, a relation
+\\ assembled by hand, a tree half-updated - is not refused, because the
+\\ counts were never declared there.  It reports counts=unverified, so the
+\\ OK line says which of the two guards actually ran rather than implying
+\\ both.  Both are properties of the FACT FILE, checkable here with no
+\\ artifact in sight, which is the half the Go driver's end-of-run record
+\\ cannot reach.
 (define yggdrasil.trace-check
   Files FactsDir
    -> (let MaxPrint (value *maximum-print-sequence-size*)
@@ -2535,6 +2614,7 @@
            TopsOut  (map (/. T (trim-top T Foot EvalFree Arities)) Tops)
            Called   (ygg.trace-read (@s FactsDir "/called.facts"))
            Reads    (ygg.trace-read (@s FactsDir "/readglobal.facts"))
+           Meta     (ygg.trace-read (@s FactsDir "/trace.meta"))
            Add      (ygg.mapc (fn ygg.dl-add)
                      (append (map (/. F [called F]) Called)
                      (append (map (/. V [readGlobal V]) Reads)
@@ -2547,17 +2627,54 @@
            Run      (ygg.mapc (fn ygg.dl-stratum) (value *trace-rules*))
            Bad      (append (ygg.dl-col1 uncoveredCall) (ygg.dl-col1 uncoveredRead))
            Restore  (set *maximum-print-sequence-size* MaxPrint)
-           Report   (ygg.trace-report Bad (ygg.len Called)
+           Report   (ygg.trace-report (ygg.trace-provenance Meta Called) Bad
+                                      (ygg.len Called)
                                       (ygg.len (ygg.dl-col1 reach)))
            done))
 
+\\ Is this relation the one some run wrote?  Two independent answers, the
+\\ first of which needs nothing but called.facts itself; see the note above
+\\ the definition of yggdrasil.trace-check.  The result is [ok Note] or
+\\ [fail Why], both carrying the string the report line prints.
+(define ygg.trace-provenance
+  _ Called -> [fail "shen.initialise-not-entered"]
+               where (not (ygg.trace-entered? Called))
+  Meta Called -> (ygg.trace-counts (ygg.trace-meta-get complete Meta)
+                                   (ygg.trace-meta-get called Meta)
+                                   (ygg.len Called)))
+
+(define ygg.trace-entered?
+  Called -> (element? shen.initialise Called))
+
+\\ The writer's declared row count against the rows actually present.  A
+\\ missing declaration is reported, not failed: it means nobody promised a
+\\ count for this directory, which is a different thing from a broken one.
+(define ygg.trace-counts
+  [] _ _ -> [ok "unverified"]
+  _ [] _ -> [ok "unverified"]
+  Complete _ _ -> [fail "no-end-record"]  where (not (= Complete true))
+  _ Declared N -> [ok "verified"]  where (= (str Declared) (str N))
+  _ Declared N -> [fail (@s "called-count read=" (@s (str N)
+                            (@s " declared=" (str Declared))))])
+
+\\ One TAB-separated key/value pair per line, read by ygg.trace-read into a
+\\ flat token list; [] for a key that is not there.  Values are symbols, so
+\\ [] is unambiguously "absent".
+(define ygg.trace-meta-get
+  _ [] -> []
+  K [Key V | _] -> V  where (= K Key)
+  K [_ | Rest] -> (ygg.trace-meta-get K Rest))
+
 (define ygg.trace-report
-  [] NCalled NReach -> (pr (make-string "yggdrasil-trace-check: OK called=~A reach=~A~%"
-                                        NCalled NReach)
-                           (stoutput))
-  Bad _ _ -> (pr (make-string "yggdrasil-trace-check: FAIL uncovered=~A~%"
-                              (ygg.cn-commas (ygg.remove-dups Bad)))
-                 (stoutput)))
+  [fail Why] _ _ _ -> (pr (make-string "yggdrasil-trace-check: FAIL truncated=~A~%" Why)
+                          (stoutput))
+  [ok Note] [] NCalled NReach
+   -> (pr (make-string "yggdrasil-trace-check: OK called=~A reach=~A counts=~A~%"
+                       NCalled NReach Note)
+          (stoutput))
+  _ Bad _ _ -> (pr (make-string "yggdrasil-trace-check: FAIL uncovered=~A~%"
+                                (ygg.cn-commas (ygg.remove-dups Bad)))
+                   (stoutput)))
 
 \\ One interned symbol per non-empty line of a one-column .facts file; a
 \\ missing file is an empty relation.  Byte-level, like parse-graph, and

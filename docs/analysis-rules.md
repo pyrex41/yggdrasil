@@ -289,10 +289,22 @@ form**, ahead of the initialiser's own entry advice, so no traced entry can
 run before the stream exists — including the entries inside `shen.initialise`
 itself, which is where the great majority of them happen.
 
-The record format is a tag byte, a tab, the name, a newline: `f<TAB>NAME` for
-an entry, `v<TAB>NAME` for a read. Tag, separator and terminator are written
-as bytes, so `kernel.kl` carries no string literal with a control character
-in it.
+The record format is a tag byte, a tab, the name, a tab, a phase byte, a
+newline: `f<TAB>NAME<TAB>b` for an entry, `v<TAB>NAME<TAB>p` for a read. The
+phase is `b` while `shen.initialise` is running and `p` afterwards — the flip
+is the last action of the woven initialiser body — because without it a `fib`
+run reads as 49,076 records of which 20,000 are `shen.fillvector` out of the
+property vector's initialiser, and "the program called X" is unanswerable.
+The run's last record is `e<TAB>end`, written by `ygg.trace-end` from an
+extra toplevel form appended after the last form of the last user file; it is
+what distinguishes a finished run from a trace cut short (see "The trace has
+to be able to say it ended" below). Tag, separators, phase and terminator are
+written as bytes, so `kernel.kl` carries no string literal with a control
+character in it.
+
+A reader must accept the two-column form as well, with the phase unknown: an
+artifact woven by an older shaker is a smaller witness, not a run that called
+nothing. `trace.go:parseTrace` counts those in `unphased-records=`.
 
 Weaving adds primitives, so `primitive=` grows (`open`, `write-byte`,
 `string->n`, `pos`, `tlstr`). On every fixture measured, `reaches=` and
@@ -429,11 +441,55 @@ and a tracing regression on it still fails.
 
 Buffered output was the other thing to watch for: a trace stream that is
 opened and never closed can lose its tail. It does not on either runtime —
-`open`/`write-byte` reaches disk, and the record counts above come from runs
-whose stdout is correct — so the fallback of buffering names in a global and
-flushing them from the last user toplevel form is not needed and is not
-implemented. A port that did lose the tail would show up as a `called` set
-that is a strict prefix of the run.
+`open`/`write-byte` reaches disk — but "it does not on the two runtimes
+measured" is not a property of the format, and a `called` set that is a
+strict prefix of the run is not self-identifying, so the fallback is now
+implemented and unconditional: the weaver appends one extra toplevel form,
+`(ygg.trace-end)`, after the last form of the last user file, and it writes
+the `e<TAB>end` record and then `close`s the stream. `close` was already in
+the manifest's primitive list, so no capability is added. Obligation F of
+[port-contract.md](port-contract.md) is discharged by this for every port,
+not only for ports that declare a need for it.
+
+### The trace has to be able to say it ended
+
+Nothing above detects loss on its own, which is the point: a relation read
+out of a file cannot tell you what is missing from it. Three guards, and they
+are deliberately at different layers:
+
+1. **The end-of-run record.** `trace-check` refuses a trace with no
+   `e<TAB>end` in it —
+   `yggdrasil-trace-check: FAIL truncated=no-end-record`. This covers the
+   artifact side: a crash, an early exit, a port that lost the buffered tail.
+2. **The run's stdout against the fixture's committed golden**,
+   `tests/<name>.expected`, compared in the same invocation against the same
+   artifact (and with the same `canon()` the parity gate uses, so one golden
+   cannot mean two things). The end record says the last form ran; the golden
+   says it ran correctly. A trace of a run that produced the wrong answer is
+   not evidence for anything.
+3. **The facts' declared row counts.** The two guards above live in the Go
+   driver and cannot see a `called.facts` edited afterwards, which is the
+   half the original repro exercised: `head -1 called.facts` and the
+   host half alone once reported `OK called=1 reach=53`. So the writer
+   declares, in `FactsDir/trace.meta`, how many rows it wrote and whether the
+   trace it read had ended; `yggdrasil.trace-check` compares and reports
+   `counts=verified` / `counts=unverified` on the OK line, and fails with
+   `truncated=called-count read=N declared=M` when they differ. Because
+   `called.facts` is written sorted, the older guard — "`shen.initialise` must
+   be in the relation" — catches only a cut short enough to drop that one
+   name (line 21 of 34 for `fib`); the row count catches any prefix. Both
+   detect **loss**, not forgery: a hand that rewrites `trace.meta` too is
+   writing a fiction, and no check confined to one directory can say
+   otherwise. A directory with no `trace.meta` is reported `counts=unverified`
+   rather than refused, because nobody declared a count there.
+
+There is a fourth case where no evidence is obtainable at all, and it is a
+named **skip**, never a pass: shen-go's `cmd/kl` reads its program from
+stdin and takes no file argument, so the `kl` runner has to append a
+fixture's `.stdin` bytes after the KL forms, the VM eats them as further
+toplevel forms, and the program reads EOF. `trace-check --target kl` on a
+fixture with stdin prints
+`yggdrasil-trace-check: SKIP kl-runner-cannot-deliver-stdin` and exits 3.
 
 ### Against stage 4
 
