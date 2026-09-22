@@ -12,19 +12,34 @@ becomes reachable by the same analysis?
 
 ## The measurement
 
-shen-go's `InstallKernelFast` rebinds **54** kernel functions to Go
-natives at startup (the list is now `native_overrides` on the `go` entry
-of `builders.json`, with its source). Intersected with shaken slices:
+shen-go's `InstallKernelFast` rebinds **58** kernel functions to Go
+natives at startup (the list is `native_overrides` on the `go` entry of
+`builders.json`, with its source and the test that checks it).
+Intersected with shaken slices, re-measured against shen-go da55c5d:
 
 | slice | kernel defuns kept | of which shen-go replaces natively |
 |---|---|---|
-| `tests/fib.shen` (eval-free) | 54 | 17 |
-| `tests/partial-eval.shen` (eval-capable) | 548 | 45 |
+| `tests/fib.shen` (eval-free) | 54 | 18 |
+| `tests/partial-eval.shen` (eval-capable) | 549 | 49 |
+
+The count was **54** and the intersections **17** and **45** until
+`TestNativeOverridesMatchKernelFast` parsed `InstallKernelFast` and found
+four rebindings the hand-kept list had never carried: `<-vector`, `==`,
+`@p` and `shen.hds=?`. The list had said `native_overrides_verified: true`
+the whole time, which is why that flag is gone and a `_checked_by` naming
+a test is what the word "verified" costs now.
+
+**When** the swap happens is part of the measurement, not a footnote: the
+generated `main` runs `shen.initialise` before
+`runHelper("InstallKernelFast", ...)`, so these KL bodies *do* execute
+during boot and are replaced only afterwards. `yggdrasil trace-check
+tests/fib.shen OUT --target go` records a KL entry for 11 of fib's 18.
 
 A third of an eval-free slice is code the port never runs as KL. Today
 that is invisible to everything in the verification guide: the shake
-keeps the KL body, the weave instruments it, the trace never records an
-entry to it (the native is entered instead), and the level-3 graph
+keeps the KL body, the weave instruments it, the trace records an entry to
+it only if the program reached it during boot before the natives were
+installed (afterwards the native is entered instead), and the level-3 graph
 recovery sees a binding that is dead on arrival. The port contract
 records this as an unverified obligation; this note is the mechanism that
 discharges it.
@@ -121,8 +136,11 @@ a compiler pass.
 
 1. **Table and report (measurement before mechanism).** `native_overrides`
    for go is in `builders.json` now. Add `yggdrasil why --target go` a
-   line per kept kernel function that the port replaces natively, and a
-   summary count in `yggdrasil conformance`. No output change.
+   line per kept kernel function that the port replaces natively. The
+   summary count exists: `yggdrasil contract --target go` prints the
+   declaration, its provenance, and `installed_after=shen.initialise` --
+   the phase that decides whether the KL bodies below ever run. No output
+   change.
 2. **Differential tests per row, in the port's repository.** The prompt
    for that work is [`lowering-shen-go-prompt.md`](lowering-shen-go-prompt.md).
    The port exports its table as JSON (`equiv`, arity, verified,

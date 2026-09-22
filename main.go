@@ -469,25 +469,60 @@ type builder struct {
 	Needs   []string `json:"needs"`
 	Build   []step   `json:"build"`
 	Run     []string `json:"run"`
-	// Stage 4 (docs/analysis-rules.md): the globals this port's runtime
-	// reads natively, and whether that list was verified against the
-	// port's source. See prune.go.
-	PortReads         []string `json:"port_reads"`
-	PortReadsVerified bool     `json:"port_reads_verified"`
+	// Level-1 self-description (docs/port-contract.md): facts about the
+	// PORT that the Datalog rules and the conformance report consume. Each
+	// fact is three flat keys -- the value, `_source` (where it was read
+	// off, or "none"), and `_checked_by` (the test that fails when it
+	// drifts, or "none"). There is deliberately no `_verified` boolean:
+	// one word meant two different predicates on the two facts below, so
+	// the word now lives in `yggdrasil contract`'s output and means
+	// exactly "_checked_by names a test". See contract.go and prune.go.
+	//
+	// PortReads: the globals this port's runtime reads natively, with no
+	// Shen code mentioning them. Empty means "inherit builders.json's
+	// _default block"; read it through portReadsFor, never directly.
+	PortReads          []string `json:"port_reads"`
+	PortReadsSource    string   `json:"port_reads_source"`
+	PortReadsCheckedBy string   `json:"port_reads_checked_by"`
+	// NativeOverrides: the kernel defuns this port rebinds to natives.
+	// InstalledAfter records the PHASE, which is the whole content of the
+	// fact: on shen-go the generated main runs shen.initialise BEFORE
+	// InstallKernelFast, so the kernel's KL bodies do run during boot and
+	// the natives replace them only afterwards. An override list with no
+	// phase would read as "these KL bodies never run", which is false.
+	NativeOverrides               []string `json:"native_overrides"`
+	NativeOverridesSource         string   `json:"native_overrides_source"`
+	NativeOverridesCheckedBy      string   `json:"native_overrides_checked_by"`
+	NativeOverridesInstalledAfter string   `json:"native_overrides_installed_after"`
 }
 
 type capabilityError struct{ message string }
 
 func (e capabilityError) Error() string { return e.message }
 
-func loadBuilders() (map[string]builder, error) {
+// builderDefaultsKey is the builders.json block holding the facts a target
+// inherits when it states none of its own. It is `_`-prefixed so that every
+// loop over the targets skips it; the code that wants it asks by name.
+const builderDefaultsKey = "_default"
+
+// parseBuilders returns the per-target blocks and, separately, the `_default`
+// block. Splitting them is what lets a fact be absent from a target and still
+// resolve: absence is then visible as absence (an empty field) rather than as
+// a copy of the default pasted into every entry.
+func parseBuilders() (map[string]builder, builder, error) {
+	var defaults builder
 	b, err := embedded.ReadFile("builders.json")
 	if err != nil {
-		return nil, err
+		return nil, defaults, err
 	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(b, &raw); err != nil {
-		return nil, err
+		return nil, defaults, err
+	}
+	if v, ok := raw[builderDefaultsKey]; ok {
+		if err := json.Unmarshal(v, &defaults); err != nil {
+			return nil, defaults, fmt.Errorf("builder %s: %w", builderDefaultsKey, err)
+		}
 	}
 	out := map[string]builder{}
 	for k, v := range raw {
@@ -496,11 +531,16 @@ func loadBuilders() (map[string]builder, error) {
 		}
 		var bd builder
 		if err := json.Unmarshal(v, &bd); err != nil {
-			return nil, fmt.Errorf("builder %s: %w", k, err)
+			return nil, defaults, fmt.Errorf("builder %s: %w", k, err)
 		}
 		out[k] = bd
 	}
-	return out, nil
+	return out, defaults, nil
+}
+
+func loadBuilders() (map[string]builder, error) {
+	builders, _, err := parseBuilders()
+	return builders, err
 }
 
 // evalEntryPoints mirrors *eval-entry-points* in yggdrasil.shen: the calls that
@@ -739,7 +779,7 @@ func main() { os.Exit(run(os.Args[1:])) }
 
 func run(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: yggdrasil <shake|build|run|check|why|facts|trace-check|parity|scip-check|targets> ...")
+		fmt.Fprintln(os.Stderr, "usage: yggdrasil <shake|build|run|check|why|facts|trace-check|parity|scip-check|contract|targets> ...")
 		return 2
 	}
 	cmd, rest := args[0], args[1:]
@@ -774,6 +814,8 @@ func run(args []string) int {
 		return cmdParity(rest)
 	case "scip-check":
 		return cmdScipCheck(rest)
+	case "contract":
+		return cmdContract(rest)
 	default:
 		fmt.Fprintf(os.Stderr, "yggdrasil: unknown subcommand %q\n", cmd)
 		return 2

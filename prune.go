@@ -12,11 +12,18 @@ package main
 // not about Shen, so they live next to the backend, in builders.json's
 // "port_reads" array, and this file hands them to the shaker.
 //
+// One list, not thirteen. Only `go` has had its list read off a runtime. The
+// other targets declare no port_reads at all and inherit builders.json's
+// `_default` block, which holds the conservative union exactly once. A target
+// with no port_reads key is a target whose native reads nobody has measured,
+// and the missing key is how that looks -- rather than the same placeholder
+// pasted into every entry, which is a heuristic wearing the shape of data.
+//
 // A shake has no target (the whole point is one slice, many backends), so
-// `yggdrasil shake --prune-init` uses the UNION of every builder's list --
-// the only choice that is sound for a slice that may be built anywhere.
-// `build`/`run --target T --prune-init` uses T's own list, which can be
-// smaller. Either way the flag is off by default: pruning changes the bytes
+// `yggdrasil shake --prune-init` uses the UNION of every builder's effective
+// list -- the only choice that is sound for a slice that may be built
+// anywhere. `build`/`run --target T --prune-init` uses T's own list, which can
+// be smaller. Either way the flag is off by default: pruning changes the bytes
 // of kernel.kl, and docs/analysis-rules.md gives the parity gate, not this
 // file, the job of deciding whether a target may default it on.
 
@@ -36,11 +43,13 @@ var pruneOpts struct {
 	target string // "" means "no target: use the union over all builders"
 }
 
-// portReadsFor returns the globals a target's runtime reads natively. With an
-// empty target it returns the union over every builder, sorted, which is the
-// conservative answer a target-agnostic shake needs.
+// portReadsFor returns the globals a target's runtime reads natively: the
+// target's own declared list when it has one, otherwise builders.json's
+// `_default` list. With an empty target it returns the union over every
+// builder's EFFECTIVE list, sorted, which is the conservative answer a
+// target-agnostic shake needs.
 func portReadsFor(target string) ([]string, error) {
-	builders, err := loadBuilders()
+	builders, defaults, err := parseBuilders()
 	if err != nil {
 		return nil, err
 	}
@@ -49,14 +58,14 @@ func portReadsFor(target string) ([]string, error) {
 		if !ok {
 			return nil, fmt.Errorf("unknown target %q", target)
 		}
-		out := append([]string(nil), b.PortReads...)
+		out := append([]string(nil), effectivePortReads(b, defaults)...)
 		sort.Strings(out)
 		return out, nil
 	}
 	seen := map[string]bool{}
 	var out []string
 	for _, b := range builders {
-		for _, v := range b.PortReads {
+		for _, v := range effectivePortReads(b, defaults) {
 			if !seen[v] {
 				seen[v] = true
 				out = append(out, v)
@@ -65,6 +74,17 @@ func portReadsFor(target string) ([]string, error) {
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// effectivePortReads is the one place the inheritance rule lives: a declared
+// list wins, an absent one falls back to `_default`. Callers must go through
+// it (or through portReadsFor) rather than reading b.PortReads, which is empty
+// for twelve of the thirteen targets and means "not declared", not "none".
+func effectivePortReads(b, defaults builder) []string {
+	if len(b.PortReads) > 0 {
+		return b.PortReads
+	}
+	return defaults.PortReads
 }
 
 // wrapShakeExpr prefixes the host expression with the stage-4 settings, as
@@ -95,14 +115,21 @@ func targetLabel(target string) string {
 	return "target " + target
 }
 
-// portReadsVerified reports whether a target's port_reads list was written by
-// reading that port's runtime (true) or is the conservative placeholder
-// (false). Only `go` is verified today; see docs/analysis-rules.md.
+// portReadsVerified reports whether a target's port_reads list is backed by a
+// named test. That is the only thing "verified" is allowed to mean here: the
+// two booleans this replaces (`port_reads_verified`, `native_overrides_
+// verified`) spelled one word and asserted two unrelated predicates -- "each
+// entry was read from a named source line" and "the list equals the symbols
+// InstallKernelFast rebinds" -- so the word now has a single definition, in
+// one place, and `yggdrasil contract` prints it.
+//
+// A target inheriting `_default` is never verified: it has declared nothing of
+// its own, and the default's own `_checked_by` is "none". Only `go` passes.
 func portReadsVerified(target string) bool {
 	builders, err := loadBuilders()
 	if err != nil {
 		return false
 	}
 	b, ok := builders[target]
-	return ok && b.PortReadsVerified
+	return ok && len(b.PortReads) > 0 && factChecked(b.PortReadsCheckedBy)
 }

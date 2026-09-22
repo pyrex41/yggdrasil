@@ -1525,6 +1525,15 @@
 
 \\ Conservative default: every global the go runtime reads natively, plus
 \\ every global the kernel's own defuns read in the full (unshaken) boot.
+\\
+\\ This list is a COPY, and builders.json's "_default" block is the
+\\ authority.  It exists for a direct host invocation -- (load
+\\ "yggdrasil.shen") and call ygg.shake yourself -- where there is no Go
+\\ driver to push a list in.  Every invocation through `yggdrasil` or
+\\ Bifrost overrides it per shake (prune.go's portReadsFor: the target's own
+\\ declared list, else _default, else the union for a target-agnostic shake).
+\\ The two must stay equal element for element; TestPortReadsDefaultMatchesShen
+\\ in prune_test.go parses this form and fails if they drift.
 (set ygg.*port-reads*
      [\\ read natively by the go runtime (shen-go, kl/): the two port
       \\ globals, then open / load-file via ResolveHomePath, then
