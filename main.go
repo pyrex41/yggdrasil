@@ -1051,6 +1051,7 @@ var factRelations = []string{
 	"kernel", "callpos", "argpos", "datasym", "mentionsprim",
 	"top", "formmentions", "formmentionsef",
 	"rawsym", "usersym", "entry", "prim", "cap", "portGlobal", "initprim",
+	"userintern", "userglobal",
 }
 
 func cmdFacts(rest []string) int {

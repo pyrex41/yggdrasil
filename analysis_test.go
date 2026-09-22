@@ -63,35 +63,37 @@ func kernelDefuns(t *testing.T, path string) map[string]bool {
 	return names
 }
 
-// reachWithRefeval evaluates analysis.dl's rules with the Python reference
-// evaluator.
-func reachWithRefeval(t *testing.T, factsDir string) map[string]bool {
+// relWithRefeval evaluates analysis.dl's rules with the Python reference
+// evaluator and returns one output relation.
+func relWithRefeval(t *testing.T, factsDir, rel string) map[string]bool {
 	t.Helper()
 	py, err := exec.LookPath("python3")
 	if err != nil {
 		t.Skip("no python3 and no souffle: cannot evaluate the rules")
 	}
-	out, err := exec.Command(py, filepath.Join("analysis", "refeval.py"), factsDir).CombinedOutput()
+	out, err := exec.Command(py, filepath.Join("analysis", "refeval.py"), factsDir, rel).CombinedOutput()
 	if err != nil {
-		t.Fatalf("refeval.py: %v\n%s", err, out)
+		t.Fatalf("refeval.py %s: %v\n%s", rel, err, out)
 	}
 	return lineSet(string(out))
 }
 
-// reachWithSouffle compiles and runs analysis.dl with real Soufflé, and
-// returns the reach relation it wrote.
-func reachWithSouffle(t *testing.T, souffle, factsDir string) map[string]bool {
+// souffleRun compiles and runs analysis.dl with real Soufflé once, and
+// returns a reader for its output relations.
+func souffleRun(t *testing.T, souffle, factsDir string) func(string) map[string]bool {
 	t.Helper()
 	outDir := t.TempDir()
 	cmd := exec.Command(souffle, "-F", factsDir, "-D", outDir, filepath.Join("analysis", "analysis.dl"))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("souffle: %v\n%s", err, out)
 	}
-	csv, err := os.ReadFile(filepath.Join(outDir, "reach.csv"))
-	if err != nil {
-		t.Fatalf("souffle wrote no reach.csv: %v", err)
+	return func(rel string) map[string]bool {
+		csv, err := os.ReadFile(filepath.Join(outDir, rel+".csv"))
+		if err != nil {
+			t.Fatalf("souffle wrote no %s.csv: %v", rel, err)
+		}
+		return lineSet(string(csv))
 	}
-	return lineSet(string(csv))
 }
 
 func lineSet(s string) map[string]bool {
@@ -128,6 +130,32 @@ func sample(xs []string) []string {
 	return xs
 }
 
+// manifestComputedNames reads the shake's own computed-names= answer back
+// out of the txt manifest, as a set. "none" is the empty set.
+func manifestComputedNames(t *testing.T, shakeDir string) map[string]bool {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(shakeDir, "yggdrasil.manifest.txt"))
+	if err != nil {
+		t.Fatalf("reading manifest: %v", err)
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		v, ok := strings.CutPrefix(line, "computed-names=")
+		if !ok {
+			continue
+		}
+		out := map[string]bool{}
+		if v == "none" || v == "" {
+			return out
+		}
+		for _, name := range strings.Split(v, ",") {
+			out[name] = true
+		}
+		return out
+	}
+	t.Fatalf("manifest has no computed-names= line")
+	return nil
+}
+
 func TestAnalysisOracleMatchesShake(t *testing.T) {
 	host := checkHost(t)
 
@@ -158,20 +186,34 @@ func TestAnalysisOracleMatchesShake(t *testing.T) {
 			}
 			want := kernelDefuns(t, filepath.Join(shakeDir, "kernel.kl"))
 
-			py := reachWithRefeval(t, factsDir)
+			py := relWithRefeval(t, factsDir, "reach")
 			if extra, missing := diffSets(py, want); len(extra)+len(missing) > 0 {
 				t.Errorf("refeval reach != kernel.kl defuns (%d vs %d)\n  extra: %v\n  missing: %v",
 					len(py), len(want), sample(extra), sample(missing))
 			}
 
+			// The stage-3 computed-name relation decides nothing, so it has
+			// no kernel.kl to be checked against; what it does have is the
+			// shake's own answer, in the manifest. All three must agree.
+			pyCN := relWithRefeval(t, factsDir, "computedName")
+			if extra, missing := diffSets(pyCN, manifestComputedNames(t, shakeDir)); len(extra)+len(missing) > 0 {
+				t.Errorf("refeval computedName != the manifest's computed-names\n  only rules: %v\n  only manifest: %v",
+					sample(extra), sample(missing))
+			}
+
 			if souffle != "" {
-				so := reachWithSouffle(t, souffle, factsDir)
+				rel := souffleRun(t, souffle, factsDir)
+				so := rel("reach")
 				if extra, missing := diffSets(so, want); len(extra)+len(missing) > 0 {
 					t.Errorf("souffle reach != kernel.kl defuns (%d vs %d)\n  extra: %v\n  missing: %v",
 						len(so), len(want), sample(extra), sample(missing))
 				}
 				if extra, missing := diffSets(so, py); len(extra)+len(missing) > 0 {
 					t.Errorf("souffle and refeval.py disagree on the same rules\n  only souffle: %v\n  only refeval: %v",
+						sample(extra), sample(missing))
+				}
+				if extra, missing := diffSets(rel("computedName"), pyCN); len(extra)+len(missing) > 0 {
+					t.Errorf("souffle and refeval.py disagree on computedName\n  only souffle: %v\n  only refeval: %v",
 						sample(extra), sample(missing))
 				}
 			}

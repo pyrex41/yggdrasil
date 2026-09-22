@@ -17,7 +17,7 @@ is a bug in one of them; the Go oracle test runs Soufflé when it is on PATH
 and this otherwise, and CI runs Soufflé.
 
 The rules are transcribed from analysis.dl clause for clause, in the same
-order, with the same deviation numbering (D1-D7) -- read that file first.
+order, with the same deviation numbering (D1-D8) -- read that file first.
 Stratification is by hand rather than computed: the only negation is
 `evalfree :- !anyeval`, and `anyeval` is derived from facts alone, so
 evaluating the mode first and everything else after is a valid stratum
@@ -28,7 +28,7 @@ import os
 import sys
 
 # Relations read from FACTSDIR, with their arity. A missing file is an empty
-# relation, not an error: the dump writes all fifteen, but a hand-built fact
+# relation, not an error: the dump writes all seventeen, but a hand-built fact
 # directory that omits one should still evaluate.
 INPUTS = {
     "kernel": 1,
@@ -46,6 +46,8 @@ INPUTS = {
     "cap": 2,
     "portGlobal": 1,
     "initprim": 1,
+    "userintern": 1,
+    "userglobal": 1,
 }
 
 F_ERROR = "shen.f-error"
@@ -157,6 +159,10 @@ def evaluate(db):
 
     reaches = {c for c, p in db["cap"] if p in usedprim}
 
+    # ---- computed names (stage 3, decides nothing) ------------------
+    # computedName(F) :- userintern(F).  computedName(F) :- userglobal(F).
+    computedname = one("userintern") | one("userglobal")
+
     return {
         "evalcapable": {(s,) for s in evalcapable},
         "reach": {(g,) for g in reach},
@@ -164,6 +170,7 @@ def evaluate(db):
         "usedprim": {(p,) for p in usedprim},
         "reaches": {(c,) for c in reaches},
         "needsEval": {("1",)} if "eval-kl" in usedprim else set(),
+        "computedName": {(f,) for f in computedname},
     }
 
 

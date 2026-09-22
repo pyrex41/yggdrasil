@@ -117,13 +117,17 @@
                     Graph      (call-graph Kernel)
                     KLFiles    (map (fn bootstrap) Files)
                     RawKL      (map (fn read-file) KLFiles)
-                    EvalFree   (eval-free? (function-calls RawKL))
+                    RawFs      (function-calls RawKL)
+                    EvalFree   (eval-free? RawFs)
                     KL         (strip-user-declares RawKL EvalFree)
                     UserFs     (function-calls KL)
-                    Tops       (prepare-tops (toplevel-forms Kernel) EvalFree)
-                    Graph2     (if EvalFree (strip-f-error-row Graph) Graph)
+                    AllTops    (toplevel-forms Kernel)
+                    Tops       (prepare-tops AllTops EvalFree)
                     Seeds      (append (mapcan (fn called-fns) Tops) UserFs)
-                    Foot       (footprint Seeds Graph2)
+                    Rules      (ygg.shake-rules-run Kernel Graph AllTops KL RawFs)
+                    Foot       (ygg.rule-footprint Seeds Graph)
+                    CNames     (ygg.computed-names)
+                    Warn       (ygg.cn-warn CNames)
                     FootCode   (map (/. D (rewrite-f-error D EvalFree))
                                     (footcode Foot Kernel))
                     Arities    (arity-literal Tops)
@@ -134,7 +138,7 @@
                     Prims      (find-primitives (append OutCode KL))
                     WriteK     (write-kl-file (@s Dir "/kernel.kl") OutCode)
                     UserOut    (write-user-files KLFiles KL Dir)
-                    WriteM     (write-manifest Dir UserOut KL Prims)
+                    WriteM     (write-manifest Dir UserOut KL Prims CNames)
                     Restore    (set *maximum-print-sequence-size* MaxPrint)
                     done))
 
@@ -536,6 +540,483 @@
   F [_ | Rows] -> (row-calls F Rows)
   _ [] -> [])
 
+\\ ====================== ygg.dl: a small Datalog engine ==================
+\\ Stage 3 of docs/analysis-rules.md.  The shake's footprint is no longer a
+\\ hand-written traversal: it is the least fixpoint of the rule set in
+\\ (value *shake-rules*) - the same rules analysis/analysis.dl gives to
+\\ Souffle - over facts the shake already extracts (ygg.cls-defuns,
+\\ ygg.mention-rows, function-calls).  The worklist `reach` above and the
+\\ Warshall closure below stay as differential oracles; yggdrasil.footprints
+\\ runs all three and compares.
+\\
+\\ A tuple is a list [Pred Arg ...].  A rule is [Head | Body]; a body
+\\ literal is a tuple pattern (Shen variables stand for logic variables),
+\\ [not Lit] for stratified negation, or [ne A B] for an inequality guard.
+\\ A program is a LIST OF STRATA, each a list of rules, evaluated in order:
+\\ a [not P] literal may only name a P whose stratum is already closed, and
+\\ ygg.dl-check-neg refuses a program that breaks that.
+\\
+\\ Two things make it fast enough to sit inside a shake.  (1) The database
+\\ is indexed, not scanned: every tuple is filed under a property of the
+\\ interned key "ygg.dl/Pred/Arg1" (the same put/get trick called-fns uses
+\\ for defp), so a goal whose first argument is bound - (edge F G) with F
+\\ known, which is every step of the reach recursion - costs one hash
+\\ lookup instead of a walk of the whole database.  (2) Evaluation is
+\\ semi-naive: after the first round, a rule is re-fired only with one of
+\\ its body literals drawn from the tuples that were NEW in the previous
+\\ round, so no join is recomputed against tuples it already saw.
+\\
+\\ The database lives in the property store rather than in a threaded
+\\ value: Shen has no hash type in the certified API, and an assoc list
+\\ over 686 kernel names would put the scan back.  ygg.*dl-keys* records
+\\ every key touched so ygg.dl-reset can empty them again - a run starts
+\\ from a clean database even inside one host process.
+
+(set ygg.*dl-keys* [])
+
+(define ygg.dl-key
+  Pred Arg -> (intern (cn "ygg.dl/" (cn (ygg.fact-str Pred)
+                                        (cn "/" (ygg.fact-str Arg))))))
+
+(define ygg.dl-get
+  Key -> (trap-error (get Key ygg.dl) (/. E [])))
+
+(define ygg.dl-reset
+  -> (do (ygg.mapc (/. K (put K ygg.dl [])) (value ygg.*dl-keys*))
+         (set ygg.*dl-keys* [])
+         done))
+
+\\ A nullary or first-argument-free goal still needs a bucket; ygg.dl-all is
+\\ the per-predicate bucket every tuple also goes into, for goals whose
+\\ first argument is unbound.
+(define ygg.dl-first
+  [] -> ygg.dl-nullary
+  [A | _] -> A)
+
+(define ygg.dl-push
+  K T -> (let Old (ygg.dl-get K)
+              Note (if (empty? Old)
+                       (set ygg.*dl-keys* [K | (value ygg.*dl-keys*)])
+                       Old)
+              (put K ygg.dl [T | Old])))
+
+\\ true when the tuple was not already there - which is what makes it part
+\\ of the next round's delta.
+(define ygg.dl-add
+  [P | Args] -> (let K (ygg.dl-key P (ygg.dl-first Args))
+                     (if (element? [P | Args] (ygg.dl-get K))
+                         false
+                         (do (ygg.dl-push K [P | Args])
+                             (ygg.dl-push (ygg.dl-key P ygg.dl-all) [P | Args])
+                             true))))
+
+(define ygg.dl-query
+  P -> (ygg.dl-get (ygg.dl-key P ygg.dl-all)))
+
+\\ The second column of a two-column relation, which is what every relation
+\\ the shake reads back out of the engine happens to be.
+(define ygg.dl-col1
+  P -> (map (/. T (hd (tl T))) (ygg.dl-query P)))
+
+\\ ------------------------------ unification -----------------------------
+\\ Substitutions are assoc lists of [Var | Term]; walk chases bindings.
+
+(define ygg.dl-lookup
+  V [] -> V
+  V [[V | T] | _] -> T
+  V [_ | S] -> (ygg.dl-lookup V S))
+
+(define ygg.dl-walk
+  X S -> (let Y (ygg.dl-lookup X S) (if (= X Y) X (ygg.dl-walk Y S)))
+      where (variable? X)
+  [X | Xs] S -> [(ygg.dl-walk X S) | (ygg.dl-walk Xs S)]
+  X _ -> X)
+
+(define ygg.dl-unify
+  X Y S -> (ygg.dl-unify-h (ygg.dl-walk X S) (ygg.dl-walk Y S) S))
+
+(define ygg.dl-unify-h
+  X X S -> S
+  V T S -> [[V | T] | S]  where (variable? V)
+  T V S -> [[V | T] | S]  where (variable? V)
+  [X | Xs] [Y | Ys] S -> (let S1 (ygg.dl-unify X Y S)
+                              (if (= S1 fail) fail (ygg.dl-unify Xs Ys S1)))
+  _ _ _ -> fail)
+
+\\ ------------------------------- solving --------------------------------
+\\ (ygg.dl-solve Body S N Delta): every substitution extending S under which
+\\ Body holds.  N is the 0-based index of the body literal to draw from
+\\ Delta instead of from the database (-1 for none) - the semi-naive
+\\ restriction.  Candidates for an ordinary literal come from the index when
+\\ its first argument is already bound, and from the predicate's ygg.dl-all
+\\ bucket otherwise.
+
+(define ygg.dl-solve
+  [] S _ _ -> [S]
+  [[not G] | Gs] S N D -> (if (empty? (ygg.dl-solve [G] S -1 []))
+                              (ygg.dl-solve Gs S (- N 1) D)
+                              [])
+  [[ne A B] | Gs] S N D -> (if (= (ygg.dl-walk A S) (ygg.dl-walk B S))
+                               []
+                               (ygg.dl-solve Gs S (- N 1) D))
+  [G | Gs] S 0 D -> (ygg.dl-extend Gs S -1 D (ygg.dl-unifiers G (ygg.dl-delta G D) S))
+  [G | Gs] S N D -> (ygg.dl-extend Gs S (- N 1) D
+                                   (ygg.dl-unifiers G (ygg.dl-cands G S) S)))
+
+(define ygg.dl-extend
+  Gs S N D Subs -> (mapcan (/. S1 (ygg.dl-solve Gs S1 N D)) Subs))
+
+(define ygg.dl-unifiers
+  G Cands S -> (ygg.filter (/. X (not (= X fail)))
+                           (map (/. F (ygg.dl-unify G F S)) Cands)))
+
+(define ygg.dl-cands
+  [P | Args] S -> (let A (ygg.dl-walk (ygg.dl-first Args) S)
+                       (if (variable? A)
+                           (ygg.dl-query P)
+                           (ygg.dl-get (ygg.dl-key P A)))))
+
+(define ygg.dl-delta
+  [P | _] D -> (ygg.filter (/. T (= (hd T) P)) D))
+
+\\ ------------------------------ evaluation ------------------------------
+\\ Round 0 fires every rule against the whole database; later rounds fire
+\\ each rule once per body position that mentions a predicate of THIS
+\\ stratum, with that position restricted to the previous round's delta.
+\\ A rule with no such position is complete after round 0.
+
+(define ygg.dl-derive
+  [Head | Body] N D -> (map (/. S (ygg.dl-walk Head S)) (ygg.dl-solve Body [] N D)))
+
+(define ygg.dl-new
+  Ts -> (ygg.filter (fn ygg.dl-add) Ts))
+
+(define ygg.dl-positions
+  [] _ _ -> []
+  [[not _] | Ls] N Preds -> (ygg.dl-positions Ls (+ N 1) Preds)
+  [[ne _ _] | Ls] N Preds -> (ygg.dl-positions Ls (+ N 1) Preds)
+  [[P | _] | Ls] N Preds -> [N | (ygg.dl-positions Ls (+ N 1) Preds)]
+      where (element? P Preds)
+  [_ | Ls] N Preds -> (ygg.dl-positions Ls (+ N 1) Preds))
+
+(define ygg.dl-rule-round
+  [Head | Body] D Preds -> (mapcan (/. N (ygg.dl-derive [Head | Body] N D))
+                                   (ygg.dl-positions Body 0 Preds)))
+
+(define ygg.dl-round
+  Rules D Preds -> (ygg.dl-new (mapcan (/. R (ygg.dl-rule-round R D Preds)) Rules)))
+
+(define ygg.dl-loop
+  _ _ [] -> done
+  Rules Preds D -> (ygg.dl-loop Rules Preds (ygg.dl-round Rules D Preds)))
+
+(define ygg.dl-head-pred
+  [[P | _] | _] -> P)
+
+\\ Stratification is the one thing a Datalog with negation can get silently
+\\ wrong, so it is checked rather than assumed: a [not P] inside a stratum
+\\ that also derives P would read a relation that is not finished yet.
+(define ygg.dl-check-neg
+  Rules Preds -> (ygg.mapc (/. R (ygg.dl-check-rule R Preds)) Rules))
+
+(define ygg.dl-check-rule
+  [_ | Body] Preds -> (ygg.mapc (/. L (ygg.dl-check-lit L Preds)) Body))
+
+(define ygg.dl-check-lit
+  [not [P | _]] Preds -> (if (element? P Preds)
+                             (simple-error (cn "ygg.dl: unstratified negation on "
+                                               (str P)))
+                             done)
+  _ _ -> done)
+
+(define ygg.dl-stratum
+  Rules -> (let Preds (map (fn ygg.dl-head-pred) Rules)
+                Check (ygg.dl-check-neg Rules Preds)
+                D0    (ygg.dl-new (mapcan (/. R (ygg.dl-derive R -1 [])) Rules))
+                (ygg.dl-loop Rules Preds D0)))
+
+\\ (ygg.dl-run Facts Strata) loads the EDB and closes each stratum in turn.
+\\ The database is left standing for the caller's queries; the next run
+\\ clears it.
+(define ygg.dl-run
+  Facts Strata -> (do (ygg.dl-reset)
+                      (ygg.mapc (fn ygg.dl-add) Facts)
+                      (ygg.mapc (fn ygg.dl-stratum) Strata)
+                      done))
+
+\\ =========================== the shake's rules ==========================
+\\ analysis/analysis.dl, as Shen data, stratum by stratum.  It is meant to
+\\ be read against that file line for line: same relation names, same
+\\ clause order, same deviations D1-D7 (see the header there).  The only
+\\ syntactic difference is that logic variables are written as the
+\\ lowercase names below and turned into Shen variables by ygg.dl-varify,
+\\ because Shen's `define` rejects free variables in a body and a literal
+\\ [reach G] at toplevel would be one.
+\\
+\\   evalcapable(S) :- rawsym(S), entry(S).
+\\   anyeval(1)     :- evalcapable(_).
+\\   evalfree(1)    :- !anyeval(1).
+\\   edge(F, G)     :- callpos(F, G), kernel(G), F != "shen.f-error".
+\\   edge(F, G)     :- argpos(F, G, _), kernel(G), F != "shen.f-error".
+\\   edge("shen.f-error", G) :- callpos("shen.f-error", G), kernel(G), anyeval(1).
+\\   edge("shen.f-error", G) :- argpos("shen.f-error", G, _), kernel(G), anyeval(1).
+\\   floorseed(G)   :- formmentionsef(_, G), kernel(G), evalfree(1).
+\\   floorseed(G)   :- formmentions(_, G), kernel(G), anyeval(1).
+\\   seed(G)        :- floorseed(G).
+\\   seed(G)        :- usersym(G), kernel(G), evalfree(1).
+\\   seed(G)        :- rawsym(G), kernel(G), anyeval(1).
+\\   reach(G)       :- seed(G).
+\\   reach(G)       :- reach(F), edge(F, G).
+\\   floor(G)       :- floorseed(G).
+\\   floor(G)       :- floor(F), edge(F, G).
+\\   computedName(F) :- userintern(F).
+\\   computedName(F) :- userglobal(F).
+\\
+\\ Strata: the mode first (evalcapable, anyeval; then evalfree, which is
+\\ the one negated literal), then the edges, then the seeds, then the two
+\\ fixpoints, then the stage-3 computed-name hypothesis.  Nothing in a
+\\ stratum negates a predicate its own stratum derives.
+\\
+\\ Body-literal order is chosen for the index, not for the reading: the
+\\ literal that binds the first argument of the next one comes first, so
+\\ reach's recursive clause walks edges by hash lookup.  The declarative
+\\ meaning is order-independent, so this costs the comparison nothing.
+\\
+\\ usedprim/reaches/needsEval and datasym are in analysis.dl but have no
+\\ rule here: the shake computes the primitive set with find-primitives
+\\ over the code it is about to WRITE (which includes the synthesised
+\\ initialiser, D7), and datasym derives nothing by D2.  Both are dumped as
+\\ facts for the oracle, which does evaluate them.
+
+(set ygg.*dl-vars* [[f "F"] [g "G"] [c "C"] [n "N"] [s "S"]])
+
+(define ygg.dl-var
+  X [] -> X
+  X [[X Name] | _] -> (intern Name)
+  X [_ | Vs] -> (ygg.dl-var X Vs))
+
+(define ygg.dl-varify
+  [X | Y] -> [(ygg.dl-varify X) | (ygg.dl-varify Y)]
+  X -> (ygg.dl-var X (value ygg.*dl-vars*))  where (symbol? X)
+  X -> X)
+
+(set *shake-rules*
+  (ygg.dl-varify
+   [\\ mode
+    [[[evalcapable s] [rawsym s] [entry s]]
+     [[anyeval 1]     [evalcapable s]]]
+    [[[evalfree 1]    [not [anyeval 1]]]]
+    \\ edges (D1: position-insensitive; D2: datasym derives nothing;
+    \\        D3: shen.f-error's whole row is mode-gated)
+    [[[edge f g]              [callpos f g] [kernel g] [ne f shen.f-error]]
+     [[edge f g]              [argpos f g c] [kernel g] [ne f shen.f-error]]
+     [[edge shen.f-error g]   [callpos shen.f-error g] [kernel g] [anyeval 1]]
+     [[edge shen.f-error g]   [argpos shen.f-error g c] [kernel g] [anyeval 1]]]
+    \\ seeds (D4, D5: both readings are facts, the mode picks one)
+    [[[floorseed g] [formmentionsef n g] [kernel g] [evalfree 1]]
+     [[floorseed g] [formmentions n g]   [kernel g] [anyeval 1]]
+     [[seed g]      [floorseed g]]
+     [[seed g]      [usersym g] [kernel g] [evalfree 1]]
+     [[seed g]      [rawsym g]  [kernel g] [anyeval 1]]]
+    \\ reach and floor (D6: the recursion is restricted to kernel defuns)
+    [[[reach g] [seed g]]
+     [[reach g] [reach f] [edge f g]]
+     [[floor g] [floorseed g]]
+     [[floor g] [floor f] [edge f g]]]
+    \\ the stage-3 computed-name hypothesis: warns, decides nothing
+    [[[computedName f] [userintern f]]
+     [[computedName f] [userglobal f]]]]))
+
+\\ ===================== the rules as the shake's footprint ===============
+\\ The facts are the ones the fact dump already extracts (ygg.cls-defuns,
+\\ ygg.mention-rows, function-calls), so the shake and the Souffle oracle
+\\ read the same relations off the same code.  Mode-dependent relations are
+\\ handed over in BOTH readings (D4, D5) and the rules pick, exactly as the
+\\ dump does - the engine is given no idea which mode it is in beyond the
+\\ entry/rawsym facts.
+
+(define ygg.shake-edb
+  Kernel Graph AllTops KL RawFs
+   -> (append (map (/. R [kernel (row-head R)]) Graph)
+      (append (ygg.cls-defuns Kernel)
+      (append (map (/. R [formmentions | R]) (ygg.mention-rows AllTops 1 false))
+      (append (map (/. R [formmentionsef | R]) (ygg.mention-rows AllTops 1 true))
+      (append (map (/. S [usersym S]) (ygg.remove-dups (function-calls KL)))
+      (append (map (/. S [rawsym S]) (ygg.remove-dups RawFs))
+      (append (map (/. S [entry S]) (value *eval-entry-points*))
+              (ygg.cn-facts KL)))))))))
+
+\\ Run the rules.  Leaves the database standing so the callers below can
+\\ read reach, floor and computedName out of it.
+(define ygg.shake-rules-run
+  Kernel Graph AllTops KL RawFs
+   -> (ygg.dl-run (ygg.shake-edb Kernel Graph AllTops KL RawFs)
+                  (value *shake-rules*)))
+
+(define ygg.dl-edge?
+  F G -> (element? [edge F G] (ygg.dl-get (ygg.dl-key edge F))))
+
+\\ The rules decide WHICH kernel defuns are in the footprint; this decides
+\\ the ORDER the footprint list is in, which the rules neither do nor can -
+\\ Datalog derives a set.  The order is load-bearing in exactly one place:
+\\ lambdatable-entries walks the footprint to build the literal
+\\ (set shen.*lambdatable* ...), so a different order is a different
+\\ kernel.kl.  It is therefore reproduced here rather than redefined: the
+\\ same depth-first walk the worklist `reach` does, over the same rows in
+\\ the same order, except that (a) a successor is followed only when the
+\\ rules derived an edge for it (which is what strip-f-error-row used to
+\\ do by editing the graph) and (b) a node is emitted only when the rules
+\\ put it in the set.  A walk that can only drop nodes cannot invent a
+\\ footprint; and ygg.dl-covered? checks the other direction, that every
+\\ tuple the rules derived did come out, so neither half can drift.
+\\ Recorded as deviation D8 in analysis/analysis.dl.
+(define ygg.rule-footprint
+  Seeds Graph -> (let Reach (ygg.dl-col1 reach)
+                      Set   (append Reach Seeds)
+                      Foot  (ygg.dl-walk-order Seeds [] Graph Set)
+                      Check (ygg.dl-covered? Reach Foot)
+                      Foot))
+
+(define ygg.dl-walk-order
+  [] Seen _ _ -> Seen
+  [F | Fs] Seen Graph Set -> (ygg.dl-walk-order Fs Seen Graph Set)
+      where (or (element? F Seen) (not (element? F Set)))
+  [F | Fs] Seen Graph Set -> (ygg.dl-walk-order (append (ygg.dl-succs F Graph) Fs)
+                                                [F | Seen] Graph Set))
+
+(define ygg.dl-succs
+  F Graph -> (ygg.filter (/. G (ygg.dl-edge? F G)) (row-calls F Graph)))
+
+(define ygg.dl-covered?
+  [] _ -> true
+  [G | Gs] Foot -> (ygg.dl-covered? Gs Foot)  where (element? G Foot)
+  [G | _] _ -> (simple-error (cn "ygg.dl: reach derived " (cn (str G) " but the footprint has not"))))
+
+\\ ------------------------- computed names (stage 3) ---------------------
+\\ The soundness argument for the whole shake is that a name the artifact
+\\ can call is a name that occurs syntactically in the code.  Two things
+\\ break that: `intern`, which turns a string into a callable symbol, and a
+\\ (value X) / (set X _) whose X is not a literal symbol, which reaches a
+\\ global whose name is only known at runtime.  Neither is an eval entry
+\\ point - a program that interns a name it never applies is perfectly
+\\ safe - so this stage only REPORTS: one
+\\   yggdrasil-shake: WARN computed-name in F
+\\ line per user defun (or `top` for a file's toplevel forms) that contains
+\\ one, and a computed-names= key in both manifests.  Deciding what to do
+\\ about it is a later stage's problem; recording that the hypothesis is
+\\ testable, and which fixtures test it, is this one's.
+
+(define ygg.cn-facts
+  KL -> (mapcan (fn ygg.cn-file) KL))
+
+(define ygg.cn-file
+  Forms -> (append (mapcan (fn ygg.cn-form) Forms)
+                   (ygg.cn-of top (toplevel-forms Forms))))
+
+(define ygg.cn-form
+  [defun F _ Body] -> (ygg.cn-of F Body)
+  _ -> [])
+
+(define ygg.cn-of
+  F Body -> (append (if (ygg.cn-intern? Body) [[userintern F]] [])
+                    (if (ygg.cn-global? Body) [[userglobal F]] [])))
+
+\\ In KL every occurrence of `intern` is an application or an argument
+\\ handed to one, so "occurs at all" and "occurs in an applied or argument
+\\ position" are the same test here.
+(define ygg.cn-intern?
+  [X | Y] -> (or (ygg.cn-intern? X) (ygg.cn-intern? Y))
+  intern -> true
+  _ -> false)
+
+(define ygg.cn-global?
+  [value V] -> true  where (not (ygg.cn-literal-sym? V))
+  [set V _] -> true  where (not (ygg.cn-literal-sym? V))
+  [X | Y] -> (or (ygg.cn-global? X) (ygg.cn-global? Y))
+  _ -> false)
+
+\\ A KL variable is a symbol too, so symbol? alone would call (value V2049)
+\\ a literal name - the very case this is looking for.
+(define ygg.cn-literal-sym?
+  V -> (and (symbol? V) (not (variable? V))))
+
+\\ Derivation order is the database's, i.e. reversed; source order reads
+\\ better in a manifest and is just as deterministic.
+(define ygg.computed-names
+  -> (reverse (ygg.remove-dups (ygg.dl-col1 computedName))))
+
+(define ygg.cn-warn
+  Names -> (ygg.mapc (/. F (pr (make-string "yggdrasil-shake: WARN computed-name in ~A~%" F)
+                               (stoutput)))
+                     Names))
+
+(define ygg.cn-report
+  [] -> "none"
+  Names -> (ygg.cn-commas Names))
+
+(define ygg.cn-commas
+  [F] -> (str F)
+  [F | Fs] -> (cn (str F) (cn "," (ygg.cn-commas Fs))))
+
+\\ ----------------------- the three-way differential ---------------------
+\\ Test-only entry point (initorder_test.go's sibling, footprint_test.go).
+\\ The same footprint from the rules, from the worklist `reach`, and from
+\\ the Warshall closure; the three must be the same set or stage 3 has
+\\ broken something.  The Warshall leg runs over the graph restricted to
+\\ the footprint - the closure of a set closed under edges is unchanged by
+\\ dropping the rest - because O(V^3) over all 686 kernel nodes is minutes
+\\ (see the Warshall section); above ygg.*warshall-limit* nodes it is
+\\ skipped and says so.
+\\
+\\   yggdrasil-footprints: mode=M rules=N worklist=N warshall=N agree=true
+\\
+\\ The Warshall count is deduplicated before it is printed: collect-reachable
+\\ unions one row per seed, so a seed that is also somebody's callee appears
+\\ twice - a multiset, not a disagreement.  agree= is a set comparison.
+
+(set ygg.*warshall-limit* 150)
+
+(define yggdrasil.footprints
+  Files -> (let MaxPrint (value *maximum-print-sequence-size*)
+                Unlimit  (set *maximum-print-sequence-size* 1000000000)
+                Kernel   (kernel-code)
+                Graph    (call-graph Kernel)
+                KLFiles  (map (fn bootstrap) Files)
+                RawKL    (map (fn read-file) KLFiles)
+                RawFs    (function-calls RawKL)
+                EvalFree (eval-free? RawFs)
+                KL       (strip-user-declares RawKL EvalFree)
+                AllTops  (toplevel-forms Kernel)
+                Tops     (prepare-tops AllTops EvalFree)
+                Graph2   (if EvalFree (strip-f-error-row Graph) Graph)
+                Seeds    (append (mapcan (fn called-fns) Tops) (function-calls KL))
+                Run      (ygg.shake-rules-run Kernel Graph AllTops KL RawFs)
+                Rules    (ygg.rule-footprint Seeds Graph)
+                Work     (reach Seeds [] Graph2)
+                Wars     (ygg.warshall-leg Seeds Graph2 Rules)
+                Restore  (set *maximum-print-sequence-size* MaxPrint)
+                Report   (pr (make-string
+                              "yggdrasil-footprints: mode=~A rules=~A worklist=~A warshall=~A agree=~A~%"
+                              (if EvalFree "eval-free" "eval-capable")
+                              (ygg.len Rules) (ygg.len Work)
+                              (if (= Wars skipped)
+                                  "skipped"
+                                  (ygg.len (ygg.remove-dups Wars)))
+                              (and (ygg.same-set? Rules Work)
+                                   (or (= Wars skipped) (ygg.same-set? Rules Wars))))
+                             (stoutput))
+                done))
+
+(define ygg.warshall-leg
+  Seeds Graph Foot -> skipped  where (> (ygg.len Foot) (value ygg.*warshall-limit*))
+  Seeds Graph Foot -> (warshall-footprint
+                       Seeds
+                       (ygg.filter (/. R (element? (row-head R) Foot)) Graph)))
+
+(define ygg.same-set?
+  Xs Ys -> (and (empty? (ygg.filter (/. X (not (element? X Ys))) Xs))
+                (empty? (ygg.filter (/. Y (not (element? Y Xs))) Ys))))
+
 \\ ===================== Warshall closure (homage, optional) ==============
 \\ Tarver's original Yggdrasil derived the footprint from the FULL transitive
 \\ closure of the call graph, built with an iterative Warshall - the part he
@@ -861,8 +1342,9 @@
 (set *global-primitives*   [*stinput* *stoutput*])
 
 (define write-manifest
-  Dir UserFiles UserKL Prims ->
+  Dir UserFiles UserKL Prims CNames ->
      (let NeedsEval (element? eval-kl Prims)
+          Computed  (ygg.cn-report CNames)
           Fns       (user-arities UserKL)
           Globals   (ygg.filter (/. P (element? P (value *global-primitives*))) Prims)
           Optional  (ygg.filter (/. P (element? P (value *optional-primitives*))) Prims)
@@ -870,8 +1352,8 @@
                                                (element? P Optional)))) Prims)
           Reaches   (reaches-caps Prims)
           Cannot    (cannot-reach-caps Prims)
-          Sexp (write-manifest-sexp Dir UserFiles Fns Required Optional Globals NeedsEval Reaches Cannot)
-          Txt  (write-manifest-txt Dir UserFiles Fns Required Optional Globals NeedsEval Reaches Cannot)
+          Sexp (write-manifest-sexp Dir UserFiles Fns Required Optional Globals NeedsEval Computed Reaches Cannot)
+          Txt  (write-manifest-txt Dir UserFiles Fns Required Optional Globals NeedsEval Computed Reaches Cannot)
           done))
 
 (define user-arities
@@ -886,7 +1368,7 @@
   [_ | Xs] -> (+ 1 (ygg.len Xs)))
 
 (define write-manifest-sexp
-  Dir UserFiles Fns Required Optional Globals NeedsEval Reaches Cannot ->
+  Dir UserFiles Fns Required Optional Globals NeedsEval Computed Reaches Cannot ->
     (let Sink (open (@s Dir "/yggdrasil.manifest") out)
          W1 (pr-kl-line ["yggdrasil-manifest" 3] Sink)
          W2 (pr-kl-line ["kernel-version" "42-s42.20260825"] Sink)
@@ -899,12 +1381,13 @@
          W9 (pr-kl-line ["globals" | Globals] Sink)
          WA (pr-kl-line ["needs-eval" NeedsEval] Sink)
          WA2 (pr-kl-line ["init-order" checked] Sink)
+         WA3 (pr-kl-line ["computed-names" Computed] Sink)
          WB (pr-kl-line ["reaches" | Reaches] Sink)
          WC (pr-kl-line ["cannot-reach" | Cannot] Sink)
          (close Sink)))
 
 (define write-manifest-txt
-  Dir UserFiles Fns Required Optional Globals NeedsEval Reaches Cannot ->
+  Dir UserFiles Fns Required Optional Globals NeedsEval Computed Reaches Cannot ->
     (let Sink (open (@s Dir "/yggdrasil.manifest.txt") out)
          W1 (pr (make-string "manifest-version=3~%") Sink)
          W2 (pr (make-string "kernel-version=42-s42.20260825~%") Sink)
@@ -917,6 +1400,7 @@
          W9 (ygg.mapc (/. P (pr (make-string "global=~A~%" P) Sink)) Globals)
          WA (pr (make-string "needs-eval=~A~%" NeedsEval) Sink)
          WA2 (pr (make-string "init-order=checked~%") Sink)
+         WA3 (pr (make-string "computed-names=~A~%" Computed) Sink)
          WB (ygg.mapc (/. C (pr (make-string "reaches=~A~%" C) Sink)) Reaches)
          WC (ygg.mapc (/. C (pr (make-string "cannot-reach=~A~%" C) Sink)) Cannot)
          (close Sink)))
@@ -1201,9 +1685,9 @@
            KL       (strip-user-declares RawKL EvalFree)
            AllTops  (toplevel-forms Kernel)
            Tops     (prepare-tops AllTops EvalFree)
-           Graph2   (if EvalFree (strip-f-error-row Graph) Graph)
            Seeds    (append (mapcan (fn called-fns) Tops) (function-calls KL))
-           Foot     (footprint Seeds Graph2)
+           Rules    (ygg.shake-rules-run Kernel Graph AllTops KL RawFs)
+           Foot     (ygg.rule-footprint Seeds Graph)
            Arities  (arity-literal Tops)
            TopsOut  (map (/. T (trim-top T Foot EvalFree Arities)) Tops)
            Cls      (ygg.cls-defuns Kernel)
@@ -1223,6 +1707,8 @@
            W13 (ygg.facts-file Dir "cap"      (mapcan (fn ygg.cap-rows) (value *capabilities*)))
            W14 (ygg.facts-file Dir "portGlobal" (map (/. V [V]) (value *global-primitives*)))
            W15 (ygg.facts-file Dir "initprim" (map (/. P [P]) (find-primitives TopsOut)))
+           W16 (ygg.facts-file Dir "userintern" (ygg.rows-of userintern (ygg.cn-facts KL)))
+           W17 (ygg.facts-file Dir "userglobal" (ygg.rows-of userglobal (ygg.cn-facts KL)))
            Restore (set *maximum-print-sequence-size* MaxPrint)
            Report  (pr (make-string "yggdrasil-facts: mode=~A dir=~A kernel=~A~%"
                                     (if EvalFree "eval-free" "eval-capable")

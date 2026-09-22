@@ -86,6 +86,21 @@
 //     acceptance criterion, and `needsEval`/`reaches` ride along with it.
 //     Note that `initprim` is consequently dumped for the mode the program
 //     is actually in, unlike the other relations.
+//
+// D8. Stage 3 makes these rules the shake's own implementation, evaluated by
+//     the `ygg.dl` engine in yggdrasil.shen over (value *shake-rules*) -- the
+//     same rules, as Shen data, one clause per clause below. One thing the
+//     rules do not and cannot give it: an ORDER. `lambdatable-entries` walks
+//     the footprint LIST to build the (set shen.*lambdatable* ...) literal,
+//     so the order is part of kernel.kl's bytes. The shake therefore renders
+//     the rule-derived SET as a list with `ygg.dl-walk-order`, the same
+//     depth-first walk the worklist `reach` always did, gated so that it
+//     follows only edges the rules derived and emits only nodes the rules
+//     put in `reach` (plus the non-kernel seeds, which D6 excludes from
+//     `reach` and the Shen footprint has always carried). A walk that can
+//     only drop nodes cannot invent a footprint, and `ygg.dl-covered?`
+//     checks the converse. Ordering is presentation; membership is the
+//     rules'.
 
 // ============================== facts ==================================
 
@@ -133,6 +148,12 @@
 
 .decl initprim(p:symbol)                     // primitives of the emitted initialiser (D7)
 .input initprim
+
+.decl userintern(f:symbol)                   // user defun F (or "top") mentions `intern`
+.input userintern
+
+.decl userglobal(f:symbol)                   // F has a (value X) / (set X _) with X not a literal symbol
+.input userglobal
 
 // ================================ mode =================================
 // eval-free? tests the user KL's symbols against *eval-entry-points*. One
@@ -215,6 +236,22 @@ reaches(C) :- cap(C, P), usedprim(P).
 .decl needsEval(x:number)
 .output needsEval
 needsEval(1) :- usedprim("eval-kl").
+
+// =========================== computed names ============================
+// Stage 3's hypothesis, and the one rule here that decides nothing. The
+// soundness argument for the whole shake is that a name the artifact can
+// call occurs syntactically in the artifact. `intern` turns a string into a
+// callable symbol; a (value X) / (set X _) whose X is not a literal symbol
+// names a global only at runtime. Either one is outside the argument. It is
+// NOT an eval entry point -- interning a name you never apply is harmless --
+// so the shake only warns and records computed-names= in its manifests. The
+// relation is here so the oracle and the Shen engine stay in lockstep about
+// what the facts mean.
+
+.decl computedName(f:symbol)
+.output computedName
+computedName(F) :- userintern(F).
+computedName(F) :- userglobal(F).
 
 // portGlobal is declared and read but unused by the stage-1 rules: it is the
 // input the stage-2 initialisation-order check (readBeforeWrite) needs, and
