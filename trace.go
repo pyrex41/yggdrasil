@@ -76,18 +76,45 @@ func shakeExpr(prog, outdir string, full bool) (string, error) {
 // yggdrasil.shen) and recorded in the manifest as trace-file=.
 const traceFileName = "yggdrasil.trace"
 
-// traceFacts is a parsed trace: the two relations, deduplicated.
+// The phase column of a trace record. `b` is everything shen.initialise
+// does, `p` everything after it returns: without the split a fib run reads
+// as 49,076 records of which 20,000 are shen.fillvector out of the property
+// vector's initialiser, and "the program called X" is unanswerable.
+const (
+	phaseBoot    = "b"
+	phaseProgram = "p"
+)
+
+// traceFacts is a parsed trace: the two relations, deduplicated, split by
+// phase, and whether the run actually ended.
 type traceFacts struct {
-	called []string // f<TAB>NAME records
-	reads  []string // v<TAB>NAME records
-	lines  int      // records read, before dedup
+	called  []string // f<TAB>NAME records, either phase
+	reads   []string // v<TAB>NAME records, either phase
+	boot    []string // called, seen at least once in the boot phase
+	program []string // called, seen at least once in the program phase
+	lines   int      // records read, before dedup
+	unknown int      // records with no phase column (a pre-phase artifact)
+	// complete reports the e<TAB>end record. It is the ONLY thing that
+	// distinguishes a finished run from a trace cut short -- by a crash, by
+	// an early exit, or by a port that buffered the tail and never flushed
+	// it. Without it a one-line trace and a 49,076-line one are the same
+	// document, which is how a truncated called.facts used to read as OK.
+	complete bool
 }
 
 // parseTrace reads the woven artifact's trace file. Format is one record per
-// line, "f\tNAME" for a defun entry and "v\tNAME" for a global read; anything
-// else is ignored rather than fatal, because a port that interleaves its own
-// output into the file should degrade to a smaller witness set, not to a
-// failed check.
+// line:
+//
+//	f<TAB>NAME<TAB>PHASE   a defun entry
+//	v<TAB>NAME<TAB>PHASE   a global read
+//	e<TAB>end              the end-of-run record, written once, last
+//
+// The phase column is optional on read: an artifact woven by an older shaker
+// has two columns, and a two-column record counts toward `called` with its
+// phase unknown rather than being dropped, so a half-updated tree is not
+// silently mis-read as an empty run. Anything else is ignored rather than
+// fatal, because a port that interleaves its own output into the file should
+// degrade to a smaller witness set, not to a failed check.
 func parseTrace(path string) (*traceFacts, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -95,28 +122,58 @@ func parseTrace(path string) (*traceFacts, error) {
 	}
 	defer f.Close()
 	calls, reads := map[string]bool{}, map[string]bool{}
-	n := 0
+	boot, program := map[string]bool{}, map[string]bool{}
+	tf := &traceFacts{}
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 1<<20), 1<<24)
 	for sc.Scan() {
-		line := strings.TrimRight(sc.Text(), "\r")
-		tag, name, ok := strings.Cut(line, "\t")
-		if !ok || name == "" {
+		cols := strings.Split(strings.TrimRight(sc.Text(), "\r"), "\t")
+		if len(cols) < 2 {
 			continue
+		}
+		tag, name := cols[0], cols[1]
+		if tag == "e" {
+			// Exactly the record ygg.trace-end writes, so that a port
+			// interleaving a line of its own that happens to start with
+			// an e cannot forge the end of the run.
+			tf.complete = tf.complete || name == "end"
+			continue
+		}
+		if name == "" {
+			continue
+		}
+		phase := ""
+		if len(cols) >= 3 {
+			phase = cols[2]
 		}
 		switch tag {
 		case "f":
 			calls[name] = true
-			n++
 		case "v":
 			reads[name] = true
-			n++
+		default:
+			continue
+		}
+		tf.lines++
+		switch phase {
+		case phaseBoot:
+			if tag == "f" {
+				boot[name] = true
+			}
+		case phaseProgram:
+			if tag == "f" {
+				program[name] = true
+			}
+		default:
+			tf.unknown++
 		}
 	}
 	if err := sc.Err(); err != nil {
 		return nil, fmt.Errorf("scanning %s: %w", path, err)
 	}
-	return &traceFacts{called: sortedKeys(calls), reads: sortedKeys(reads), lines: n}, nil
+	tf.called, tf.reads = sortedKeys(calls), sortedKeys(reads)
+	tf.boot, tf.program = sortedKeys(boot), sortedKeys(program)
+	return tf, nil
 }
 
 // sortedKeys lives in scip.go; the two stages want the same thing of a
@@ -201,9 +258,19 @@ type traceCheckResult struct {
 	ok       bool     // the sentinel says OK
 	called   []string // deduplicated called(F)
 	reads    []string // deduplicated readGlobal(V)
+	boot     []string // called, entered during shen.initialise
+	program  []string // called, entered after shen.initialise returned
+	unknown  int      // records that carried no phase column
 	records  int      // trace records before dedup
-	stdout   string   // the artifact's stdout
-	factsDir string
+	complete bool     // the trace carried its end-of-run record
+	// neverEntered are the manifest's fn= names -- the user's own defuns --
+	// that the run did not enter. REPORTED, never fatal: a defun that this
+	// input does not exercise is information about the input, not a
+	// violation of anything.
+	neverEntered []string
+	stdout       string       // the artifact's stdout
+	golden       goldenResult // what the comparison against tests/<name>.expected did
+	factsDir     string
 }
 
 // traceCheck is the whole pipeline, factored out of cmdTraceCheck so the
@@ -275,10 +342,33 @@ func traceCheck(prog, outdir, target, stdinFile string, host []string, evalStyle
 	if len(tf.called) == 0 {
 		return nil, fmt.Errorf("%s is empty: the %s port wrote no trace records", tracePath, target)
 	}
+	// The trace has to be able to say it ENDED. Everything below reads a
+	// prefix of the run as if it were the run, so a check that skips this
+	// is a check that cannot fail for the reason it claims to check.
+	if !tf.complete {
+		return nil, fmt.Errorf("%s has no end-of-run record after %d records: the run did not finish "+
+			"(the program errored or exited before its last toplevel form), or the %s port lost the "+
+			"buffered tail. Nothing is wrong with the footprint -- the trace is not a whole run, so "+
+			"containment was not checked", tracePath, tf.lines, target)
+	}
+	// The other half of "the process finished": correct output. The end
+	// record says the last form ran; the golden says it ran correctly. KL
+	// offers nothing else, and doing it HERE rather than in a separate
+	// parity invocation is what ties the claim to this run's artifact.
+	gold, err := checkGolden(prog, target, stdinFile, stdout)
+	if err != nil {
+		return nil, err
+	}
+
 	if err := writeFactsTSV(filepath.Join(factsDir, "called.facts"), tf.called); err != nil {
 		return nil, err
 	}
 	if err := writeFactsTSV(filepath.Join(factsDir, "readglobal.facts"), tf.reads); err != nil {
+		return nil, err
+	}
+	// A report input, not a rule input: analysis.dl and factRelations know
+	// nothing about it, and the phase split changes no rule's semantics.
+	if err := writeFactsTSV(filepath.Join(factsDir, "calledprogram.facts"), tf.program); err != nil {
 		return nil, err
 	}
 
@@ -287,14 +377,107 @@ func traceCheck(prog, outdir, target, stdinFile string, host []string, evalStyle
 		return nil, err
 	}
 	return &traceCheckResult{
-		sentinel: sentinel,
-		ok:       strings.Contains(sentinel, " OK "),
-		called:   tf.called,
-		reads:    tf.reads,
-		records:  tf.lines,
-		stdout:   stdout,
-		factsDir: factsDir,
+		sentinel:     sentinel,
+		ok:           strings.Contains(sentinel, " OK "),
+		called:       tf.called,
+		reads:        tf.reads,
+		boot:         tf.boot,
+		program:      tf.program,
+		unknown:      tf.unknown,
+		records:      tf.lines,
+		complete:     tf.complete,
+		neverEntered: neverEntered(outdir, tf.called),
+		stdout:       stdout,
+		golden:       gold,
+		factsDir:     factsDir,
 	}, nil
+}
+
+// goldenResult is what the stdout comparison did, so the report line can say
+// which of the three it was rather than implying the strongest one.
+type goldenResult struct {
+	path    string // tests/<name>.expected, "" when the fixture ships none
+	checked bool   // the comparison actually ran
+	how     string // "matches", "contained in transcript", or why it did not run
+}
+
+// checkGolden compares the traced run's stdout with the fixture's committed
+// golden, the same tests/<name>.expected scripts/parity-gate.sh uses.
+//
+// The kl runner is not a port and its "stdout" is not the program's: it is a
+// KLambda REPL transcript -- numbered prompts, echoed values, the VM's own
+// panics -- with the program's output embedded in it, so containment is the
+// strongest thing assertable there. And when the fixture ships stdin, the kl
+// runner cannot deliver it at all: klRunner appends the fixture bytes after
+// the driver forms on the one descriptor the VM reads its PROGRAM from, so
+// the VM consumes them as toplevel forms and the program reads EOF. That is
+// a defect in the runner, not in the run, so the comparison is declined --
+// out loud, on the report line -- rather than either failing or pretending.
+func checkGolden(prog, target, stdinFile, stdout string) (goldenResult, error) {
+	path := strings.TrimSuffix(prog, ".shen") + ".expected"
+	want, err := os.ReadFile(path)
+	if err != nil {
+		return goldenResult{how: "no committed golden for this fixture"}, nil
+	}
+	if target == klTarget {
+		if stdinFile != "" {
+			return goldenResult{path: path,
+				how: "not checked: the kl runner feeds the program and the fixture's stdin down one descriptor"}, nil
+		}
+		if !strings.Contains(stdout, string(want)) {
+			return goldenResult{path: path}, fmt.Errorf(
+				"the traced kl run's transcript does not contain %s:\n  want: %q\n  got:  %q",
+				path, string(want), stdout)
+		}
+		return goldenResult{path: path, checked: true, how: "contained in the kl transcript"}, nil
+	}
+	if stdout != string(want) {
+		return goldenResult{path: path}, fmt.Errorf(
+			"the traced %s run's stdout does not match %s:\n  want: %q\n  got:  %q\n"+
+				"  the trace describes a run that produced the wrong answer, so it is not evidence for anything",
+			target, path, string(want), stdout)
+	}
+	return goldenResult{path: path, checked: true, how: "matches"}, nil
+}
+
+// neverEntered is the manifest's fn= names minus the run's called set: the
+// user defuns this input did not exercise. Reported, never fatal.
+func neverEntered(outdir string, called []string) []string {
+	fns, err := manifestFnNames(outdir)
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	for _, c := range called {
+		seen[c] = true
+	}
+	var out []string
+	for _, f := range fns {
+		if !seen[f] {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// manifestFnNames reads the fn=<name> <arity> lines of the txt manifest.
+func manifestFnNames(outdir string) ([]string, error) {
+	b, err := os.ReadFile(filepath.Join(outdir, "yggdrasil.manifest.txt"))
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, line := range strings.Split(string(b), "\n") {
+		v, ok := strings.CutPrefix(strings.TrimRight(line, "\r"), "fn=")
+		if !ok || v == "" {
+			continue
+		}
+		name, _, _ := strings.Cut(v, " ")
+		if name != "" {
+			out = append(out, name)
+		}
+	}
+	return out, nil
 }
 
 // ---- the built-in "kl" runner ------------------------------------------
@@ -446,9 +629,21 @@ func cmdTraceCheck(rest []string) int {
 		return 3
 	}
 	fmt.Println(res.sentinel)
-	fmt.Printf("  target=%s records=%d called=%d readGlobal=%d facts=%s elapsed=%s\n",
-		*target, res.records, len(res.called), len(res.reads), res.factsDir,
-		time.Since(start).Truncate(time.Millisecond))
+	fmt.Printf("  target=%s records=%d called=%d called-program=%d readGlobal=%d complete=%v facts=%s elapsed=%s\n",
+		*target, res.records, len(res.called), len(res.program), len(res.reads), res.complete,
+		res.factsDir, time.Since(start).Truncate(time.Millisecond))
+	// Reported, not enforced: a coverage instrument is a coverage
+	// instrument, and saying so is what keeps it from being read as a
+	// soundness claim.
+	fmt.Printf("  phase: boot=%d program=%d unphased-records=%d\n", len(res.boot), len(res.program), res.unknown)
+	name := "tests/<fixture>.expected"
+	if res.golden.path != "" {
+		name = filepath.Base(res.golden.path)
+	}
+	fmt.Printf("  stdout vs %s: %s\n", name, res.golden.how)
+	if len(res.neverEntered) > 0 {
+		fmt.Printf("  user defuns never entered on this input: %s\n", strings.Join(res.neverEntered, ", "))
+	}
 	if !res.ok {
 		return 1
 	}

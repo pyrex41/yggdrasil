@@ -179,7 +179,11 @@ func TestTraceCheckRules(t *testing.T) {
 	for f := range reach {
 		inFootprint = append(inFootprint, f)
 	}
-	clean := append([]string{"fib", "ygg.traced"}, inFootprint...)
+	// shen.initialise is in every real trace -- the weaver puts the entry
+	// advice inside it -- and the host half now requires it, as the guard
+	// that a called.facts is a whole run and not a truncated prefix.
+	// kernelDefuns deliberately leaves it out, so put it back by hand.
+	clean := append([]string{"fib", "ygg.traced", "shen.initialise"}, inFootprint...)
 	writeFactsTSV(filepath.Join(factsDir, "called.facts"), clean)
 	writeFactsTSV(filepath.Join(factsDir, "readglobal.facts"), []string{"*stoutput*"})
 	got, err := traceCheckHost(prog, factsDir, host, "sub")
@@ -263,13 +267,227 @@ func TestTraceCheckFixtures(t *testing.T) {
 				if len(res.called) == 0 {
 					t.Fatal("the run recorded no calls")
 				}
+				// Every port, including the buffering ones, has to get
+				// the end-of-run record out. That is what discharges
+				// obligation F of docs/port-contract.md.
+				if !res.complete {
+					t.Error("the trace has no end-of-run record")
+				}
 				if !contains(res.called, c.userFn) {
 					t.Errorf("called does not include the user function %q (got %d names)",
 						c.userFn, len(res.called))
 				}
-				t.Logf("%s: %s (readGlobal=%d, %d records)",
-					name, res.sentinel, len(res.reads), res.records)
+				t.Logf("%s: %s (readGlobal=%d, %d records, boot=%d program=%d, stdout: %s)",
+					name, res.sentinel, len(res.reads), res.records,
+					len(res.boot), len(res.program), res.golden.how)
 			})
 		}
+	}
+}
+
+// ---- the trace has to be able to say it ENDED --------------------------
+//
+// Everything downstream of parseTrace reads whatever records it finds as if
+// they were the whole run. Before the end-of-run record existed, a trace cut
+// to one line and a complete one were the same document: `yggdrasil
+// trace-check` reported OK called=1 reach=53 on a called.facts truncated with
+// head -1. The three tests below are the three places that has to be caught.
+
+// TestParseTraceEndRecord is the pure-Go half: no host, no artifact. A trace
+// without the e record must not read as complete, one with it must, and the
+// phase column must partition the called set rather than being dropped.
+func TestParseTraceEndRecord(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	// Truncated: the run's first record and nothing else. This is exactly
+	// the repro, at the file the facts are derived from.
+	cut, err := parseTrace(write("cut.trace", "f\tshen.initialise\tb\n"))
+	if err != nil {
+		t.Fatalf("parseTrace: %v", err)
+	}
+	if cut.complete {
+		t.Error("a trace with no e record reports complete: a cut-off run is indistinguishable from a finished one")
+	}
+	if len(cut.called) != 1 {
+		t.Errorf("called = %v, want the one record", cut.called)
+	}
+
+	full := "f\tshen.initialise\tb\n" +
+		"f\tshen.fillvector\tb\n" +
+		"v\t*property-vector*\tb\n" +
+		"f\tfib\tp\n" +
+		"f\tshen.app\tp\n" +
+		"f\tshen.fillvector\tp\n" + // a name in BOTH phases
+		"v\t*stoutput*\tp\n" +
+		"this is a port writing its own output\n" + // junk: degrade, never fail
+		"q\tnot-a-tag\tp\n" +
+		"e\tend\n"
+	tf, err := parseTrace(write("full.trace", full))
+	if err != nil {
+		t.Fatalf("parseTrace: %v", err)
+	}
+	if !tf.complete {
+		t.Fatal("a trace with an e record does not report complete")
+	}
+	if got, want := tf.lines, 7; got != want {
+		t.Errorf("records = %d, want %d (junk and the e record are not records)", got, want)
+	}
+	if !equalStrings(tf.called, []string{"fib", "shen.app", "shen.fillvector", "shen.initialise"}) {
+		t.Errorf("called = %v", tf.called)
+	}
+	if !equalStrings(tf.reads, []string{"*property-vector*", "*stoutput*"}) {
+		t.Errorf("reads = %v", tf.reads)
+	}
+	if !equalStrings(tf.boot, []string{"shen.fillvector", "shen.initialise"}) {
+		t.Errorf("boot = %v", tf.boot)
+	}
+	if !equalStrings(tf.program, []string{"fib", "shen.app", "shen.fillvector"}) {
+		t.Errorf("program = %v", tf.program)
+	}
+	if tf.unknown != 0 {
+		t.Errorf("unphased = %d, want 0", tf.unknown)
+	}
+
+	// A two-column artifact (an older shaker, or a half-updated tree) must
+	// still be read, with the phase unknown -- not silently dropped, which
+	// would read as a run that called nothing.
+	old, err := parseTrace(write("old.trace", "f\tfib\nv\t*stoutput*\ne\tend\n"))
+	if err != nil {
+		t.Fatalf("parseTrace: %v", err)
+	}
+	if !old.complete || len(old.called) != 1 || len(old.reads) != 1 {
+		t.Errorf("a two-column trace did not survive: %+v", old)
+	}
+	if old.unknown != 2 {
+		t.Errorf("unphased = %d, want 2", old.unknown)
+	}
+	if len(old.boot)+len(old.program) != 0 {
+		t.Error("a two-column trace invented a phase")
+	}
+}
+
+func equalStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// TestTraceCheckComplete is the end-to-end half on a real artifact: the run
+// must produce the end record, both phases must be non-empty, the program
+// phase must be a proper subset of the whole (fib's 49,076 records are mostly
+// the initialiser's property vector, which is the point of the split), and
+// the run's stdout must be the committed golden -- checked in this run, on
+// this artifact, not in a separate parity invocation.
+func TestTraceCheckComplete(t *testing.T) {
+	host := checkHost(t)
+	if !contains(traceTargets(t, host), "go") {
+		t.Skip("the go stage-2 builder is not usable here")
+	}
+	res, err := traceCheck("tests/fib.shen", t.TempDir(), "go", "", host, "sub")
+	if err != nil {
+		t.Fatalf("trace-check: %v", err)
+	}
+	if res == nil {
+		t.Skip("target go is not runnable here")
+	}
+	if !res.ok {
+		t.Fatalf("containment failed: %s", res.sentinel)
+	}
+	if !res.complete {
+		t.Error("the run produced no end-of-run record")
+	}
+	if len(res.program) == 0 {
+		t.Error("no program-phase calls: the phase never flipped out of boot")
+	}
+	if len(res.boot) == 0 {
+		t.Error("no boot-phase calls: the phase was never boot")
+	}
+	if len(res.program) >= len(res.called) {
+		t.Errorf("program phase (%d) is not strictly smaller than called (%d): the split records nothing",
+			len(res.program), len(res.called))
+	}
+	if res.unknown != 0 {
+		t.Errorf("%d records carried no phase column", res.unknown)
+	}
+	want, err := os.ReadFile("tests/fib.expected")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.stdout != string(want) {
+		t.Errorf("stdout = %q, want %q", res.stdout, string(want))
+	}
+	if !res.golden.checked {
+		t.Errorf("the golden comparison did not run: %s", res.golden.how)
+	}
+	// calledprogram.facts is a report input: written beside the rule
+	// inputs, and deliberately not one of them.
+	b, err := os.ReadFile(filepath.Join(res.factsDir, "calledprogram.facts"))
+	if err != nil {
+		t.Fatalf("calledprogram.facts: %v", err)
+	}
+	if !strings.Contains(string(b), "fib\n") {
+		t.Errorf("calledprogram.facts does not name the user defun:\n%s", b)
+	}
+	t.Logf("%s (records=%d called=%d program=%d boot=%d neverEntered=%v)",
+		res.sentinel, res.records, len(res.called), len(res.program), len(res.boot), res.neverEntered)
+}
+
+// TestTraceCheckTruncated is the host half alone, which is the half the Go
+// driver's end-of-run record cannot reach: given a called.facts cut to one
+// line, `yggdrasil.trace-check` must refuse it rather than report OK on a
+// called set of one. Before the guard this printed
+// "yggdrasil-trace-check: OK called=1 reach=53".
+func TestTraceCheckTruncated(t *testing.T) {
+	host := checkHost(t)
+	const prog = "tests/fib.shen"
+	shakeDir, factsDir := t.TempDir(), t.TempDir()
+	if _, err := shake(prog, shakeDir, host, "sub", true); err != nil {
+		t.Fatalf("shake: %v", err)
+	}
+	if _, err := facts(prog, factsDir, host, "sub", true); err != nil {
+		t.Fatalf("facts: %v", err)
+	}
+	var footprint []string
+	for f := range kernelDefuns(t, filepath.Join(shakeDir, "kernel.kl")) {
+		footprint = append(footprint, f)
+	}
+	writeFactsTSV(filepath.Join(factsDir, "readglobal.facts"), []string{"*stoutput*"})
+
+	// head -1 called.facts, the whole of the repro.
+	writeFactsTSV(filepath.Join(factsDir, "called.facts"), []string{"<-vector"})
+	got, err := traceCheckHost(prog, factsDir, host, "sub")
+	if err != nil {
+		t.Fatalf("trace-check: %v", err)
+	}
+	if strings.Contains(got, " OK ") {
+		t.Errorf("a one-line called.facts reported OK: %s", got)
+	}
+	if !strings.Contains(got, "truncated=shen.initialise-not-entered") {
+		t.Errorf("no truncation sentinel: %s", got)
+	}
+
+	// And the guard must not be a check that only fails: the same relation
+	// with the initialiser back in it passes.
+	writeFactsTSV(filepath.Join(factsDir, "called.facts"),
+		append([]string{"fib", "ygg.traced", "shen.initialise"}, footprint...))
+	got, err = traceCheckHost(prog, factsDir, host, "sub")
+	if err != nil {
+		t.Fatalf("trace-check: %v", err)
+	}
+	if !strings.Contains(got, " OK ") {
+		t.Errorf("a complete called.facts did not pass: %s", got)
 	}
 }
