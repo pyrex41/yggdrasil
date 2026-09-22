@@ -72,12 +72,18 @@ port gets it for free. The port's obligations are about the trace reaching
 disk:
 
 - **Obligation F (flush).** Bytes written with `write-byte` to a stream
-  opened with `open` reach the file by process exit, without `close`.
-  shen-go does this. A port that buffers must either flush at exit or
-  declare `trace_flush: close-required`, in which case the weaver emits a
-  `close` as the last user toplevel form and the trace is valid only for
-  programs that terminate normally. A port declaring neither is reported
-  `trace: unsupported`, not passed.
+  opened with `open` reach the file by process exit. Nothing is asked of
+  the port here any more, and no port declares anything: the weaver now
+  appends one extra toplevel form after the last form of the last user
+  file, `(ygg.trace-end)`, which writes the run's `e<TAB>end` record and
+  then `close`s the stream. `close` is a KL primitive and was already in
+  the manifest's primitive list, so the obligation is discharged for
+  every port at the cost of no new capability. The consequence is that
+  the trace is a complete document only for a program that terminates
+  normally, and that is exactly what `trace-check` requires: a trace with
+  no end record is refused
+  (`yggdrasil-trace-check: FAIL truncated=no-end-record`) rather than read
+  as a shorter run.
 - **Obligation E (entry).** Every kept defun is entered through its KL
   body, so the woven `(ygg.traced F)` runs. A native override (Obligation
   N) is entered through the native, so it never records itself; its name
@@ -87,6 +93,18 @@ The check is `uncoveredCall(F) :- called(F), kernel(F), !reach(F)` empty,
 per run, per port. It is the one piece of evidence that is identical in
 form on every target, which is why it is the floor of the ladder above
 level 0, not SCIP.
+
+**What emptiness means here, and what it does not.** On a port whose
+artifact *is* the slice, that query is empty by construction: a call to a
+kernel defun outside `reach` is a name the artifact does not contain, so
+it is an undefined-function crash and there is no finished run to read
+facts from. The query has teeth on a `dispatch: full-kernel` build, on a
+host-side facts dump, and against a `reach` computed from a different
+program than the one that ran — and nowhere else. What level 2 does
+produce on every port is **coverage**: which kernel defuns and globals a
+real run entered, split into the boot (`shen.initialise`) phase and the
+program phase by the record's third column. `reach` strictly containing
+`called` is expected and is reported, never failed.
 
 ## Level 3: static inclusion (a graph extractor, of which SCIP is one)
 

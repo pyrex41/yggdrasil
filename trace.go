@@ -1,28 +1,54 @@
 package main
 
-// Runtime call tracing: the empirical half of the reachability claim.
+// Runtime call tracing: a COVERAGE instrument for the shake, not a proof of
+// it.
 //
 // docs/analysis-rules.md derives `reach`, the set of kernel defuns a program
-// CAN call, from syntax. The soundness obligation behind the whole shake is
-// that nothing outside `reach` ever runs. That obligation is discharged on
-// paper by the rules; this discharges it on evidence, per target, on a real
-// run.
+// CAN call, from syntax, and the shake emits exactly `reach`. `--trace` asks
+// the shaker to weave advice into the KL it is about to write (yggdrasil.shen,
+// the "runtime call trace" section): every defun records its own name on
+// entry, every (value V) records the global it reads. The trace is a fact
+// relation; `yggdrasil trace-check` runs it against
 //
-// `--trace` asks the shaker to weave advice into the KL it is about to write
-// (yggdrasil.shen, the "runtime call trace" section): every defun records its
-// own name on entry, every (value V) records the global it reads. The trace
-// is a fact relation; `yggdrasil trace-check` runs it against
+//	 uncoveredCall(F) :- called(F), kernel(F), !reach(F).
 //
-//     uncoveredCall(F) :- called(F), kernel(F), !reach(F).
+// Weaving at the KLambda IR rather than in a backend is what makes one
+// implementation serve all eight targets: the woven artifact is ordinary KL,
+// so every stage-2 builder compiles it unchanged.
 //
-// which must be empty. Weaving at the KLambda IR rather than in a backend is
-// what makes one implementation serve all eight targets: the woven artifact
-// is ordinary KL, so every stage-2 builder compiles it unchanged.
+// WHAT THAT QUERY IS AND IS NOT. It is a tripwire with a narrow blast radius,
+// and the earlier version of this comment -- "the soundness obligation [...]
+// is discharged on paper by the rules; this discharges it on evidence" -- was
+// false. On a port that runs the slice and only the slice, a call to a kernel
+// defun outside `reach` is not recorded as an uncovered call: the name is not
+// in the artifact, so the call is an undefined-function crash and there is no
+// finished run to read facts from. uncoveredCall is EMPTY BY CONSTRUCTION
+// there, and its emptiness is not evidence about the rules. The query has
+// teeth only where the name resolves anyway -- a port that links a full
+// kernel behind the slice (`dispatch: full-kernel` in docs/port-contract.md),
+// a host-side facts dump, a relation assembled by hand -- and against a
+// `reach` computed from a DIFFERENT program than the one that ran, which is
+// the case trace_test.go's TestTraceCheckRules exercises.
 //
-// What this cannot do: a run exercises ONE path. An empty uncoveredCall is
-// evidence for the soundness lemma on the inputs tried, never a proof. The
-// interesting failure would be the other direction anyway -- reach ⊋ called
-// is expected and is just imprecision.
+// What the instrument does produce, which is what the report line says out
+// loud rather than implying the sentence above:
+//
+//   - coverage. Which kernel defuns and globals a real run on a real target
+//     entered, split into the boot (shen.initialise) phase and the program
+//     phase -- a fib run is 49,076 records of which 20,000 are the property
+//     vector's initialiser, so "the program called X" is otherwise
+//     unanswerable. reach strictly containing called is expected: that is
+//     imprecision, reported, never failed.
+//   - completeness. The trace carries an end-of-run record, and the facts
+//     carry the writer's declared row counts. Without them a one-line trace
+//     and a whole run are the same document, which is how a truncated
+//     called.facts once read as OK.
+//   - correctness. The run's stdout is the fixture's committed golden,
+//     compared in THIS run against THIS artifact. A trace of a run that
+//     produced the wrong answer is not evidence for anything.
+//
+// A run exercises ONE path, so none of this is a proof; and two of the three
+// are checks on the instrument itself rather than on the shake.
 
 import (
 	"bufio"
@@ -133,10 +159,11 @@ func parseTrace(path string) (*traceFacts, error) {
 		}
 		tag, name := cols[0], cols[1]
 		if tag == "e" {
-			// Exactly the record ygg.trace-end writes, so that a port
-			// interleaving a line of its own that happens to start with
-			// an e cannot forge the end of the run.
-			tf.complete = tf.complete || name == "end"
+			// EXACTLY the record ygg.trace-end writes -- two columns, no
+			// more -- so that a port interleaving a line of its own that
+			// happens to start with an e cannot forge the end of the run.
+			// `e<TAB>end<TAB>anything` is that port's line, not ours.
+			tf.complete = tf.complete || (len(cols) == 2 && name == "end")
 			continue
 		}
 		if name == "" {
@@ -175,6 +202,61 @@ func parseTrace(path string) (*traceFacts, error) {
 	tf.boot, tf.program = sortedKeys(boot), sortedKeys(program)
 	return tf, nil
 }
+
+// phaseDegenerate reports the one combination of phase counts that cannot
+// describe a run: the trace ENDED (so the last user toplevel form executed),
+// every record carried a phase column, records were tagged boot -- and not
+// one was tagged program. The flip to `p` is the last thing the woven
+// shen.initialise body does, so this says the flip never executed while the
+// program nonetheless ran to its end. That is the instrument failing, not the
+// program calling nothing, and it is exactly what shen-go's KLambda VM does
+// on the `kl` target: it abandons the initialiser's continuation, the program
+// runs anyway, and every record in the file is tagged b.
+//
+// A trace with no phase column at all (an older shaker) is NOT degenerate: it
+// is unphased, tf.unknown says so, and nothing pretends otherwise.
+func (tf *traceFacts) phaseDegenerate() bool {
+	return tf.complete && tf.unknown == 0 && len(tf.boot) > 0 && len(tf.program) == 0
+}
+
+// degenerateWarning is the report's own account of that failure. It exists as
+// a function so the report cannot say it in one place and the tests assert it
+// in another.
+func degenerateWarning(target string) string {
+	return fmt.Sprintf("  phase: DEGENERATE on target %s -- the run ended (end-of-run record present) "+
+		"and every record is tagged boot.\n"+
+		"    The woven flip to the program phase never executed on this target, so called-program=0 "+
+		"is the instrument failing, not the program calling nothing;\n"+
+		"    calledprogram.facts is NOT written, because an empty one would assert something this run "+
+		"did not establish. Containment is unaffected: `called` is the whole run either way.", target)
+}
+
+// writeTraceMeta records, beside the fact files, what the writer of those
+// files believed it wrote: the row counts and whether the trace it read
+// carried its end-of-run record.
+//
+// This is what lets the host half detect a called.facts that is a strict
+// PREFIX of the run rather than only one missing by a chosen name -- see the
+// note above yggdrasil.trace-check. It is a loss detector, not a forgery
+// detector: a hand that edits both files is writing a fiction, and no check
+// confined to this directory can say otherwise.
+//
+// Deliberately not a rule input: analysis/analysis.dl and factRelations know
+// nothing about it, and the trace rules read only called.facts and
+// readglobal.facts.
+func writeTraceMeta(factsDir string, tf *traceFacts) error {
+	var b bytes.Buffer
+	fmt.Fprintf(&b, "complete\t%v\n", tf.complete)
+	fmt.Fprintf(&b, "called\t%d\n", len(tf.called))
+	fmt.Fprintf(&b, "readglobal\t%d\n", len(tf.reads))
+	fmt.Fprintf(&b, "program\t%d\n", len(tf.program))
+	fmt.Fprintf(&b, "records\t%d\n", tf.lines)
+	return os.WriteFile(filepath.Join(factsDir, traceMetaName), b.Bytes(), 0o644)
+}
+
+// traceMetaName is the sidecar's name in the facts dir. Fixed on both sides
+// (yggdrasil.shen's yggdrasil.trace-check reads it by this name).
+const traceMetaName = "trace.meta"
 
 // sortedKeys lives in scip.go; the two stages want the same thing of a
 // string set and there is no reason for two copies of it.
@@ -266,11 +348,106 @@ type traceCheckResult struct {
 	// neverEntered are the manifest's fn= names -- the user's own defuns --
 	// that the run did not enter. REPORTED, never fatal: a defun that this
 	// input does not exercise is information about the input, not a
-	// violation of anything.
-	neverEntered []string
-	stdout       string       // the artifact's stdout
-	golden       goldenResult // what the comparison against tests/<name>.expected did
-	factsDir     string
+	// violation of anything. neverEnteredErr is why the list could not be
+	// produced, when it could not: an unreadable manifest must say so
+	// rather than disappear into an empty report.
+	neverEntered    []string
+	neverEnteredErr error
+	// phaseBroken is tf.phaseDegenerate(): the run ended but nothing is
+	// tagged program. Reported loudly, never fatal -- see degenerateWarning.
+	phaseBroken bool
+	stdout      string       // the artifact's stdout
+	golden      goldenResult // what the comparison against tests/<name>.expected did
+	factsDir    string
+}
+
+// traceFailure is a check that FAILED, as against a check that could not run.
+// It carries the yggdrasil-trace-check: line the failure should be reported
+// on, because every consumer of this command -- traceCheckHost itself, the
+// parity-gate-style scripts that grep for the sentinel -- locates the result
+// by that prefix. A failure that prints only to stderr is invisible to all of
+// them, which is the same defect as a check that cannot fail.
+type traceFailure struct {
+	sentinel string // "yggdrasil-trace-check: FAIL ..."
+	detail   error
+}
+
+func (f *traceFailure) Error() string { return f.detail.Error() }
+func (f *traceFailure) Unwrap() error { return f.detail }
+
+// failSentinel is the sentinel line to print for err, or "" when err is not a
+// check failure (a missing toolchain, an unreadable file: those are not
+// verdicts and must not be reported as one).
+func failSentinel(err error) string {
+	var f *traceFailure
+	if errors.As(err, &f) {
+		return f.sentinel
+	}
+	return ""
+}
+
+// traceSkip is a check that could not be RUN as evidence, as against one
+// that ran and failed. It carries a NAME, because an unnamed skip is how a
+// suite goes green on a case it never exercised: the report line and the
+// host-gated tests both print it.
+//
+// The distinction matters more here than elsewhere. Torvalds's premise for
+// the whole stdout leg is that a correct stdout is the only "the process
+// finished" signal KL offers. Where that signal cannot be obtained, the
+// honest answer is neither OK (a trace of a run nobody checked) nor FAIL (the
+// run is not what is broken) but a named skip.
+type traceSkip struct{ reason string }
+
+func (s *traceSkip) Error() string { return "not evidence: " + s.reason }
+
+// skipName is the reason err is a named skip, or "" when it is not one.
+func skipName(err error) string {
+	var s *traceSkip
+	if errors.As(err, &s) {
+		return s.reason
+	}
+	return ""
+}
+
+// evidencePossible refuses, up front, the one target/fixture combination on
+// which a trace cannot be evidence about anything.
+//
+// shen-go's cmd/kl reads its PROGRAM from os.Stdin and takes no file
+// argument, so klRunner has one descriptor for two jobs: it appends the
+// fixture's stdin bytes after the KL forms, the VM consumes them as further
+// toplevel forms, and the program itself reads EOF. tests/stdin-sum then
+// answers "bytes: 0 digest: 0" against a golden of "bytes: 15 digest: 12410",
+// and the transcript carries a recovered panic out of the VM. Harvesting a
+// called set from that run and printing OK is exactly the drift this file is
+// about: the run demonstrably did not do what the fixture asks.
+//
+// Declining the golden comparison and proceeding was the earlier answer and
+// was wrong -- it left the OK line and a green fixture test standing over a
+// wrong run. Delivering stdin separately needs a file argument in shen-go's
+// cmd/kl, which is another repository.
+func evidencePossible(target, stdinFile string) error {
+	if target == klTarget && stdinFile != "" {
+		return &traceSkip{reason: "kl-runner-cannot-deliver-stdin"}
+	}
+	return nil
+}
+
+// requireComplete is the end-of-run gate, a pure function of a parsed trace so
+// that the failure it exists to produce is testable without a stage-2 runtime.
+// Everything downstream reads whatever records it finds as if they were the
+// whole run, so a check that skips this is a check that cannot fail for the
+// reason it claims to check.
+func requireComplete(tf *traceFacts, path, target string) error {
+	if tf.complete {
+		return nil
+	}
+	return &traceFailure{
+		sentinel: "yggdrasil-trace-check: FAIL truncated=no-end-record",
+		detail: fmt.Errorf("%s has no end-of-run record after %d records: the run did not finish "+
+			"(the program errored or exited before its last toplevel form), or the %s port lost the "+
+			"buffered tail. Nothing is wrong with the footprint -- the trace is not a whole run, so "+
+			"containment was not checked", path, tf.lines, target),
+	}
 }
 
 // traceCheck is the whole pipeline, factored out of cmdTraceCheck so the
@@ -278,6 +455,12 @@ type traceCheckResult struct {
 // result and a nil error: SKIP, never FAIL, exactly as build() and the parity
 // gate treat it.
 func traceCheck(prog, outdir, target, stdinFile string, host []string, evalStyle string) (*traceCheckResult, error) {
+	// Before anything is built: can a run on this target/fixture pair be
+	// evidence at all? A named skip here, not an OK over a run whose
+	// stdout nobody could compare.
+	if err := evidencePossible(target, stdinFile); err != nil {
+		return nil, err
+	}
 	prog, _ = filepath.Abs(prog)
 	outdir, _ = filepath.Abs(outdir)
 	if err := os.MkdirAll(outdir, 0o755); err != nil {
@@ -342,20 +525,14 @@ func traceCheck(prog, outdir, target, stdinFile string, host []string, evalStyle
 	if len(tf.called) == 0 {
 		return nil, fmt.Errorf("%s is empty: the %s port wrote no trace records", tracePath, target)
 	}
-	// The trace has to be able to say it ENDED. Everything below reads a
-	// prefix of the run as if it were the run, so a check that skips this
-	// is a check that cannot fail for the reason it claims to check.
-	if !tf.complete {
-		return nil, fmt.Errorf("%s has no end-of-run record after %d records: the run did not finish "+
-			"(the program errored or exited before its last toplevel form), or the %s port lost the "+
-			"buffered tail. Nothing is wrong with the footprint -- the trace is not a whole run, so "+
-			"containment was not checked", tracePath, tf.lines, target)
+	if err := requireComplete(tf, tracePath, target); err != nil {
+		return nil, err
 	}
 	// The other half of "the process finished": correct output. The end
 	// record says the last form ran; the golden says it ran correctly. KL
 	// offers nothing else, and doing it HERE rather than in a separate
 	// parity invocation is what ties the claim to this run's artifact.
-	gold, err := checkGolden(prog, target, stdinFile, stdout)
+	gold, err := checkGolden(prog, target, stdout)
 	if err != nil {
 		return nil, err
 	}
@@ -368,7 +545,21 @@ func traceCheck(prog, outdir, target, stdinFile string, host []string, evalStyle
 	}
 	// A report input, not a rule input: analysis.dl and factRelations know
 	// nothing about it, and the phase split changes no rule's semantics.
-	if err := writeFactsTSV(filepath.Join(factsDir, "calledprogram.facts"), tf.program); err != nil {
+	// When the phase instrument is degenerate on this target there is no
+	// program-phase relation to write, and an empty file asserting that the
+	// program called nothing would be worse than none: any stale one is
+	// removed, and the report says why.
+	programFacts := filepath.Join(factsDir, "calledprogram.facts")
+	if tf.phaseDegenerate() {
+		if err := os.Remove(programFacts); err != nil && !os.IsNotExist(err) {
+			return nil, err
+		}
+	} else if err := writeFactsTSV(programFacts, tf.program); err != nil {
+		return nil, err
+	}
+	// Last, so that a facts dir carrying a declared count is one whose fact
+	// files were all written.
+	if err := writeTraceMeta(factsDir, tf); err != nil {
 		return nil, err
 	}
 
@@ -376,21 +567,23 @@ func traceCheck(prog, outdir, target, stdinFile string, host []string, evalStyle
 	if err != nil {
 		return nil, err
 	}
-	return &traceCheckResult{
-		sentinel:     sentinel,
-		ok:           strings.Contains(sentinel, " OK "),
-		called:       tf.called,
-		reads:        tf.reads,
-		boot:         tf.boot,
-		program:      tf.program,
-		unknown:      tf.unknown,
-		records:      tf.lines,
-		complete:     tf.complete,
-		neverEntered: neverEntered(outdir, tf.called),
-		stdout:       stdout,
-		golden:       gold,
-		factsDir:     factsDir,
-	}, nil
+	res := &traceCheckResult{
+		sentinel:    sentinel,
+		ok:          strings.Contains(sentinel, " OK "),
+		called:      tf.called,
+		reads:       tf.reads,
+		boot:        tf.boot,
+		program:     tf.program,
+		unknown:     tf.unknown,
+		records:     tf.lines,
+		complete:    tf.complete,
+		phaseBroken: tf.phaseDegenerate(),
+		stdout:      stdout,
+		golden:      gold,
+		factsDir:    factsDir,
+	}
+	res.neverEntered, res.neverEnteredErr = neverEntered(outdir, tf.called)
+	return res, nil
 }
 
 // goldenResult is what the stdout comparison did, so the report line can say
@@ -402,50 +595,63 @@ type goldenResult struct {
 }
 
 // checkGolden compares the traced run's stdout with the fixture's committed
-// golden, the same tests/<name>.expected scripts/parity-gate.sh uses.
+// golden, the same tests/<name>.expected scripts/parity-gate.sh uses -- and
+// with the SAME comparison the gate uses, canon() on both sides (main.go:
+// CRLF folded, trailing newlines stripped). Two comparison semantics on one
+// golden would mean a target that differs by a trailing newline fails
+// trace-check and passes the parity gate against the same file, with nothing
+// to say which was authoritative.
 //
 // The kl runner is not a port and its "stdout" is not the program's: it is a
 // KLambda REPL transcript -- numbered prompts, echoed values, the VM's own
 // panics -- with the program's output embedded in it, so containment is the
-// strongest thing assertable there. And when the fixture ships stdin, the kl
-// runner cannot deliver it at all: klRunner appends the fixture bytes after
-// the driver forms on the one descriptor the VM reads its PROGRAM from, so
-// the VM consumes them as toplevel forms and the program reads EOF. That is
-// a defect in the runner, not in the run, so the comparison is declined --
-// out loud, on the report line -- rather than either failing or pretending.
-func checkGolden(prog, target, stdinFile, stdout string) (goldenResult, error) {
+// strongest thing assertable there. That is the only softening, and it is a
+// fact about the transcript rather than about the run. The case the runner
+// genuinely cannot serve -- kl with a fixture stdin, where the VM eats the
+// bytes as toplevel forms and the program reads EOF -- never reaches here:
+// evidencePossible refuses it as a named skip before anything is shaken,
+// because a trace of a run that answered the wrong thing is not evidence and
+// must not be reported as OK.
+//
+// A mismatch is a traceFailure, not a bare error: it is a verdict on the run
+// and has to reach the consumers that find verdicts by the sentinel line.
+func checkGolden(prog, target, stdout string) (goldenResult, error) {
 	path := strings.TrimSuffix(prog, ".shen") + ".expected"
 	want, err := os.ReadFile(path)
 	if err != nil {
 		return goldenResult{how: "no committed golden for this fixture"}, nil
 	}
+	got, wanted := canon(stdout), canon(string(want))
+	sentinel := "yggdrasil-trace-check: FAIL stdout=mismatch-vs-" + filepath.Base(path)
 	if target == klTarget {
-		if stdinFile != "" {
-			return goldenResult{path: path,
-				how: "not checked: the kl runner feeds the program and the fixture's stdin down one descriptor"}, nil
-		}
-		if !strings.Contains(stdout, string(want)) {
-			return goldenResult{path: path}, fmt.Errorf(
+		if !strings.Contains(got, wanted) {
+			return goldenResult{path: path}, &traceFailure{sentinel: sentinel, detail: fmt.Errorf(
 				"the traced kl run's transcript does not contain %s:\n  want: %q\n  got:  %q",
-				path, string(want), stdout)
+				path, wanted, got)}
 		}
 		return goldenResult{path: path, checked: true, how: "contained in the kl transcript"}, nil
 	}
-	if stdout != string(want) {
-		return goldenResult{path: path}, fmt.Errorf(
+	if got != wanted {
+		return goldenResult{path: path}, &traceFailure{sentinel: sentinel, detail: fmt.Errorf(
 			"the traced %s run's stdout does not match %s:\n  want: %q\n  got:  %q\n"+
 				"  the trace describes a run that produced the wrong answer, so it is not evidence for anything",
-			target, path, string(want), stdout)
+			target, path, wanted, got)}
 	}
 	return goldenResult{path: path, checked: true, how: "matches"}, nil
 }
 
 // neverEntered is the manifest's fn= names minus the run's called set: the
-// user defuns this input did not exercise. Reported, never fatal.
-func neverEntered(outdir string, called []string) []string {
+// user defuns this input did not exercise. Reported, never fatal -- a defun
+// an input does not reach is information about the input.
+//
+// The error is returned rather than swallowed. Returning nil for both would
+// make an unreadable or renamed manifest look exactly like a run that entered
+// everything, and "the report silently became empty" is the failure mode this
+// whole commit is about.
+func neverEntered(outdir string, called []string) ([]string, error) {
 	fns, err := manifestFnNames(outdir)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("the user defuns never entered cannot be reported: %w", err)
 	}
 	seen := map[string]bool{}
 	for _, c := range called {
@@ -457,7 +663,7 @@ func neverEntered(outdir string, called []string) []string {
 			out = append(out, f)
 		}
 	}
-	return out
+	return out, nil
 }
 
 // manifestFnNames reads the fn=<name> <arity> lines of the txt manifest.
@@ -621,6 +827,22 @@ func cmdTraceCheck(rest []string) int {
 	start := time.Now()
 	res, err := traceCheck(prog, outdir, *target, in, host, *evalStyle)
 	if err != nil {
+		// A check that could not be run as evidence is a SKIP with a
+		// name, on the sentinel line and at the skip exit code -- never a
+		// pass, and never a failure of the run.
+		if name := skipName(err); name != "" {
+			fmt.Println("yggdrasil-trace-check: SKIP " + name)
+			fmt.Fprintln(os.Stderr, "yggdrasil:", err)
+			return 3
+		}
+		// A FAILED check reports itself on the sentinel line, like the
+		// host half's own FAIL forms: every consumer locates the verdict
+		// by that prefix, so a verdict that appears only on stderr is one
+		// none of them can see. An error that is not a verdict -- a
+		// missing tool, an unreadable file -- stays stderr-only.
+		if line := failSentinel(err); line != "" {
+			fmt.Println(line)
+		}
 		fmt.Fprintln(os.Stderr, "yggdrasil:", err)
 		return 1
 	}
@@ -634,16 +856,34 @@ func cmdTraceCheck(rest []string) int {
 		res.factsDir, time.Since(start).Truncate(time.Millisecond))
 	// Reported, not enforced: a coverage instrument is a coverage
 	// instrument, and saying so is what keeps it from being read as a
-	// soundness claim.
-	fmt.Printf("  phase: boot=%d program=%d unphased-records=%d\n", len(res.boot), len(res.program), res.unknown)
+	// soundness claim. A phase split that came out impossible says so here
+	// too -- an instrument that cannot report its own failure is the defect
+	// one level up from a check that cannot fail.
+	if res.phaseBroken {
+		fmt.Println(degenerateWarning(*target))
+	} else {
+		fmt.Printf("  phase: boot=%d program=%d unphased-records=%d\n",
+			len(res.boot), len(res.program), res.unknown)
+	}
 	name := "tests/<fixture>.expected"
 	if res.golden.path != "" {
 		name = filepath.Base(res.golden.path)
 	}
 	fmt.Printf("  stdout vs %s: %s\n", name, res.golden.how)
-	if len(res.neverEntered) > 0 {
+	switch {
+	case res.neverEnteredErr != nil:
+		fmt.Printf("  user defuns never entered on this input: UNKNOWN (%v)\n", res.neverEnteredErr)
+	case len(res.neverEntered) > 0:
 		fmt.Printf("  user defuns never entered on this input: %s\n", strings.Join(res.neverEntered, ", "))
+	default:
+		fmt.Println("  user defuns never entered on this input: none")
 	}
+	// Last line, and the one hickey-1 is about: what an empty uncoveredCall
+	// on this target does and does not establish. The file header says it at
+	// length; the tool has to say it where the number is read.
+	fmt.Println("  scope: coverage, not soundness -- on a port that runs the slice and only " +
+		"the slice, uncoveredCall is empty by construction (a call outside reach is an " +
+		"undefined-function crash, not a record).")
 	if !res.ok {
 		return 1
 	}

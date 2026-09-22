@@ -2252,17 +2252,39 @@
 \\ Files, load the run's called/readglobal facts out of FactsDir, close the
 \\ trace rules over the lot and report.  Output contract, the Go driver
 \\ parses these and nothing else:
-\\   yggdrasil-trace-check: OK called=N reach=M
+\\   yggdrasil-trace-check: OK called=N reach=M counts=verified
+\\   yggdrasil-trace-check: OK called=N reach=M counts=unverified
 \\   yggdrasil-trace-check: FAIL uncovered=F,G
 \\   yggdrasil-trace-check: FAIL truncated=shen.initialise-not-entered
+\\   yggdrasil-trace-check: FAIL truncated=called-count read=25 declared=34
+\\   yggdrasil-trace-check: FAIL truncated=no-end-record
 \\
-\\ The third form is the host half's own truncation guard, and it is what
-\\ stops a cut-off called.facts from reading as a clean run.  Every traced
-\\ run enters shen.initialise - the weaver puts the entry advice inside it
-\\ - so its absence from called.facts means the relation is not the run's:
-\\ the file was truncated, or the port wrote nothing.  It is a property of
-\\ the FACT FILE, checkable here with no artifact in sight, which is the
-\\ half the Go driver's end-of-run record cannot reach.
+\\ The truncated= forms are the host half's own guard against a called.facts
+\\ that is not the run's, and they are what stops a cut-off relation from
+\\ reading as a clean run.  There are two, because one alone was not a
+\\ prefix detector:
+\\
+\\   shen.initialise-not-entered.  Every traced run enters shen.initialise -
+\\   the weaver puts the entry advice inside it - so its absence means the
+\\   relation is not a run's.  called.facts is written SORTED, though, so
+\\   this catches only a cut short enough to drop that one name: for fib it
+\\   is line 21 of 34, and `head -25` sailed past it.
+\\
+\\   called-count.  The writer of the facts declares, in FactsDir/trace.meta,
+\\   how many rows it wrote and whether the trace it read carried its
+\\   end-of-run record; a called.facts with a different number of rows is not
+\\   the file that was written.  THIS is the strict-prefix detector, and it
+\\   catches any truncation, not a chosen name's.  It detects LOSS, not
+\\   forgery: a hand that rewrites trace.meta too is writing a fiction, and
+\\   no check on the same directory can say otherwise.
+\\
+\\ A FactsDir with no trace.meta - a bare `yggdrasil facts` dump, a relation
+\\ assembled by hand, a tree half-updated - is not refused, because the
+\\ counts were never declared there.  It reports counts=unverified, so the
+\\ OK line says which of the two guards actually ran rather than implying
+\\ both.  Both are properties of the FACT FILE, checkable here with no
+\\ artifact in sight, which is the half the Go driver's end-of-run record
+\\ cannot reach.
 (define yggdrasil.trace-check
   Files FactsDir
    -> (let MaxPrint (value *maximum-print-sequence-size*)
@@ -2283,6 +2305,7 @@
            TopsOut  (map (/. T (trim-top T Foot EvalFree Arities)) Tops)
            Called   (ygg.trace-read (@s FactsDir "/called.facts"))
            Reads    (ygg.trace-read (@s FactsDir "/readglobal.facts"))
+           Meta     (ygg.trace-read (@s FactsDir "/trace.meta"))
            Add      (ygg.mapc (fn ygg.dl-add)
                      (append (map (/. F [called F]) Called)
                      (append (map (/. V [readGlobal V]) Reads)
@@ -2295,22 +2318,51 @@
            Run      (ygg.mapc (fn ygg.dl-stratum) (value *trace-rules*))
            Bad      (append (ygg.dl-col1 uncoveredCall) (ygg.dl-col1 uncoveredRead))
            Restore  (set *maximum-print-sequence-size* MaxPrint)
-           Report   (ygg.trace-report (ygg.trace-entered? Called) Bad
+           Report   (ygg.trace-report (ygg.trace-provenance Meta Called) Bad
                                       (ygg.len Called)
                                       (ygg.len (ygg.dl-col1 reach)))
            done))
 
-\\ Did the relation come from a run at all?  See the note above the
-\\ definition of yggdrasil.trace-check.
+\\ Is this relation the one some run wrote?  Two independent answers, the
+\\ first of which needs nothing but called.facts itself; see the note above
+\\ the definition of yggdrasil.trace-check.  The result is [ok Note] or
+\\ [fail Why], both carrying the string the report line prints.
+(define ygg.trace-provenance
+  _ Called -> [fail "shen.initialise-not-entered"]
+               where (not (ygg.trace-entered? Called))
+  Meta Called -> (ygg.trace-counts (ygg.trace-meta-get complete Meta)
+                                   (ygg.trace-meta-get called Meta)
+                                   (ygg.len Called)))
+
 (define ygg.trace-entered?
   Called -> (element? shen.initialise Called))
 
+\\ The writer's declared row count against the rows actually present.  A
+\\ missing declaration is reported, not failed: it means nobody promised a
+\\ count for this directory, which is a different thing from a broken one.
+(define ygg.trace-counts
+  [] _ _ -> [ok "unverified"]
+  _ [] _ -> [ok "unverified"]
+  Complete _ _ -> [fail "no-end-record"]  where (not (= Complete true))
+  _ Declared N -> [ok "verified"]  where (= (str Declared) (str N))
+  _ Declared N -> [fail (@s "called-count read=" (@s (str N)
+                            (@s " declared=" (str Declared))))])
+
+\\ One TAB-separated key/value pair per line, read by ygg.trace-read into a
+\\ flat token list; [] for a key that is not there.  Values are symbols, so
+\\ [] is unambiguously "absent".
+(define ygg.trace-meta-get
+  _ [] -> []
+  K [Key V | _] -> V  where (= K Key)
+  K [_ | Rest] -> (ygg.trace-meta-get K Rest))
+
 (define ygg.trace-report
-  false _ _ _ -> (pr (make-string "yggdrasil-trace-check: FAIL truncated=shen.initialise-not-entered~%")
-                     (stoutput))
-  _ [] NCalled NReach -> (pr (make-string "yggdrasil-trace-check: OK called=~A reach=~A~%"
-                                          NCalled NReach)
-                             (stoutput))
+  [fail Why] _ _ _ -> (pr (make-string "yggdrasil-trace-check: FAIL truncated=~A~%" Why)
+                          (stoutput))
+  [ok Note] [] NCalled NReach
+   -> (pr (make-string "yggdrasil-trace-check: OK called=~A reach=~A counts=~A~%"
+                       NCalled NReach Note)
+          (stoutput))
   _ Bad _ _ -> (pr (make-string "yggdrasil-trace-check: FAIL uncovered=~A~%"
                                 (ygg.cn-commas (ygg.remove-dups Bad)))
                    (stoutput)))
