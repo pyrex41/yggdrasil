@@ -155,6 +155,18 @@
 .decl userglobal(f:symbol)                   // F has a (value X) / (set X _) with X not a literal symbol
 .input userglobal
 
+.decl readsIn(f:symbol, v:symbol)            // kernel defun F evaluates (value V), V a literal symbol
+.input readsIn
+
+.decl reads(n:number, v:symbol)              // the N-th kept toplevel form evaluates (value V)
+.input reads
+
+.decl writes(n:number, v:symbol)             // the N-th kept toplevel form evaluates (set V _)
+.input writes
+
+.decl portReads(v:symbol)                    // the port's runtime reads V natively (builders.json port_reads)
+.input portReads
+
 // ================================ mode =================================
 // eval-free? tests the user KL's symbols against *eval-entry-points*. One
 // hit is enough; evalcapable names every hit, which is what the
@@ -258,3 +270,38 @@ computedName(F) :- userglobal(F).
 // dumping it now keeps the fact set stable across that change.
 .decl portGlobalUnused(v:symbol)
 portGlobalUnused(V) :- portGlobal(V), V = "never".
+
+// ======================= dead initialisation (stage 4) =================
+// The synthesised initialiser writes a global for every kernel subsystem,
+// most of which the shake has already removed. A global is LIVE when a
+// REACHABLE kernel defun reads it, when a kept toplevel form reads it, when
+// the port's own runtime reads it natively, or -- the over-approximation,
+// in the shake's own symbol-based style -- when its name occurs anywhere in
+// the user KL, in any position. Everything else is dead, and the form that
+// writes it can go.
+//
+// D9. The note writes the user-KL clause as part of `liveGlobal(V) :-
+//     usersym(V)`; here it is narrowed to globals some form actually writes,
+//     which is the same answer for `deadInit` (the only consumer) over a far
+//     smaller relation. `rawsym` rather than `usersym` because the question
+//     is whether the NAME occurs in the program the user wrote, which is a
+//     mode-independent fact -- strip-user-declares must not be able to make a
+//     global look dead.
+//
+// D10. The rules decide only WHICH indices are dead. What is prunable is
+//     narrower and is not a rule: the shake drops a form only when it is
+//     exactly (set V Lit) for an atomic Lit. A form whose value is a call --
+//     (set *property-vector* (vector 20000)) -- is an effect in its own
+//     right, so it stays however dead its global is. See ygg.prunable? in
+//     yggdrasil.shen; the oracle checks `deadInit`, not the pruning.
+
+.decl liveGlobal(v:symbol)
+.output liveGlobal
+liveGlobal(V) :- readsIn(F, V), reach(F).
+liveGlobal(V) :- reads(_, V).
+liveGlobal(V) :- portReads(V).
+liveGlobal(V) :- writes(_, V), rawsym(V).
+
+.decl deadInit(n:number, v:symbol)
+.output deadInit
+deadInit(N, V) :- writes(N, V), !liveGlobal(V).

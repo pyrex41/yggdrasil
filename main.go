@@ -234,6 +234,10 @@ func shake(prog, outdir string, host []string, evalStyle string, quiet bool) (st
 		return "", fmt.Errorf("materialising shaker: %w", err)
 	}
 	expr := fmt.Sprintf(`(yggdrasil.shake ["%s"] "%s")`, prog, outdir)
+	expr, err = wrapShakeExpr(expr)
+	if err != nil {
+		return "", err
+	}
 
 	var argv []string
 	if evalStyle == "positional" {
@@ -441,6 +445,11 @@ type builder struct {
 	Needs   []string `json:"needs"`
 	Build   []step   `json:"build"`
 	Run     []string `json:"run"`
+	// Stage 4 (docs/analysis-rules.md): the globals this port's runtime
+	// reads natively, and whether that list was verified against the
+	// port's source. See prune.go.
+	PortReads         []string `json:"port_reads"`
+	PortReadsVerified bool     `json:"port_reads_verified"`
 }
 
 type capabilityError struct{ message string }
@@ -751,10 +760,18 @@ func cmdStage(cmd string, rest []string) int {
 	target := fs.String("target", "", "stage-2 target (lisp/lua/go/joy/rust/js/julia/scheme/swift/erlang/truffle/truffle-native/c)")
 	web := fs.Bool("web", false, "with --target js: emit a browser-safe ES module (passes --web to ShenScript's builder)")
 	typecheck := fs.Bool("typecheck", false, "typecheck PROG under (tc +) on the host before shaking; failure aborts with no artifacts, success is recorded as typechecked= in the manifest")
+	pruneFlag := fs.Bool("prune-init", false, "stage 4: drop toplevel (set V Lit) forms whose global nothing reads, using --target's port_reads from builders.json, or the union over every target when no --target is given; recorded as pruned-init= in the manifest")
 	// Allow flags after the PROG/OUTDIR positionals (Go's flag stops at the
 	// first non-flag token otherwise).
 	if err := fs.Parse(reorderArgs(rest, "host", "eval-style", "target")); err != nil {
 		return 2
+	}
+	// A shake has no target, so it must use the union of every port's reads;
+	// a build/run knows which backend the slice is for and may use just that
+	// one. Off unless asked: see prune.go.
+	pruneOpts.on = *pruneFlag
+	if *pruneFlag {
+		pruneOpts.target = *target
 	}
 	if fs.NArg() < 2 {
 		fmt.Fprintf(os.Stderr, "usage: yggdrasil %s PROG OUTDIR%s\n", cmd, map[string]string{"shake": ""}[cmd]+ifTarget(cmd))
@@ -1015,6 +1032,10 @@ func facts(prog, outdir string, host []string, evalStyle string, quiet bool) (st
 		return "", fmt.Errorf("materialising shaker: %w", err)
 	}
 	expr := fmt.Sprintf(`(yggdrasil.facts ["%s"] "%s")`, prog, outdir)
+	expr, err = wrapShakeExpr(expr)
+	if err != nil {
+		return "", err
+	}
 
 	var argv []string
 	if evalStyle == "positional" {
@@ -1052,6 +1073,7 @@ var factRelations = []string{
 	"top", "formmentions", "formmentionsef",
 	"rawsym", "usersym", "entry", "prim", "cap", "portGlobal", "initprim",
 	"userintern", "userglobal",
+	"readsIn", "reads", "writes", "portReads",
 }
 
 func cmdFacts(rest []string) int {
@@ -1059,11 +1081,17 @@ func cmdFacts(rest []string) int {
 	fs.SetOutput(os.Stderr)
 	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: shen-cl`)
 	evalStyle := fs.String("eval-style", "sub", "how the host evaluates the facts expr (sub | positional)")
-	if err := fs.Parse(reorderArgs(rest, "host", "eval-style")); err != nil {
+	tgt := fs.String("target", "", "dump portReads for this target's runtime instead of the shaker's conservative default")
+	if err := fs.Parse(reorderArgs(rest, "host", "eval-style", "target")); err != nil {
 		return 2
 	}
+	// yggdrasil.facts never prunes; the setting only chooses which
+	// port_reads list lands in portReads.facts.
+	if *tgt != "" {
+		pruneOpts.on, pruneOpts.target = true, *tgt
+	}
 	if fs.NArg() < 2 {
-		fmt.Fprintln(os.Stderr, "usage: yggdrasil facts PROG OUTDIR [--host ...] [--eval-style ...]")
+		fmt.Fprintln(os.Stderr, "usage: yggdrasil facts PROG OUTDIR [--host ...] [--eval-style ...] [--target T]")
 		return 2
 	}
 	prog, outdir := fs.Arg(0), fs.Arg(1)
@@ -1186,8 +1214,16 @@ func cmdParity(rest []string) int {
 	expect := fs.String("expect", "", "golden stdout file; when given it is the authoritative truth")
 	timeFlag := fs.Bool("time", false, "report per-target wall-clock (advisory; never fails the gate)")
 	stdinFile := fs.String("stdin", "", "file fed to each artifact's stdin (both boots get the same bytes)")
+	pruneFlag := fs.Bool("prune-init", false, "stage 4: shake with dead-initialisation pruning on (union of every port's port_reads), then gate the pruned slice on every target")
 	if err := fs.Parse(reorderArgs(rest, "host", "eval-style", "target", "reference", "expect", "stdin")); err != nil {
 		return 2
+	}
+	pruneOpts.on = *pruneFlag
+	// One named target means the slice is only ever built for that backend,
+	// so its own port_reads is the honest list; several (or none) means the
+	// union, the only list sound for all of them.
+	if *pruneFlag && *targetFlag != "" && !strings.Contains(*targetFlag, ",") {
+		pruneOpts.target = strings.TrimSpace(*targetFlag)
 	}
 	if fs.NArg() < 2 {
 		fmt.Fprintln(os.Stderr, "usage: yggdrasil parity PROG OUTDIR [--target a,b] [--reference R] [--expect FILE]")

@@ -1,9 +1,11 @@
 # Design note: the shake as a rule set
 
-**Status**: stages 1–3 shipped, stages 4–5 proposed (Yggdrasil, September 2026)
+**Status**: stages 1–4 shipped, stage 5 proposed (Yggdrasil, September 2026)
 **Code**: `analysis/analysis.dl`, `analysis/refeval.py`; `yggdrasil.shen` —
-`ygg.dl`, `*shake-rules*`, `yggdrasil.facts`, `yggdrasil.footprints`;
-`main.go` — `cmdFacts`; `analysis_test.go`, `footprint_test.go`
+`ygg.dl`, `*shake-rules*`, `ygg.*init-rules*`, `yggdrasil.facts`,
+`yggdrasil.footprints`; `main.go` — `cmdFacts`; `prune.go`;
+`builders.json` — `port_reads`; `analysis_test.go`, `footprint_test.go`,
+`prune_test.go`
 
 **Motivation**: Mark Tarver, *The Future of Shen* (Shen group): Yggdrasil
 enters the core of trust next to the kernel and the backend, so it should be
@@ -60,9 +62,9 @@ is that list with `form-mentions` split into `formmentions` (raw) and
 `formmentionsef` (after `prepare-tops`), `usersym` joined by `rawsym` (the
 user KL before `strip-user-declares`), `mentions` narrowed to
 `mentionsprim`, and `initprim` added; `reads`/`writes`/`readsIn`/
-`portReads` are stage 2 and 4 and are not dumped yet. `portGlobal` is
-dumped and declared now so the fact set does not move under stage 2. See
-the declarations at the top of `analysis/analysis.dl`.
+`portReads` were stage 2 and 4. All four are dumped now (stage 4), so the
+dump carries twenty-one relations. See the declarations at the top of
+`analysis/analysis.dl`.
 
 ## Rules
 
@@ -133,11 +135,22 @@ liveGlobal(V) :- portReads(V).
 deadInit(N, V) :- writes(N, V), !liveGlobal(V).
 ```
 
-A `deadInit` form can be dropped from the synthesised initialiser. On fib
-that is up to 29 of 35 sets, before `portReads` is subtracted. This is the
-one place the rule set makes the artifact smaller, and it is gated on a
-per-builder fact list that has to be written by reading each port's
-runtime, so it ships after the checks, not with them.
+A `deadInit` form can be dropped from the synthesised initialiser. Measured
+on fib against the `go` runtime's `portReads`: 29 of the 35 globals the
+initialiser sets are dead, and 28 of the forms that set them are prunable.
+This is the one place the rule set makes the artifact smaller, and it is
+gated on a per-builder fact list that has to be written by reading each
+port's runtime, so it ships after the checks, not with them.
+
+Two clauses of this rule set are not in the note's sketch, and both are
+recorded as deviations (D9, D10) in `analysis.dl`. The first is the
+over-approximation the rest of the shake already makes: a global whose name
+occurs *anywhere* in the user KL, in any position, is live, because the
+shake's soundness argument is symbol occurrence and nothing narrower.
+(`rawsym`, not `usersym`: whether the name is in the program the user wrote
+is a mode-independent fact, and `strip-user-declares` must not be able to
+make a global look dead.) The second is that the rules decide only which
+*indices* are dead — what is *prunable* is narrower, and is not a rule.
 
 ## Engine
 
@@ -269,9 +282,86 @@ runs in a user's shake.
    every other fixture, the eval-capable ones included, is `none` — which is
    the result worth having, since it says the hypothesis is not vacuous and
    not routinely violated. `footprint_test.go` is the host-gated test.
-4. **Dead initialisation.** Write `portReads` for each builder by reading
-   its runtime, enable `deadInit` pruning behind a flag, and let the
-   parity gate decide per target whether it is safe to default on.
+4. **Dead initialisation.** — **done.**
+   `readsIn`, `reads`, `writes` and `portReads` join the fact dump (twenty-one
+   relations now); `liveGlobal`/`deadInit` join `analysis.dl`,
+   `analysis/refeval.py` and — as `(value ygg.*init-rules*)` beside
+   `*shake-rules*` — the Shen engine. `yggdrasil shake|build|run
+   ... --prune-init` drops every dead form from the synthesised initialiser.
+   Off by default.
+
+   **What is prunable.** The rules answer which form indices write a global
+   nothing can read. The shake then drops a form only when it is *exactly*
+   `(set V Lit)` with `Lit` an atom — a number, a string, a boolean, a symbol
+   or `()`. A form whose value is a call is never pruned, however dead its
+   global is: evaluating `(set *property-vector* (vector 20000))` or `(set
+   shen.*special* (cons @p ...))` is an effect in its own right, and dropping
+   it would change what the artifact *does*, not just what it remembers. Nor
+   is a form that is not a `set` at all, or one that sets more than one
+   global. That is `ygg.prunable?`; on fib it is the difference between 29
+   dead globals and 28 dropped forms (`shen.*special*`'s value is a cons
+   chain). The initialiser that comes out is therefore always a
+   *subsequence* of the one that went in — same forms, same order, fewer of
+   them — which is what `prune_test.go` asserts.
+
+   **`port_reads` provenance.** `portReads` is a fact about a backend, so it
+   lives next to the backend: a `"port_reads"` array on each target in
+   `builders.json`, with `"port_reads_verified"` saying whether it was read
+   off that port's runtime. Today exactly one target is verified:
+
+   - **`go`** (`port_reads_verified: true`), five entries, each read out of
+     shen-go's `kl/` package: `*stinput*` (`PrimReadByte`'s EOF sentinel in
+     `kl/primitives.go`), `*stoutput*` (the port global bound in the same
+     file), `*home-directory*` (`ResolveHomePath`, which `open`, `load-file`
+     and the native `read-file` all resolve through), `*property-vector*`
+     (`kernelArity` in `kl/kernelfast.go`, behind the native `arity` and
+     `fn`), and `shen.*lambdatable*` (`nativeFn`, same file). The generated
+     `main.go` (`cmd/yggdrasil-build`) reads no global of its own. The lambda
+     table and the arity table are therefore live on `go` because its port
+     reads them, not because a rule says tables are special; the
+     external-symbols `put` is not a `set` and so is never prunable anyway.
+   - **every other target** (`port_reads_verified: false`) carries a
+     conservative superset: `go`'s five plus every global the kernel's own
+     defuns read in the full boot (`readsIn` over the unshaken kernel,
+     intersected with what the initialiser writes) — 35 entries. Against that
+     list only `shen.*call*` and `shen.*system*` are ever dead, so pruning is
+     nearly a no-op until someone reads those runtimes. A `shake` with no
+     `--target` uses the union of every list, which is that same superset.
+
+   **Measured**, `--prune-init --target go`, over all sixteen fixtures that
+   shake (init-order-bad is refused on purpose). Of the 35 forms the
+   initialiser writes, the eval-free fixtures drop 28 (`computed-name`,
+   `fib`, `hello`, `init-order-ok`, `joy-sum`, `parity`, `partial`,
+   `stdin-sum`, `typed-ok`), 29 (`interpreter`, `typed-bad`,
+   `typed-unsigned`) or 26 (`prolog`) — `kernel.kl` 13.5 kB → 12.7 kB, about
+   6%. The eval-capable ones drop 10 (`metaeval`, `partial-eval`) or 9
+   (`tc-interp`): 253 kB → 252 kB, 0.1%. An eval-capable program reaches
+   nearly the whole kernel, so nearly every global has a live reader, which
+   is the answer the rules should give. That is the shape the note predicted:
+   stage 4 shrinks artifacts, and by little.
+
+   **Byte-identity**, verified as stages 1–3 were, with the pre-change binary
+   built from 7644a0a: with the flag off, `kernel.kl` is byte-identical on all
+   sixteen fixtures that shake, both manifests differ by exactly the new
+   `pruned-init=0` line, and user `.kl` differs only in gensym numbering.
+
+   **Parity.** `yggdrasil parity PROG DIR --target go --prune-init --expect
+   tests/PROG.expected` is the gate for this, and it takes `--prune-init`
+   so the slice it builds is the pruned one. It has not yet returned a
+   verdict: on the machine this stage was written on the `go` stage-2
+   builder does not boot at all (`shen-go/cmd/yggdrasil-build` panics in
+   `shen.change-pointer-value` loading its own `kernel/klambda/
+   declarations.kl`), identically for the pruned slice, the unpruned slice
+   and the pre-stage-4 binary — so every one of the six fixtures with a
+   golden reports `build failed`, and none of it is about pruning. `go` stays
+   off by default until that gate is green somewhere it can run; the flag and
+   the verified `port_reads` are what make running it possible.
+
+   **Why it is not on by default.** The parity gate decides that per target,
+   and it cannot decide it from a design note. A `port_reads` list that is
+   missing an entry is a silent miscompile — the artifact boots with a global
+   unbound and fails only when something reaches it — so `port_reads_verified`
+   is the gate's precondition, and only `go` has it.
 5. **SCIP export**, optional and last, and a level-2 oracle rather than a
    picture. Emit a SCIP index of the shaken program — each symbol carrying
    its `adds` and `exclusive` in the documentation field, so an editor can
@@ -292,4 +382,7 @@ runs in a user's shake.
 Stages 1 and 2 are the ones that change what Yggdrasil can claim. Stage 3
 is what makes the trust argument true in the code rather than in a
 document, and it is now true there. Stage 4 is the only one that shrinks
-artifacts, and by little; stage 5 is the only one that checks stage 2.
+artifacts, and by little — 6% of `kernel.kl` on an eval-free program, 0.1%
+on an eval-capable one, which is the measurement that says where the
+remaining bytes are and that it is not here. Stage 5 is the only one that
+checks stage 2.

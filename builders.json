@@ -26,6 +26,20 @@
     "run_impl": "shen-cl",
     "dir_env": "YGGDRASIL_SHEN_CL_DIR",
     "needs": ["sbcl"],
+    "port_reads": [
+      "*stinput*", "*stoutput*", "*home-directory*", "*property-vector*",
+      "shen.*lambdatable*", "*hush*", "*macros*",
+      "*maximum-print-sequence-size*", "*version*", "shen.*alldatatypes*",
+      "shen.*datatypes*", "shen.*extraspecial*", "shen.*factorise?*",
+      "shen.*gensym*", "shen.*history*", "shen.*infs*", "shen.*it*",
+      "shen.*loading?*", "shen.*maxinferences*", "shen.*names*",
+      "shen.*occurs*", "shen.*optimise*", "shen.*package*",
+      "shen.*profiled*", "shen.*prolog-memory*", "shen.*residue*",
+      "shen.*shen-type-theory-enabled?*", "shen.*sigf*", "shen.*special*",
+      "shen.*spy*", "shen.*step*", "shen.*synonyms*", "shen.*tc*",
+      "shen.*tracking*", "shen.*userdefs*"
+    ],
+    "port_reads_verified": false,
     "build": [
       {"argv": ["{yggroot}/builders/lisp/build.sh", "{outdir}", "{outdir}/app-lisp"],
        "cwd": "{yggroot}", "env": {"LISP_IMPL": "sbcl", "SHEN_CL": "{shen_cl}"}}
@@ -37,6 +51,20 @@
     "run_impl": "shen-lua",
     "dir_env": "YGGDRASIL_SHEN_LUA_DIR",
     "needs": ["luajit"],
+    "port_reads": [
+      "*stinput*", "*stoutput*", "*home-directory*", "*property-vector*",
+      "shen.*lambdatable*", "*hush*", "*macros*",
+      "*maximum-print-sequence-size*", "*version*", "shen.*alldatatypes*",
+      "shen.*datatypes*", "shen.*extraspecial*", "shen.*factorise?*",
+      "shen.*gensym*", "shen.*history*", "shen.*infs*", "shen.*it*",
+      "shen.*loading?*", "shen.*maxinferences*", "shen.*names*",
+      "shen.*occurs*", "shen.*optimise*", "shen.*package*",
+      "shen.*profiled*", "shen.*prolog-memory*", "shen.*residue*",
+      "shen.*shen-type-theory-enabled?*", "shen.*sigf*", "shen.*special*",
+      "shen.*spy*", "shen.*step*", "shen.*synonyms*", "shen.*tc*",
+      "shen.*tracking*", "shen.*userdefs*"
+    ],
+    "port_reads_verified": false,
     "build": [
       {"argv": ["luajit", "{shen_lua}/bin/yggdrasil-build.lua", "{outdir}", "{outdir}/app.lua"]}
     ],
@@ -47,6 +75,11 @@
     "run_impl": "shen-go",
     "dir_env": "YGGDRASIL_SHEN_GO_DIR",
     "needs": ["go"],
+    "port_reads": [
+      "*stinput*", "*stoutput*", "*home-directory*", "*property-vector*",
+      "shen.*lambdatable*"
+    ],
+    "port_reads_verified": true,
     "build": [
       {"argv": ["go", "build", "-o", "{tmp}/yggdrasil-build", "./cmd/yggdrasil-build"],
        "cwd": "{shen_go}"},
@@ -60,6 +93,20 @@
     "run_impl": "shen-joy",
     "dir_env": "YGGDRASIL_SHEN_JOY_DIR",
     "needs": ["python3"],
+    "port_reads": [
+      "*stinput*", "*stoutput*", "*home-directory*", "*property-vector*",
+      "shen.*lambdatable*", "*hush*", "*macros*",
+      "*maximum-print-sequence-size*", "*version*", "shen.*alldatatypes*",
+      "shen.*datatypes*", "shen.*extraspecial*", "shen.*factorise?*",
+      "shen.*gensym*", "shen.*history*", "shen.*infs*", "shen.*it*",
+      "shen.*loading?*", "shen.*maxinferences*", "shen.*names*",
+      "shen.*occurs*", "shen.*optimise*", "shen.*package*",
+      "shen.*profiled*", "shen.*prolog-memory*", "shen.*residue*",
+      "shen.*shen-type-theory-enabled?*", "shen.*sigf*", "shen.*special*",
+      "shen.*spy*", "shen.*step*", "shen.*synonyms*", "shen.*tc*",
+      "shen.*tracking*", "shen.*userdefs*"
+    ],
+    "port_reads_verified": false,
     "build": [
       {"argv": ["{yggroot}/builders/joy/build.sh", "{outdir}", "{outdir}/app-joy.sji", "{shen_joy_bin}"]}
     ],
@@ -70,6 +117,20 @@
     "run_impl": "shen-rust",
     "dir_env": "YGGDRASIL_SHEN_RUST_DIR",
     "needs": ["cargo"],
+    "port_reads": [
+      "*stinput*", "*stoutput*", "*home-directory*", "*property-vector*",
+      "shen.*lambdatable*", "*hush*", "*macros*",
+      "*maximum-print-sequence-size*", "*version*", "shen.*alldatatypes*",
+      "shen.*datatypes*", "shen.*extraspecial*", "shen.*factorise?*",
+      "shen.*gensym*", "shen.*history*", "shen.*infs*", "shen.*it*",
+      "shen.*loading?*", "shen.*maxinferences*", "shen.*names*",
+      "shen.*occurs*", "shen.*optimise*", "shen.*package*",
+      "shen.*profiled*", "shen.*prolog-memory*", "shen.*residue*",
+      "shen.*shen-type-theory-enabled?*", "shen.*sigf*", "shen.*special*",
+      "shen.*spy*", "shen.*step*", "shen.*synonyms*", "shen.*tc*",
+      "shen.*tracking*", "shen.*userdefs*"
+    ],
+    "port_reads_verified": false,
     "build": [
       {"argv": ["cargo", "run", "-q", "--release", "-p", "yggdrasil-build", "--",
                 "{outdir}", "{outdir}/app-rust"], "cwd": "{shen_rust}"},
@@ -82,6 +143,20 @@
     "run_impl": "ShenScript",
     "dir_env": "YGGDRASIL_SHENSCRIPT_DIR",
     "needs": ["node"],
+    "port_reads": [
+      "*stinput*", "*stoutput*", "*home-directory*", "*property-vector*",
+      "shen.*lambdatable*", "*hush*", "*macros*",
+      "*maximum-print-sequence-size*", "*version*", "shen.*alldatatypes*",
+      "shen.*datatypes*", "shen.*extraspecial*", "shen.*factorise?*",
+      "shen.*gensym*", "shen.*history*", "shen.*infs*", "shen.*it*",
+      "shen.*loading?*", "shen.*maxinferences*", "shen.*names*",
+      "shen.*occurs*", "shen.*optimise*", "shen.*package*",
+      "shen.*profiled*", "shen.*prolog-memory*", "shen.*residue*",
+      "shen.*shen-type-theory-enabled?*", "shen.*sigf*", "shen.*special*",
+      "shen.*spy*", "shen.*step*", "shen.*synonyms*", "shen.*tc*",
+      "shen.*tracking*", "shen.*userdefs*"
+    ],
+    "port_reads_verified": false,
     "_comment": [
       "Two mutually exclusive steps, selected on the manifest's needs-eval.",
       "ShenScript's default mode is fully self-contained but refuses",
@@ -104,6 +179,20 @@
     "run_impl": "shen-julia",
     "dir_env": "YGGDRASIL_SHEN_JULIA_DIR",
     "needs": ["julia"],
+    "port_reads": [
+      "*stinput*", "*stoutput*", "*home-directory*", "*property-vector*",
+      "shen.*lambdatable*", "*hush*", "*macros*",
+      "*maximum-print-sequence-size*", "*version*", "shen.*alldatatypes*",
+      "shen.*datatypes*", "shen.*extraspecial*", "shen.*factorise?*",
+      "shen.*gensym*", "shen.*history*", "shen.*infs*", "shen.*it*",
+      "shen.*loading?*", "shen.*maxinferences*", "shen.*names*",
+      "shen.*occurs*", "shen.*optimise*", "shen.*package*",
+      "shen.*profiled*", "shen.*prolog-memory*", "shen.*residue*",
+      "shen.*shen-type-theory-enabled?*", "shen.*sigf*", "shen.*special*",
+      "shen.*spy*", "shen.*step*", "shen.*synonyms*", "shen.*tc*",
+      "shen.*tracking*", "shen.*userdefs*"
+    ],
+    "port_reads_verified": false,
     "build": [
       {"argv": ["julia", "--project={shen_julia}", "{shen_julia}/bin/yggdrasil-build.jl",
                 "{outdir}", "{outdir}/app-julia", "--sysimage"]}
@@ -115,6 +204,20 @@
     "run_impl": "shen-scheme",
     "dir_env": "YGGDRASIL_SHEN_SCHEME_DIR",
     "needs": ["chez"],
+    "port_reads": [
+      "*stinput*", "*stoutput*", "*home-directory*", "*property-vector*",
+      "shen.*lambdatable*", "*hush*", "*macros*",
+      "*maximum-print-sequence-size*", "*version*", "shen.*alldatatypes*",
+      "shen.*datatypes*", "shen.*extraspecial*", "shen.*factorise?*",
+      "shen.*gensym*", "shen.*history*", "shen.*infs*", "shen.*it*",
+      "shen.*loading?*", "shen.*maxinferences*", "shen.*names*",
+      "shen.*occurs*", "shen.*optimise*", "shen.*package*",
+      "shen.*profiled*", "shen.*prolog-memory*", "shen.*residue*",
+      "shen.*shen-type-theory-enabled?*", "shen.*sigf*", "shen.*special*",
+      "shen.*spy*", "shen.*step*", "shen.*synonyms*", "shen.*tc*",
+      "shen.*tracking*", "shen.*userdefs*"
+    ],
+    "port_reads_verified": false,
     "build": [
       {"argv": ["{yggroot}/builders/scheme/build.sh", "{outdir}", "{outdir}/app-scheme"],
        "env": {"SHEN_SCHEME": "{shen_scheme}"}}
@@ -126,6 +229,20 @@
     "run_impl": "shen-swift",
     "dir_env": "YGGDRASIL_SHEN_SWIFT_DIR",
     "needs": ["swift"],
+    "port_reads": [
+      "*stinput*", "*stoutput*", "*home-directory*", "*property-vector*",
+      "shen.*lambdatable*", "*hush*", "*macros*",
+      "*maximum-print-sequence-size*", "*version*", "shen.*alldatatypes*",
+      "shen.*datatypes*", "shen.*extraspecial*", "shen.*factorise?*",
+      "shen.*gensym*", "shen.*history*", "shen.*infs*", "shen.*it*",
+      "shen.*loading?*", "shen.*maxinferences*", "shen.*names*",
+      "shen.*occurs*", "shen.*optimise*", "shen.*package*",
+      "shen.*profiled*", "shen.*prolog-memory*", "shen.*residue*",
+      "shen.*shen-type-theory-enabled?*", "shen.*sigf*", "shen.*special*",
+      "shen.*spy*", "shen.*step*", "shen.*synonyms*", "shen.*tc*",
+      "shen.*tracking*", "shen.*userdefs*"
+    ],
+    "port_reads_verified": false,
     "build": [
       {"argv": ["{yggroot}/builders/swift/build.sh", "{outdir}", "{outdir}/app-swift"],
        "env": {"SHEN_SWIFT": "{shen_swift}"}}
@@ -137,6 +254,20 @@
     "run_impl": "shen-erl",
     "dir_env": "YGGDRASIL_SHEN_ERL_DIR",
     "needs": ["erl", "erlc", "make", "cc", "curl", "unzip", "tar", "shasum"],
+    "port_reads": [
+      "*stinput*", "*stoutput*", "*home-directory*", "*property-vector*",
+      "shen.*lambdatable*", "*hush*", "*macros*",
+      "*maximum-print-sequence-size*", "*version*", "shen.*alldatatypes*",
+      "shen.*datatypes*", "shen.*extraspecial*", "shen.*factorise?*",
+      "shen.*gensym*", "shen.*history*", "shen.*infs*", "shen.*it*",
+      "shen.*loading?*", "shen.*maxinferences*", "shen.*names*",
+      "shen.*occurs*", "shen.*optimise*", "shen.*package*",
+      "shen.*profiled*", "shen.*prolog-memory*", "shen.*residue*",
+      "shen.*shen-type-theory-enabled?*", "shen.*sigf*", "shen.*special*",
+      "shen.*spy*", "shen.*step*", "shen.*synonyms*", "shen.*tc*",
+      "shen.*tracking*", "shen.*userdefs*"
+    ],
+    "port_reads_verified": false,
     "build": [
       {"argv": ["{yggroot}/builders/erlang/build.sh", "{outdir}", "{outdir}/app-erlang"],
        "env": {"SHEN_ERL": "{shen_erl}"}}
@@ -148,6 +279,20 @@
     "run_impl": "shen-truffle",
     "dir_env": "YGGDRASIL_SHEN_TRUFFLE_DIR",
     "needs": ["java", "mvn"],
+    "port_reads": [
+      "*stinput*", "*stoutput*", "*home-directory*", "*property-vector*",
+      "shen.*lambdatable*", "*hush*", "*macros*",
+      "*maximum-print-sequence-size*", "*version*", "shen.*alldatatypes*",
+      "shen.*datatypes*", "shen.*extraspecial*", "shen.*factorise?*",
+      "shen.*gensym*", "shen.*history*", "shen.*infs*", "shen.*it*",
+      "shen.*loading?*", "shen.*maxinferences*", "shen.*names*",
+      "shen.*occurs*", "shen.*optimise*", "shen.*package*",
+      "shen.*profiled*", "shen.*prolog-memory*", "shen.*residue*",
+      "shen.*shen-type-theory-enabled?*", "shen.*sigf*", "shen.*special*",
+      "shen.*spy*", "shen.*step*", "shen.*synonyms*", "shen.*tc*",
+      "shen.*tracking*", "shen.*userdefs*"
+    ],
+    "port_reads_verified": false,
     "build": [
       {"argv": ["mvn", "-q", "-DskipTests", "package"], "cwd": "{shen_truffle}"},
       {"argv": ["java", "-jar", "{shen_truffle}/target/yggdrasil-builder.jar",
@@ -161,6 +306,20 @@
     "run_impl": "shen-truffle-native",
     "dir_env": "YGGDRASIL_SHEN_TRUFFLE_DIR",
     "needs": ["java", "mvn", "native-image"],
+    "port_reads": [
+      "*stinput*", "*stoutput*", "*home-directory*", "*property-vector*",
+      "shen.*lambdatable*", "*hush*", "*macros*",
+      "*maximum-print-sequence-size*", "*version*", "shen.*alldatatypes*",
+      "shen.*datatypes*", "shen.*extraspecial*", "shen.*factorise?*",
+      "shen.*gensym*", "shen.*history*", "shen.*infs*", "shen.*it*",
+      "shen.*loading?*", "shen.*maxinferences*", "shen.*names*",
+      "shen.*occurs*", "shen.*optimise*", "shen.*package*",
+      "shen.*profiled*", "shen.*prolog-memory*", "shen.*residue*",
+      "shen.*shen-type-theory-enabled?*", "shen.*sigf*", "shen.*special*",
+      "shen.*spy*", "shen.*step*", "shen.*synonyms*", "shen.*tc*",
+      "shen.*tracking*", "shen.*userdefs*"
+    ],
+    "port_reads_verified": false,
     "build": [
       {"argv": ["mvn", "-q", "-DskipTests", "package"], "cwd": "{shen_truffle}"},
       {"argv": ["java", "-jar", "{shen_truffle}/target/yggdrasil-builder.jar",
@@ -174,6 +333,20 @@
     "run_impl": "shen-c",
     "dir_env": "YGGDRASIL_SHEN_C_DIR",
     "needs": ["cc", "pkg-config", "make"],
+    "port_reads": [
+      "*stinput*", "*stoutput*", "*home-directory*", "*property-vector*",
+      "shen.*lambdatable*", "*hush*", "*macros*",
+      "*maximum-print-sequence-size*", "*version*", "shen.*alldatatypes*",
+      "shen.*datatypes*", "shen.*extraspecial*", "shen.*factorise?*",
+      "shen.*gensym*", "shen.*history*", "shen.*infs*", "shen.*it*",
+      "shen.*loading?*", "shen.*maxinferences*", "shen.*names*",
+      "shen.*occurs*", "shen.*optimise*", "shen.*package*",
+      "shen.*profiled*", "shen.*prolog-memory*", "shen.*residue*",
+      "shen.*shen-type-theory-enabled?*", "shen.*sigf*", "shen.*special*",
+      "shen.*spy*", "shen.*step*", "shen.*synonyms*", "shen.*tc*",
+      "shen.*tracking*", "shen.*userdefs*"
+    ],
+    "port_reads_verified": false,
     "build": [
       {"argv": ["{yggroot}/builders/c/build.sh", "{outdir}", "{outdir}/app-c"],
        "env": {"SHEN_C": "{shen_c}"}}

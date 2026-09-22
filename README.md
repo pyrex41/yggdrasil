@@ -168,6 +168,33 @@ only after an earlier form set it, or because the port supplies it
 with no artifacts written (see `docs/analysis-rules.md`). Builders must
 ignore manifest keys they do not recognise, so the key is contract-safe.
 
+Every shake also records `pruned-init=N` after `computed-names`: the
+number of toplevel forms the synthesised initialiser dropped because
+nothing can read the global they set. It is `0` unless you pass
+**`--prune-init`** (`shake` / `build` / `run`), which is off by default —
+pruning changes the bytes of `kernel.kl`, and `docs/analysis-rules.md`
+gives the parity gate, not the flag, the job of deciding whether a target
+may default it on. With the flag off the emitted `kernel.kl` is
+byte-identical to a pre-stage-4 shake's.
+
+A global counts as live when a reachable kernel defun reads it, when a
+kept toplevel form reads it, when its name occurs anywhere in your
+program, or when the **port's own runtime** reads it natively — shen-go's
+`fn` reads `shen.*lambdatable*` from Go, its `arity` reads
+`*property-vector*`, its `open` resolves paths through `*home-directory*`.
+That last list is per-backend data, so it lives in `builders.json` next to
+the backend, as a **`"port_reads"`** array with a `"port_reads_verified"`
+flag saying whether it was read off that port's runtime (today only `go`'s
+was; every other target carries a conservative superset). With no `--target`
+the union of every list is used, which is the only choice sound for a slice
+that may be built anywhere; `--target T` uses `T`'s own, which is smaller
+and prunes more.
+
+Only a form that is exactly `(set V Lit)` for an atomic `Lit` is ever
+dropped. A form whose value is a call — `(set *property-vector* (vector
+20000))` — is an effect in its own right and stays however dead its global
+is.
+
 **Stage 2 — build** (one builder per target port, living in that port's
 repo):
 

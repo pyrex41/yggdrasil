@@ -133,12 +133,17 @@
                     Arities    (arity-literal Tops)
                     TopsOut    (map (/. T (trim-top T Foot EvalFree Arities)) Tops)
                     InitOrder  (ygg.init-order-check TopsOut KL)
-                    InitDefun  (synthesize-initialise TopsOut)
+                    Reach      (ygg.dl-col1 reach)
+                    Dead       (ygg.dead-init Kernel Reach TopsOut KL RawFs)
+                    KeptTops   (ygg.prune-init TopsOut Dead)
+                    NPruned    (- (ygg.len TopsOut) (ygg.len KeptTops))
+                    InitOrder2 (ygg.init-order-check KeptTops KL)
+                    InitDefun  (synthesize-initialise KeptTops)
                     OutCode    (append FootCode [InitDefun])
                     Prims      (find-primitives (append OutCode KL))
                     WriteK     (write-kl-file (@s Dir "/kernel.kl") OutCode)
                     UserOut    (write-user-files KLFiles KL Dir)
-                    WriteM     (write-manifest Dir UserOut KL Prims CNames)
+                    WriteM     (write-manifest Dir UserOut KL Prims CNames NPruned)
                     Restore    (set *maximum-print-sequence-size* MaxPrint)
                     done))
 
@@ -788,7 +793,7 @@
 \\ initialiser, D7), and datasym derives nothing by D2.  Both are dumped as
 \\ facts for the oracle, which does evaluate them.
 
-(set ygg.*dl-vars* [[f "F"] [g "G"] [c "C"] [n "N"] [s "S"]])
+(set ygg.*dl-vars* [[f "F"] [g "G"] [c "C"] [n "N"] [s "S"] [v "V"]])
 
 (define ygg.dl-var
   X [] -> X
@@ -1342,7 +1347,7 @@
 (set *global-primitives*   [*stinput* *stoutput*])
 
 (define write-manifest
-  Dir UserFiles UserKL Prims CNames ->
+  Dir UserFiles UserKL Prims CNames NPruned ->
      (let NeedsEval (element? eval-kl Prims)
           Computed  (ygg.cn-report CNames)
           Fns       (user-arities UserKL)
@@ -1352,8 +1357,8 @@
                                                (element? P Optional)))) Prims)
           Reaches   (reaches-caps Prims)
           Cannot    (cannot-reach-caps Prims)
-          Sexp (write-manifest-sexp Dir UserFiles Fns Required Optional Globals NeedsEval Computed Reaches Cannot)
-          Txt  (write-manifest-txt Dir UserFiles Fns Required Optional Globals NeedsEval Computed Reaches Cannot)
+          Sexp (write-manifest-sexp Dir UserFiles Fns Required Optional Globals NeedsEval Computed NPruned Reaches Cannot)
+          Txt  (write-manifest-txt Dir UserFiles Fns Required Optional Globals NeedsEval Computed NPruned Reaches Cannot)
           done))
 
 (define user-arities
@@ -1368,7 +1373,7 @@
   [_ | Xs] -> (+ 1 (ygg.len Xs)))
 
 (define write-manifest-sexp
-  Dir UserFiles Fns Required Optional Globals NeedsEval Computed Reaches Cannot ->
+  Dir UserFiles Fns Required Optional Globals NeedsEval Computed NPruned Reaches Cannot ->
     (let Sink (open (@s Dir "/yggdrasil.manifest") out)
          W1 (pr-kl-line ["yggdrasil-manifest" 3] Sink)
          W2 (pr-kl-line ["kernel-version" "42-s42.20260825"] Sink)
@@ -1382,12 +1387,13 @@
          WA (pr-kl-line ["needs-eval" NeedsEval] Sink)
          WA2 (pr-kl-line ["init-order" checked] Sink)
          WA3 (pr-kl-line ["computed-names" Computed] Sink)
+         WA4 (pr-kl-line ["pruned-init" NPruned] Sink)
          WB (pr-kl-line ["reaches" | Reaches] Sink)
          WC (pr-kl-line ["cannot-reach" | Cannot] Sink)
          (close Sink)))
 
 (define write-manifest-txt
-  Dir UserFiles Fns Required Optional Globals NeedsEval Computed Reaches Cannot ->
+  Dir UserFiles Fns Required Optional Globals NeedsEval Computed NPruned Reaches Cannot ->
     (let Sink (open (@s Dir "/yggdrasil.manifest.txt") out)
          W1 (pr (make-string "manifest-version=3~%") Sink)
          W2 (pr (make-string "kernel-version=42-s42.20260825~%") Sink)
@@ -1401,6 +1407,7 @@
          WA (pr (make-string "needs-eval=~A~%" NeedsEval) Sink)
          WA2 (pr (make-string "init-order=checked~%") Sink)
          WA3 (pr (make-string "computed-names=~A~%" Computed) Sink)
+         WA4 (pr (make-string "pruned-init=~A~%" NPruned) Sink)
          WB (ygg.mapc (/. C (pr (make-string "reaches=~A~%" C) Sink)) Reaches)
          WC (ygg.mapc (/. C (pr (make-string "cannot-reach=~A~%" C) Sink)) Cannot)
          (close Sink)))
@@ -1473,6 +1480,132 @@
   [set V Val] -> [V | (ygg.io-writes Val)]  where (symbol? V)
   [X | Y] -> (append (ygg.io-writes X) (ygg.io-writes Y))
   _ -> [])
+
+\\ ===================== stage 4: dead initialisation =====================
+\\ docs/analysis-rules.md stage 4.  The synthesised initialiser writes ~35
+\\ globals; most of them belong to machinery the shake has already thrown
+\\ away.  A global is LIVE when
+\\   - a reachable kernel defun evaluates (value V)          readsIn + reach
+\\   - a kept toplevel form evaluates (value V)              reads
+\\   - the port's runtime reads it natively                  portReads
+\\   - its name occurs anywhere in the user KL               rawsym
+\\ and DEAD otherwise, at which point the form that writes it can be dropped
+\\ from the initialiser.  The last clause is an over-approximation in the
+\\ shake's own symbol-based style: a user program that says *hush* anywhere,
+\\ in any position, keeps *hush*.
+\\
+\\ Only the simplest forms are ever dropped: a form must be exactly
+\\ (set V Lit) with Lit an atom (a number, a string, a boolean, a symbol or
+\\ ()).  A form whose value is a call - (set *property-vector* (vector 20000)),
+\\ (set shen.*special* (cons @p ...)) - is never pruned even when its global
+\\ is dead, because evaluating it is an effect in its own right and dropping
+\\ it would change what the artifact does, not just what it remembers.  The
+\\ same goes for a form that is not a `set` at all.
+\\
+\\ portReads is per-builder data (builders.json, "port_reads"), because it is
+\\ a fact about a port's runtime and not about Shen.  The default below is the
+\\ conservative union; the Go driver overrides it per shake from builders.json
+\\ (the union over all targets for `shake`, the target's own list for
+\\ `build`/`run --target T`).
+\\
+\\ Off by default: (value ygg.*prune-init*) is false, and with it false the
+\\ emitted kernel.kl is byte-identical to a pre-stage-4 shake's.  The parity
+\\ gate decides per target whether it is safe to turn on.
+
+(set ygg.*prune-init* false)
+
+\\ Conservative default: every global the go runtime reads natively, plus
+\\ every global the kernel's own defuns read in the full (unshaken) boot.
+(set ygg.*port-reads*
+     [\\ read natively by the go runtime (shen-go, kl/): the two port
+      \\ globals, then open / load-file via ResolveHomePath, then
+      \\ arity and fn via kernelArity / nativeFn
+      *stinput* *stoutput* *home-directory* *property-vector*
+      shen.*lambdatable*
+      \\ ... plus every global the kernel's own defuns read in the full boot
+      *hush* *macros* *maximum-print-sequence-size* *version*
+      shen.*alldatatypes* shen.*datatypes* shen.*extraspecial*
+      shen.*factorise?* shen.*gensym* shen.*history* shen.*infs* shen.*it*
+      shen.*loading?* shen.*maxinferences* shen.*names* shen.*occurs*
+      shen.*optimise* shen.*package* shen.*profiled* shen.*prolog-memory*
+      shen.*residue* shen.*shen-type-theory-enabled?* shen.*sigf*
+      shen.*special* shen.*spy* shen.*step* shen.*synonyms* shen.*tc*
+      shen.*tracking* shen.*userdefs*])
+
+\\ (value V) with a literal V anywhere in a defun's body - unlike
+\\ ygg.io-reads this DOES descend into lambda and freeze, because a defun
+\\ body's reads all happen when the defun is called, however deeply they are
+\\ wrapped.
+(define ygg.value-reads
+  [value V] -> [V]  where (and (symbol? V) (not (variable? V)))
+  [X | Y] -> (append (ygg.value-reads X) (ygg.value-reads Y))
+  _ -> [])
+
+(define ygg.readsin-rows
+  [] -> []
+  [[defun F _ Body] | Code] -> (append (map (/. V [F V]) (ygg.value-reads Body))
+                                       (ygg.readsin-rows Code))
+  [_ | Code] -> (ygg.readsin-rows Code))
+
+\\ reads/writes over the FINAL form sequence, indexed exactly as
+\\ ygg.init-order-check indexes it: the kept kernel init forms first, then
+\\ the user files' toplevel forms.  Same extractors, so the two checks
+\\ cannot drift.
+(define ygg.io-rows
+  Forms -> (ygg.io-rows-h Forms 1))
+
+(define ygg.io-rows-h
+  [] _ -> []
+  [F | Fs] N -> (append (append (map (/. V [reads N V]) (ygg.io-reads F))
+                                (map (/. V [writes N V]) (ygg.io-writes F)))
+                        (ygg.io-rows-h Fs (+ N 1))))
+
+(define ygg.init-edb
+  Kernel Reach Forms RawFs
+   -> (append (map (/. F [reach F]) Reach)
+      (append (map (/. R [readsIn | R]) (ygg.readsin-rows Kernel))
+      (append (ygg.io-rows Forms)
+      (append (map (/. V [portReads V]) (value ygg.*port-reads*))
+              (map (/. S [rawsym S]) (ygg.remove-dups RawFs)))))))
+
+(set ygg.*init-rules*
+  (ygg.dl-varify
+   [[[[liveGlobal v] [readsIn f v] [reach f]]
+     [[liveGlobal v] [reads n v]]
+     [[liveGlobal v] [portReads v]]
+     [[liveGlobal v] [writes n v] [rawsym v]]]
+    [[[deadInit n v] [writes n v] [not [liveGlobal v]]]]]))
+
+\\ The form indices with a deadInit tuple.  Runs the engine a SECOND time,
+\\ with its own EDB: `reads`/`writes` are taken from the forms trim-top
+\\ actually left, which depend on the footprint, which is what the first run
+\\ computed - so reach is handed to this run as a fact rather than re-derived.
+(define ygg.dead-init
+  _ _ _ _ _ -> []  where (not (value ygg.*prune-init*))
+  Kernel Reach Tops UserKL RawFs
+   -> (let Forms (append Tops (ygg.user-tops UserKL))
+           Run   (ygg.dl-run (ygg.init-edb Kernel Reach Forms RawFs)
+                             (value ygg.*init-rules*))
+           (ygg.remove-dups (map (/. T (hd (tl T))) (ygg.dl-query deadInit)))))
+
+(define ygg.prune-init
+  Tops _ -> Tops  where (not (value ygg.*prune-init*))
+  Tops Dead -> (ygg.prune-h Tops 1 Dead))
+
+(define ygg.prune-h
+  [] _ _ -> []
+  [T | Ts] N Dead -> (ygg.prune-h Ts (+ N 1) Dead)  where (ygg.prunable? T N Dead)
+  [T | Ts] N Dead -> [T | (ygg.prune-h Ts (+ N 1) Dead)])
+
+(define ygg.prunable?
+  [set V Lit] N Dead -> (and (element? N Dead) (ygg.init-literal? Lit))
+      where (symbol? V)
+  _ _ _ -> false)
+
+(define ygg.init-literal?
+  [] -> true
+  [_ | _] -> false
+  _ -> true)
 
 \\ ======================= footprint attribution (why) ====================
 \\ The device Tarver asked for on the Shen group (The Future of Shen,
@@ -1709,6 +1842,11 @@
            W15 (ygg.facts-file Dir "initprim" (map (/. P [P]) (find-primitives TopsOut)))
            W16 (ygg.facts-file Dir "userintern" (ygg.rows-of userintern (ygg.cn-facts KL)))
            W17 (ygg.facts-file Dir "userglobal" (ygg.rows-of userglobal (ygg.cn-facts KL)))
+           Forms (append TopsOut (ygg.user-tops KL))
+           W18 (ygg.facts-file Dir "readsIn"   (ygg.readsin-rows Kernel))
+           W19 (ygg.facts-file Dir "reads"     (ygg.rows-of reads (ygg.io-rows Forms)))
+           W20 (ygg.facts-file Dir "writes"    (ygg.rows-of writes (ygg.io-rows Forms)))
+           W21 (ygg.facts-file Dir "portReads" (map (/. V [V]) (value ygg.*port-reads*)))
            Restore (set *maximum-print-sequence-size* MaxPrint)
            Report  (pr (make-string "yggdrasil-facts: mode=~A dir=~A kernel=~A~%"
                                     (if EvalFree "eval-free" "eval-capable")
