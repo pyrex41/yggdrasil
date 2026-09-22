@@ -386,35 +386,113 @@ rust-analyzer), Java, Python and others. An index is exactly a static
 reference graph, so indexing both artifacts and comparing the part
 reachable from `main` is the inclusion check with off-the-shelf tooling.
 
-`yggdrasil scip-check PROG OUTDIR --target go` does this: builds A with
-`--no-shake` and A* normally, runs `scip-go` on each, decodes both indexes
-in-repo (the `scip` CLI would not install here, so the wire format is read
-directly), computes main-reachable functions with a normalised body hash,
-and reports.
+`yggdrasil scip-check PROG OUTDIR --target go` does this: it builds A with
+`--no-shake` and A* normally, with the same builder, and compares the two.
 
-What it found first was about the backend, not the shake: **shen-go is
-not compositional at the Go level.** Its builder emits each KL function as
-an anonymous closure bound at run time, and every call is a symbol lookup.
-The generated `fib` module has 136 closures and four named Go functions,
-all driver code, so the Go-level comparison is 4 against 4 and says
-nothing. The check therefore also recovers the *KL-level* graph from the
-generated Go, with bindings as nodes and lookups as edges, and there the
-statement holds: zero shaken nodes missing from the full build, on both
-fixtures.
+The first version ran `scip-go` on each module and decoded the index
+in-repo (the `scip` CLI would not install here, so the wire format was read
+directly). What that found was about the backend, not the shake:
+**shen-go is not compositional at the Go level.** Its builder emits each KL
+function as an anonymous closure bound at run time, and every call is a
+symbol lookup. The generated `fib` module has 136 closures and four named
+Go functions, all driver code, so the Go-level comparison was 4 against 4
+and said nothing — and, being the trivial direction of an inclusion between
+two sets of driver functions, it could not fail. That machinery is gone.
 
-The artifact's reachable set is not identical to the footprint, and the
-check requires every difference to be accounted for by a known cause;
-anything else is reported as a failure. On shen-go there are exactly two
-differences. `shen.initialise` is in the artifact's graph but not in
-`reach`, because the shake synthesises it *after* reachability runs, from
-the kernel's toplevel forms, and the generated `main` calls it. `do` is in
-`reach` but not in the artifact's graph, because S42 defines `do` as a
-kernel function and the footprint keeps it, while shen-go's compiler
-lowers every `(do ...)` form inline as a special form and never looks the
-name up. Both causes are structural properties of the shake and of the
-backend, not of the program, and the port contract (section 11) makes the
-second one a declared fact (`special_forms`) so that the check can
-subtract it rather than a person.
+What the check does instead is recover the *KL-level* graph from the
+generated Go with `go/ast`, with the run-time bindings as nodes and the
+symbol occurrences in their bodies as edges, and hold the shake's own
+footprint — the defun names in the shaken `kernel.kl` — against it. There
+the statement has content, and it is asserted **by name**: any name in the
+footprint the emitted graph cannot reach, and any name the graph reaches
+that the shake did not keep, is printed as `kl-delta-missing` /
+`kl-delta-extra` and fails.
+
+Two things about that graph are easy to get wrong and were both wrong
+once:
+
+*Occurrences, not calls.* The generated code compiles a call to
+`PrimFunc(symF)` and a quoted symbol to `PrimCons(symF, …)`, and only the
+first looks like an edge. But the shake's edge relation counts **every**
+kernel-defined symbol leaf of a body, in any position — `analysis.dl` D1,
+"argpos yields an edge unconditionally, exactly like callpos" — because
+the kernel constructs KL it may later evaluate (`(cons shen.f-error (cons
+V761 ()))` in `shen.scan-body`). A call-position-only edge relation on the
+artifact side therefore reports every such name as unreachable and
+manufactures a residue out of the two sides disagreeing about what an edge
+is. On `metaeval`, `partial-eval` and `tc-interp` that was fifteen names
+apiece, none of them a finding.
+
+*The body is behind a temporary.* `yggdrasil-build` emits
+`tmpN := MakeNative(func(__e *ControlFlow){ … }, 2)` and then
+`tmpM := Call(__e, ns2_1set, symdo, tmpN)`, so the binding's fourth
+argument is an identifier, not the closure. An extractor that treats that
+argument as the body finds no edges at all and every lookup lands outside
+every body, seeding itself — which makes the reach set the whole node set
+and the comparison vacuous.
+
+The artifact's reachable set is not identical to the footprint, and every
+difference has to be accounted for by a *declared* cause; anything else
+fails. There are three declared causes, and no fourth.
+
+`shen.initialise` is in the artifact's graph but not in `reach`, because
+the shake synthesises it *after* reachability runs, from the kernel's
+toplevel forms, and the generated `main` calls it. The user's own defuns
+are likewise in the graph but not in the kernel footprint, because they
+live outside `kernel.kl`; the shake already computes that set. The third
+is the port's **special forms**: names that are kernel defuns in S42 but
+that shen-go lowers inline with no symbol lookup, so they are never an
+edge in the recovered graph. `do` is one — S42 defines it as a kernel
+function while `src/compiler.shen` handles `(do X Y)` as a parse head —
+and it is not the only one: the intersection of shen-go's `shenPrimitive`
+table with `kernel.kl`'s defun names adds `not`, `symbol?`, `variable?`,
+`integer?`, `read-file-as-bytelist` and `read-file-as-string`, each
+emitted as a bare `PrimX` call because the kernel chunks are compiled
+sealed.
+
+That is the trap this stage is built to avoid: the first two fixtures
+(`fib`, `hello`) leave only `do` and `not` in residue, and a declaration
+fitted to *them* turns `scip-check` red on `metaeval` and `tc-interp` for
+reasons that are not findings. A declared subtraction has to be derived
+from the port's lowering rule, not from a fixture. So the port contract
+(section 11) makes it a declared fact (`special_forms`, with a
+`special_forms_source` naming the line of the port for each name) that the
+check subtracts rather than a person — and the check audits the
+declaration in turn, printing which names it `applied`, which went
+`unused` in this slice, and failing on any declared name that is not a
+kernel defun at all.
+
+One node is deliberately not read the same way: the synthesised
+`shen.initialise`. `trim-top` rewrites the arity table, the
+external-symbols list and the lambda table inside it **against the
+footprint**, so every kept name is quoted there by construction; following
+those quotations saturates the reach set and makes the check vacuous
+again. That is the same circularity the rules avoid by dropping those four
+sites from `called-fns` (`analysis.dl` D2/D7), so the check counts what
+the initialiser *calls* and not what it *quotes*.
+
+The declared subtraction is also transitive, and has to be. shen-go emits
+`PrimIsSymbol` at every call site of `symbol?`, so the kept defun
+`symbol?` is never looked up — and neither is `shen.analyse-symbol?`,
+which nothing else calls. Subtracting the declared name without its
+subtree would report the subtree as a finding. The subtree is derived from
+the same declaration over the graph the backend emitted, never declared
+separately, and the verdict prints it apart from the declaration as
+`called-only-from-them=`.
+
+Measured on the repo fixtures (shen-go `da55c5d`): `fib`, `hello`,
+`prolog`, `metaeval`, `partial-eval` and `tc-interp` all pass with an
+empty residue on both sides. `tests/interpreter.shen` fails, with
+`kl-missing-in-full fix` and `kl-missing-in-full shen.fix-help` — an open
+finding, not a defect in the slice. The cause is the other half of
+`trim-top`: the *shaken* initialiser materialises the lambda table as
+`(cons fix (lambda X1 (lambda X2 (fix X1 X2))))`, a real call site, while
+the full build's initialiser calls `shen.build-lambda-table` and fills the
+table at run time. So A\* reaches `fix` statically and A does not, even
+though A reaches it when it runs. Either the A-side extractor learns to
+follow `shen.build-lambda-table`, or check (2) stops counting the
+initialiser's own edges; both are changes to the graph, not subtractions
+from the residue, and the choice is a person's.
 
 The lesson generalises: SCIP is one way to get a graph out of an artifact.
 The contract in section 11 fixes the *graph* (three relations: `node`,
@@ -557,8 +635,6 @@ Toolchain used for the numbers in this guide:
   `YGGDRASIL_HOST`.
 - [Soufflé](https://souffle-lang.github.io/install) 2.4.1 (apt, Homebrew,
   or Nix all carry it).
-- `scip-go`: `go install github.com/scip-code/scip-go/cmd/scip-go@latest`
-  (the module moved from the `sourcegraph` path).
 - the sibling shen-go checkout, for the go target. Set
   `YGGDRASIL_SHEN_GO_DIR` if it is not at `../shen-go`.
 
@@ -566,7 +642,7 @@ Then:
 
 ```
 go build -o yggdrasil_bin .
-PATH=/path/to/souffle:/path/to/scip-go:$PATH \
+PATH=/path/to/souffle:$PATH \
 YGGDRASIL_HOST=/path/to/shen \
 YGGDRASIL_SHEN_GO_DIR=/path/to/shen-go \
 go test -count=1 ./...

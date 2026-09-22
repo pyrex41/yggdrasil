@@ -247,7 +247,17 @@
       "vector?"
     ],
     "native_overrides_verified": true,
-    "native_overrides_source": "kl/kernelfast.go InstallKernelFast (shen-go 24b2c00): every symbol rebound to a native there"
+    "native_overrides_source": "kl/kernelfast.go InstallKernelFast (shen-go 24b2c00): every symbol rebound to a native there",
+    "special_forms": [
+      "do",
+      "integer?",
+      "not",
+      "read-file-as-bytelist",
+      "read-file-as-string",
+      "symbol?",
+      "variable?"
+    ],
+    "special_forms_source": "shen-go da55c5d, derived as a class and not from a fixture's residue. `do` is syntactic: src/compiler.shen:6 `Env [do X Y] -> [$do (parse Env X) (parse Env Y)]`, the only parse head that is also a kernel defun. The other six are exactly the intersection of the `shenPrimitive` table (codegen/codegen.go:919-965) with kernel.kl's 687 defun names, each emitted by emitDirectPrimitive (codegen/codegen.go:888) as a bare Go call with no PrimFunc lookup, unconditionally for kernel chunks because cmd/yggdrasil-build/main.go:428 sets `cg.Sealed = true` before compiling them: `not` codegen.go:958 -> PrimNot, `symbol?` :960 -> PrimIsSymbol, `read-file-as-bytelist` :961 -> PrimReadFileAsByteList, `read-file-as-string` :962 -> PrimReadFileAsString, `variable?` :963 -> PrimIsVariable, `integer?` :964 -> PrimIsInteger. Which of the seven a given slice actually needs subtracted is a property of the program; the declaration is the port's whole class."
   },
   "joy": {
     "run_impl": "shen-joy",

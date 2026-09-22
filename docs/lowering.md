@@ -131,7 +131,7 @@ a compiler pass.
    as substitution against the imported table, with `badLowering` in all
    three engines and the three-way parity in the test suite.
 4. **Two-level reachability.** `primDef` and `targetEdge` from the
-   shen-go extractor (scip-go over the generated module plus the `kl`
-   package), `runtimeReach` in the rules, and the Go coverage trace as
-   its check.
+   shen-go extractor (today `go/ast` over the generated module, as
+   `scip-check` does, plus the `kl` package), `runtimeReach` in the rules,
+   and the Go coverage trace as its check.
 5. Repeat 2 to 4 for a second port.

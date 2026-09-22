@@ -727,24 +727,24 @@ cannot drift apart.
    full program `K + user`, the latter from the new `--no-shake` mode
    (`yggdrasil.shake-full` in `yggdrasil.shen`: every kernel defun, the
    eval-capable initialiser, no `trim-top`, no `rewrite-f-error`, manifest
-   `shaken=false`) — indexes each module with `scip-go`, decodes the two
-   `index.scip` files, and compares the set of function symbols reachable
-   from `main` plus a normalised body hash per function. `scip.go` is the
-   whole implementation; `scip_test.go` is the host-gated fixture test and
-   the decoder unit test.
+   `shaken=false`) — recovers the KL-level call graph from each generated
+   module with `go/ast`, and asserts **by name** that every defun the shake
+   kept is reachable in the graph the backend actually emitted, and that
+   every name the shaken build reaches the full build reaches too.
+   `scip.go` is the whole implementation; `scip_test.go` is the host-gated
+   fixture test plus unit tests for the residue accounting, the footprint
+   parser and the declaration audit.
 
-   The SCIP index is decoded in-repo, by hand, from the protobuf wire
-   format (`Index.documents`, `Document.relative_path`/`occurrences`,
-   `Occurrence.range`/`symbol`/`symbol_roles`/`enclosing_range`). The `scip`
-   CLI cannot be installed — its `go.mod` carries `replace` directives, so
-   `go install github.com/scip-code/scip/cmd/scip@v0.7.1` is refused — and
-   the Go bindings are a module dependency, which this repo does not have
-   and should not acquire for an optional check. An edge is what the index
-   itself says: a reference occurrence lying inside a definition's
-   `enclosing_range` is a reference *by* that definition. A `go/ast`
-   fallback computes the same graph without an indexer; the subcommand
-   prints `path=scip` or `path=go-ast` so the verdict always says which ran.
-   Both paths ran here and agreed.
+   The first version did index each module with `scip-go` and decode the
+   two `index.scip` files in-repo, by hand, from the protobuf wire format —
+   the `scip` CLI cannot be installed here (its `go.mod` carries `replace`
+   directives) and the Go bindings are a module dependency this repo should
+   not acquire for an optional check. That comparison is gone, and the
+   paragraphs below say why: it compared four generated driver functions,
+   which is the trivial direction of the inclusion and could not fail. The
+   name `scip-check` is kept because the *contract* is the SCIP one — a
+   graph extracted from the artifact, checked against the rules' graph —
+   not because an indexer runs.
 
    **Running it.** The `go` target needs a sibling shen-go whose
    `cmd/yggdrasil-build` can boot its own kernel. shen-go master at
@@ -784,50 +784,133 @@ cannot drift apart.
 
    The node graph Stage 5 wanted is one level down, and `scip-check`
    recovers it from the same generated Go with `go/ast`: the defun bindings
-   are the nodes, the `PrimFunc` lookups are the edges. Measured on
-   shen-go, wall clock 68-85 s per fixture end to end (two shakes, two
-   stage-2 builds, two `scip-go` runs):
+   are the nodes, the symbol occurrences in their bodies are the edges.
 
-   | | `fib` | `hello` |
-   |---|---|---|
-   | Go-level main-reachable, A\* / A | 4 / 4 | 4 / 4 |
-   | Go-level identical bodies | 3 | 3 |
-   | KL defuns emitted, A\* (kernel + user) | 55 (54+1) | 54 (54+0) |
-   | KL nodes reachable from the initialiser, A\* | 53 | 52 |
-   | KL defuns emitted, A | 688 | 687 |
-   | KL nodes reachable, A | 604 | 603 |
-   | shake footprint `reach` | 53 | 53 |
-   | A\* nodes missing from A | 0 | 0 |
+   **Two things about that graph that have to be right.** Both were wrong
+   in earlier cuts of this check, and both make it say nothing.
 
-   **The delta.** It is small and it is entirely explained, which is the
-   useful outcome. `kernel.kl` carries 54 defuns for `fib`: the 53 the
-   rules put in `reach`, plus the synthesised `shen.initialise`. Of the 55
-   defuns the backend emits (those 54 plus the user's own `fib`), the
-   backend-level walk reaches 53. The two it does not reach are:
+   *An edge is an occurrence, not a call.* The generated code compiles a
+   call to `PrimFunc(symF)` and a quoted symbol to `PrimCons(symF, ...)`.
+   Only the first looks like an edge, but D1 above is explicit that the
+   shake counts **every** kernel-defined symbol leaf of a body in any
+   position, because the kernel constructs KL it may later evaluate. A
+   call-position-only edge relation on the artifact side therefore reports
+   every name kept for a constructed-code occurrence as unreachable, and
+   manufactures a residue out of the two sides disagreeing about what an
+   edge is: on `metaeval`, `partial-eval` and `tc-interp` that was the same
+   15 names apiece (`==`, `fail-if`, `function`, `hdv`, `tlv`, `input`,
+   `lineread`, `protect`, `unput`, `shen.+vector?`, `shen.f-error`,
+   `shen.input-h+`, `shen.input-track`, `shen.output-track`,
+   `shen.terpri-or-read-char`), not one of them a finding. With the two
+   edge relations aligned the residue is empty on all three.
+
+   *The body is behind a temporary.* `yggdrasil-build` emits
+   `tmpN := MakeNative(func(__e *ControlFlow) { ... }, 2)` and then
+   `tmpM := Call(__e, ns2_1set, symdo, tmpN)`, so a binding's fourth
+   argument is an identifier, not the closure. An extractor that reads that
+   argument as the body finds no edges at all: every lookup then sits
+   outside every body and lands in the seed set, the reach set becomes the
+   whole node set, and the comparison is vacuous. Following the one hop is
+   what gives `fib` 7 seeds instead of 153.
+
+   **The synthesised initialiser is not read the same way.** `trim-top`
+   rewrites the arity table, the external-symbols list and the lambda table
+   inside `shen.initialise` *against the footprint* (D7), so every kept name
+   is quoted there by construction; following those quotations saturates
+   the reach set and makes the check vacuous again, which is exactly the
+   circularity the rules avoid by dropping those sites from `called-fns`
+   (D2). So the check counts what the initialiser **calls** and not what it
+   **quotes**. What it calls is real: `put`, `vector`,
+   `shen.initialise-arity-table` and the rest of the fixed preamble.
+
+   **The declared subtraction is transitive.** shen-go emits
+   `PrimIsSymbol` at every call site of `symbol?`, so the kept defun
+   `symbol?` is never looked up -- and neither is `shen.analyse-symbol?`,
+   which nothing else calls. Subtracting the declared name without its
+   subtree reports the subtree as a finding. The subtree is *derived* from
+   the same declaration over the graph the backend emitted, never declared
+   separately, and the verdict prints it apart from the declaration as
+   `called-only-from-them=`.
+
+   Measured on shen-go `da55c5d`, wall clock 12-32 s per fixture end to end
+   (two shakes, two stage-2 builds):
+
+   | fixture | footprint | A\* reachable | A defuns | A reachable | `applied` | `called-only-from-them` | verdict |
+   |---|---|---|---|---|---|---|---|
+   | `fib` | 53 | 53 | 688 | 545 | `do,not` | -- | OK |
+   | `hello` | 53 | 52 | 687 | 544 | `do,not` | -- | OK |
+   | `prolog` | 66 | 66 | 688 | 545 | `do,not` | -- | OK |
+   | `metaeval` | 550 | 547 | 688 | 547 | `symbol?,variable?` | 3 | OK |
+   | `partial-eval` | 548 | 545 | 688 | 545 | `symbol?,variable?` | 3 | OK |
+   | `tc-interp` | 567 | 561 | 687 | 561 | `read-file-as-bytelist,symbol?,variable?` | 4 | OK |
+   | `interpreter` | 66 | 58 | 697 | 544 | `not,variable?` | 7 | **FAIL** |
+
+   `interpreter` fails with `kl-missing-in-full fix` and
+   `kl-missing-in-full shen.fix-help` -- the delta itself is empty on both
+   sides, so this is check (2), not check (1). The cause is the other half
+   of `trim-top`: the *shaken* initialiser materialises the lambda table as
+   `(cons fix (lambda X1 (lambda X2 (fix X1 X2))))`, a real call site the
+   backend compiles to a lookup, while the full build's initialiser calls
+   `shen.build-lambda-table` and fills the table at run time. So A\*
+   reaches `fix` statically and A does not, though A reaches it when it
+   runs. It is an open finding: either the A-side extractor learns to
+   follow `shen.build-lambda-table`, or check (2) stops counting the
+   initialiser's own edges. Both are changes to the *graph*; neither is a
+   subtraction from the residue, and the choice is a person's.
+
+   **The delta, and how it is accounted for.** It is small and it is
+   entirely *declared*, which is the useful outcome: there is no integer to
+   eyeball and no subtraction a person performs in their head. `kernel.kl`
+   carries 54 defuns for `fib`: the 53 the rules put in `reach`, plus the
+   synthesised `shen.initialise`. Of the 55 defuns the backend emits (those
+   54 plus the user's own `fib`), the backend-level walk reaches 53. The
+   three declared causes, and there is no fourth:
 
    - `shen.initialise`, which is not a `reach` member and never was --
      nothing inside the program calls it; the builder's generated `main`
-     does, from the manifest's `init=` key; and
-   - **`do`**, which is the direct-vs-lookup half of the delta in one
-     word. It is a kernel defun the shake keeps, and the Shen-to-Go
-     compiler lowers it as a special form at every call site, so its name
-     is never looked up and no `PrimFunc` edge to it exists.
+     does, from the manifest's `init=` key;
+   - the user's own defuns, which are in the emitted graph but not in the
+     kernel footprint because they live outside `kernel.kl`; and
+   - the target's **special forms**, `builders.json`'s `special_forms`
+     with a `special_forms_source` citing the line of the port for each
+     name, **together with whatever only they reach**. These are kernel
+     defuns the shake keeps and the backend lowers inline, so the generated
+     code never names them and the recovered graph has no edge to them at
+     all. For `go` that is seven names: `do`, which
+     `shen-go/src/compiler.shen` handles as a parse head, and the six
+     entries of `codegen.go`'s `shenPrimitive` table that are also kernel
+     defuns -- `not`, `symbol?`, `variable?`, `integer?`,
+     `read-file-as-bytelist`, `read-file-as-string` -- each emitted as a
+     bare `PrimX` call because kernel chunks compile sealed.
 
-   Running the other way, the seed set the backend's output yields is 82
-   names where the rules' `reach` is 53, because the initialiser mentions
-   names that are data -- arity-table pairs and the external-symbols list
-   -- rather than calls. Neither direction is a bug; both are the backend
-   and the rules disagreeing about what an *edge* is, which is exactly the
-   disagreement this stage exists to measure. `hello` is the same story
-   with no user defun, so its 52 against a footprint of 53 is `do` alone.
+   The declaration is a property of the **port**, not of the program, and
+   deriving it from a fixture is a live trap: `fib` and `hello` leave only
+   `do` and `not` in residue, and a `special_forms` list fitted to them
+   fails `metaeval` and `tc-interp` on names that are not findings. Which
+   of the seven a given slice needs subtracted varies; the declared class
+   does not. The check therefore audits the declaration too, reporting
+   which names it `applied` and which went `unused` in this run, and
+   failing on any declared name that is not a kernel defun at all.
 
-   **What this proves.** For every fixture checked, every node A\* can
-   reach, A can reach too, and the bodies the two builds share are
-   identical after `go/printer` normalisation. That is compositional
-   level-2 *inclusion*: the backend did not invent an edge the rules never
-   saw, and it did not compile a kept function differently because its
-   neighbours were gone. Disagreement would be a bug in the builder or in
-   the rules, the status the Soufflé oracle has for stage 1.
+   Anything outside those three causes is printed name by name
+   (`kl-delta-missing`, `kl-delta-extra`, `kl-missing-in-full`,
+   `special-forms-unknown`) and fails the check.
+
+   The `applied` / `called-only-from-them` columns of the table above are
+   that accounting per fixture: `do,not` on the small programs, and
+   `symbol?`/`variable?`/`read-file-as-bytelist` with their helper subtrees
+   on the ones that exercise more of the kernel. Which of the seven a slice
+   needs is a property of the program; the class is a property of the port.
+
+   **What this proves.** On six of the seven repo fixtures, every name A\*
+   can reach A can reach too, and every defun the shake kept is either
+   reachable in A\*'s own emitted graph or accounted for by a declared
+   cause. That is compositional level-2 *inclusion*: the backend did not
+   invent an edge the rules never saw, and it did not drop a kept function
+   because its neighbours were gone. The seventh, `interpreter`, is the
+   open finding above, and it is check (2) disagreeing with itself about
+   how the two initialisers build the lambda table -- printed by name, not
+   subtracted.
 
    **What it cannot see.** Exactly what the shake cannot see, and this is
    the point of it being an *independent* oracle for the same
