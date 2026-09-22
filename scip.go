@@ -385,7 +385,7 @@ func cmdScipCheck(rest []string) int {
 	// A* and A, same builder, same flags, different stage 1.
 	for i, dir := range []string{shakenDir, fullDir} {
 		leg := [2]string{"shaken", "full"}[i]
-		if _, err := shakeMode(prog, dir, host, *evalStyle, true, i == 1); err != nil {
+		if _, err := shakeMode(prog, dir, host, *evalStyle, true, shakeOpts{full: i == 1}); err != nil {
 			return fail(leg+" stage 1", err)
 		}
 		runArgv, err := build(*target, dir, false)

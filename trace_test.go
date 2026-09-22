@@ -73,10 +73,7 @@ func TestTraceIsOptional(t *testing.T) {
 	if _, err := shake(prog, before, host, "sub", true); err != nil {
 		t.Fatalf("shake before: %v", err)
 	}
-	traceMode = true
-	_, err := shake(prog, traced, host, "sub", true)
-	traceMode = false
-	if err != nil {
+	if _, err := shake(prog, traced, host, "sub", true, shakeOpts{trace: true}); err != nil {
 		t.Fatalf("traced shake: %v", err)
 	}
 	if _, err := shake(prog, after, host, "sub", true); err != nil {

@@ -219,18 +219,57 @@ func defaultHost() []string {
 	return nil
 }
 
-// shake runs stage 1: shake prog into outdir. Returns outdir.
-func shake(prog, outdir string, host []string, evalStyle string, quiet bool) (string, error) {
-	return shakeMode(prog, outdir, host, evalStyle, quiet, false)
+// shakeOpts is everything the command line can say about WHICH shake to run:
+// which Shen entry point (trace.go's shakeExpr) and which stage-4 globals to
+// set first (prune.go's wrapShakeExpr). One value, passed down the call chain,
+// rather than the package-level flags this used to be -- a mode that is a
+// global has to be saved and restored by every caller that sets it, is left
+// on by any panic in between, and cannot be read off a call site.
+//
+// The zero value is the default shake, and the default shake's host
+// expression is byte-for-byte the one yggdrasil has always sent.
+type shakeOpts struct {
+	full      bool   // --no-shake: emit the full program A, not the slice
+	trace     bool   // --trace: weave the runtime call trace
+	pruneInit bool   // --prune-init: stage-4 dead-initialisation pruning
+	target    string // "" = no target: the union over all builders
+	// --prune-init-unverified: proceed even when the target's port_reads
+	// list in builders.json is the conservative placeholder rather than a
+	// list read off that port's runtime. See wrapShakeExpr.
+	allowUnverifiedPortReads bool
 }
 
-// shakeMode is shake with the stage-5 --no-shake switch. With full set it
-// calls (yggdrasil.shake-full ...) instead of (yggdrasil.shake ...): every
-// kernel defun and the eval-capable initialiser, so the same stage-2 builder
-// can build the full program A alongside the shaken A*. Everything else --
-// the host launcher, the driver file, the failure contract -- is shared, so
-// the two artifacts differ by the shake and by nothing else.
-func shakeMode(prog, outdir string, host []string, evalStyle string, quiet, full bool) (string, error) {
+// only collapses a variadic shakeOpts to the single value it is allowed to
+// carry. The variadic is a default argument, not a list: shake(...) and
+// facts(...) keep their old five-argument form for the many callers that want
+// the default, and take one shakeOpts when a caller wants something else.
+func only(opts []shakeOpts) (shakeOpts, error) {
+	switch len(opts) {
+	case 0:
+		return shakeOpts{}, nil
+	case 1:
+		return opts[0], nil
+	default:
+		return shakeOpts{}, fmt.Errorf("internal error: %d shakeOpts passed where at most one is meaningful", len(opts))
+	}
+}
+
+// shake runs stage 1: shake prog into outdir. Returns outdir.
+func shake(prog, outdir string, host []string, evalStyle string, quiet bool, opts ...shakeOpts) (string, error) {
+	o, err := only(opts)
+	if err != nil {
+		return "", err
+	}
+	return shakeMode(prog, outdir, host, evalStyle, quiet, o)
+}
+
+// shakeMode is shake with the mode spelled out. With o.full set it calls
+// (yggdrasil.shake-full ...) instead of (yggdrasil.shake ...): every kernel
+// defun and the eval-capable initialiser, so the same stage-2 builder can
+// build the full program A alongside the shaken A*. Everything else -- the
+// host launcher, the driver file, the failure contract -- is shared, so the
+// two artifacts differ by the shake and by nothing else.
+func shakeMode(prog, outdir string, host []string, evalStyle string, quiet bool, o shakeOpts) (string, error) {
 	if host == nil {
 		host = defaultHost()
 	}
@@ -254,11 +293,11 @@ func shakeMode(prog, outdir string, host []string, evalStyle string, quiet, full
 	// .shake-traced (--trace) -- and wrapShakeExpr (prune.go) then wraps
 	// whichever it chose with --prune-init's globals. The default path is
 	// byte-for-byte the expression this function has always sent.
-	expr, err := shakeExpr(prog, outdir, full)
+	expr, err := shakeExpr(prog, outdir, o)
 	if err != nil {
 		return "", err
 	}
-	expr, err = wrapShakeExpr(expr)
+	expr, err = wrapShakeExpr(expr, o)
 	if err != nil {
 		return "", err
 	}
@@ -841,18 +880,31 @@ func cmdStage(cmd string, rest []string) int {
 	typecheck := fs.Bool("typecheck", false, "typecheck PROG under (tc +) on the host before shaking; failure aborts with no artifacts, success is recorded as typechecked= in the manifest")
 	trace := fs.Bool("trace", false, "weave runtime call tracing into the emitted KL: every defun records its entry and every (value V) its read, to ./"+traceFileName+" at run time (see yggdrasil trace-check)")
 	pruneFlag := fs.Bool("prune-init", false, "stage 4: drop toplevel (set V Lit) forms whose global nothing reads, using --target's port_reads from builders.json, or the union over every target when no --target is given; recorded as pruned-init= in the manifest")
+	pruneUnverified := fs.Bool("prune-init-unverified", false, "allow --prune-init against a target whose builders.json port_reads list is the conservative placeholder rather than one read off that port's runtime; prints a WARN and prunes anyway")
 	noShake := fs.Bool("no-shake", false, "emit the FULL program (every kernel defun, the eval-capable initialiser, no trimming) instead of the shaken slice; the manifest records shaken=false. The reference build for scip-check")
 	// Allow flags after the PROG/OUTDIR positionals (Go's flag stops at the
 	// first non-flag token otherwise).
 	if err := fs.Parse(reorderArgs(rest, "host", "eval-style", "target")); err != nil {
 		return 2
 	}
-	// A shake has no target, so it must use the union of every port's reads;
-	// a build/run knows which backend the slice is for and may use just that
-	// one. Off unless asked: see prune.go.
-	pruneOpts.on = *pruneFlag
+	// The whole mode of this stage-1 run, decided once, here, and passed to
+	// shakeMode as a value. --trace changes only what shake() asks the host
+	// for; every other stage is unaware, because a woven artifact is
+	// ordinary KL.
+	//
+	// The target is carried only when --prune-init asks for it: a shake has
+	// no target, so it must use the union of every port's reads; a
+	// build/run knows which backend the slice is for and may use just that
+	// one. Without --prune-init the list is not consulted at all, and
+	// naming it would change the host expression for every plain build.
+	opts := shakeOpts{
+		full:                     *noShake,
+		trace:                    *trace,
+		pruneInit:                *pruneFlag,
+		allowUnverifiedPortReads: *pruneUnverified,
+	}
 	if *pruneFlag {
-		pruneOpts.target = *target
+		opts.target = *target
 	}
 	if fs.NArg() < 2 {
 		fmt.Fprintf(os.Stderr, "usage: yggdrasil %s PROG OUTDIR%s\n", cmd, map[string]string{"shake": ""}[cmd]+ifTarget(cmd))
@@ -866,11 +918,6 @@ func cmdStage(cmd string, rest []string) int {
 			host[0] = hit
 		}
 	}
-	// --trace changes only what shake() asks the host for; every other stage
-	// is unaware, because a woven artifact is ordinary KL.
-	traceMode = *trace
-	defer func() { traceMode = false }()
-
 	// --typecheck gates the shake: check first in its own host process, so a
 	// type failure aborts before any artifact is written.
 	var checkedKernel string
@@ -884,7 +931,7 @@ func cmdStage(cmd string, rest []string) int {
 	}
 
 	if cmd == "shake" {
-		out, err := shakeMode(prog, outdir, host, *evalStyle, false, *noShake)
+		out, err := shakeMode(prog, outdir, host, *evalStyle, false, opts)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "yggdrasil:", err)
 			return 1
@@ -912,7 +959,7 @@ func cmdStage(cmd string, rest []string) int {
 		fmt.Fprintf(os.Stderr, "yggdrasil %s: --web only applies to --target js\n", cmd)
 		return 2
 	}
-	if _, err := shakeMode(prog, outdir, host, *evalStyle, true, *noShake); err != nil {
+	if _, err := shakeMode(prog, outdir, host, *evalStyle, true, opts); err != nil {
 		fmt.Fprintln(os.Stderr, "yggdrasil:", err)
 		return 1
 	}
@@ -1097,7 +1144,11 @@ func cmdWhy(rest []string) int {
 //
 // Same trust model as shake and why: success is the sentinel line plus the
 // fact files existing on disk, never the host's exit code.
-func facts(prog, outdir string, host []string, evalStyle string, quiet bool) (string, error) {
+func facts(prog, outdir string, host []string, evalStyle string, quiet bool, opts ...shakeOpts) (string, error) {
+	o, oerr := only(opts)
+	if oerr != nil {
+		return "", oerr
+	}
 	if host == nil {
 		host = defaultHost()
 	}
@@ -1117,7 +1168,7 @@ func facts(prog, outdir string, host []string, evalStyle string, quiet bool) (st
 		return "", fmt.Errorf("materialising shaker: %w", err)
 	}
 	expr := fmt.Sprintf(`(yggdrasil.facts ["%s"] "%s")`, prog, outdir)
-	expr, err = wrapShakeExpr(expr)
+	expr, err = wrapShakeExpr(expr, o)
 	if err != nil {
 		return "", err
 	}
@@ -1172,11 +1223,10 @@ func cmdFacts(rest []string) int {
 	if err := fs.Parse(reorderArgs(rest, "host", "eval-style", "target")); err != nil {
 		return 2
 	}
-	// yggdrasil.facts never prunes; the setting only chooses which
-	// port_reads list lands in portReads.facts.
-	if *tgt != "" {
-		pruneOpts.on, pruneOpts.target = true, *tgt
-	}
+	// --target chooses which port_reads list lands in portReads.facts and
+	// asks for nothing else: pruneInit stays false, and yggdrasil.facts
+	// never prunes anyway.
+	opts := shakeOpts{target: *tgt}
 	if fs.NArg() < 2 {
 		fmt.Fprintln(os.Stderr, "usage: yggdrasil facts PROG OUTDIR [--host ...] [--eval-style ...] [--target T]")
 		return 2
@@ -1189,7 +1239,7 @@ func cmdFacts(rest []string) int {
 			host[0] = hit
 		}
 	}
-	if _, err := facts(prog, outdir, host, *evalStyle, false); err != nil {
+	if _, err := facts(prog, outdir, host, *evalStyle, false, opts); err != nil {
 		fmt.Fprintln(os.Stderr, "yggdrasil:", err)
 		return 1
 	}
@@ -1302,15 +1352,16 @@ func cmdParity(rest []string) int {
 	timeFlag := fs.Bool("time", false, "report per-target wall-clock (advisory; never fails the gate)")
 	stdinFile := fs.String("stdin", "", "file fed to each artifact's stdin (both boots get the same bytes)")
 	pruneFlag := fs.Bool("prune-init", false, "stage 4: shake with dead-initialisation pruning on (union of every port's port_reads), then gate the pruned slice on every target")
+	pruneUnverified := fs.Bool("prune-init-unverified", false, "allow --prune-init against a single target whose builders.json port_reads list is the conservative placeholder; prints a WARN and prunes anyway")
 	if err := fs.Parse(reorderArgs(rest, "host", "eval-style", "target", "reference", "expect", "stdin")); err != nil {
 		return 2
 	}
-	pruneOpts.on = *pruneFlag
 	// One named target means the slice is only ever built for that backend,
 	// so its own port_reads is the honest list; several (or none) means the
 	// union, the only list sound for all of them.
+	opts := shakeOpts{pruneInit: *pruneFlag, allowUnverifiedPortReads: *pruneUnverified}
 	if *pruneFlag && *targetFlag != "" && !strings.Contains(*targetFlag, ",") {
-		pruneOpts.target = strings.TrimSpace(*targetFlag)
+		opts.target = strings.TrimSpace(*targetFlag)
 	}
 	if fs.NArg() < 2 {
 		fmt.Fprintln(os.Stderr, "usage: yggdrasil parity PROG OUTDIR [--target a,b] [--reference R] [--expect FILE]")
@@ -1361,7 +1412,7 @@ func cmdParity(rest []string) int {
 	}
 
 	// Stage 1, once.
-	if _, err := shake(prog, outdir, host, *evalStyle, true); err != nil {
+	if _, err := shake(prog, outdir, host, *evalStyle, true, opts); err != nil {
 		fmt.Fprintln(os.Stderr, "yggdrasil:", err)
 		return 1
 	}

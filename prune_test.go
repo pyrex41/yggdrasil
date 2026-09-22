@@ -28,14 +28,11 @@ import (
 	"testing"
 )
 
-// withPrune runs body with the stage-4 options set, and restores them after.
-// pruneOpts is process-global (see prune.go), and the rest of the suite shakes
-// with it off.
-func withPrune(target string, body func()) {
-	saved := pruneOpts
-	pruneOpts.on, pruneOpts.target = true, target
-	defer func() { pruneOpts = saved }()
-	body()
+// withPrune is the stage-4 options a --prune-init shake for target runs under.
+// Nothing to save or restore: the mode is an argument to shake(), so a test
+// that asks for pruning cannot leak it into the rest of the suite.
+func withPrune(target string) shakeOpts {
+	return shakeOpts{pruneInit: true, target: target}
 }
 
 var setForm = regexp.MustCompile(`\(set ([^ ()]+) `)
@@ -136,9 +133,7 @@ func TestPruneInitDropsOnlyWholeSets(t *testing.T) {
 	if _, err := shake(prog, plain, host, "sub", true); err != nil {
 		t.Fatalf("shake: %v", err)
 	}
-	var err error
-	withPrune("go", func() { _, err = shake(prog, pruned, host, "sub", true) })
-	if err != nil {
+	if _, err := shake(prog, pruned, host, "sub", true, withPrune("go")); err != nil {
 		t.Fatalf("shake --prune-init: %v", err)
 	}
 
@@ -219,8 +214,7 @@ func TestPruneInitGoArtifactStillRuns(t *testing.T) {
 	}
 
 	pruned := t.TempDir()
-	withPrune("go", func() { _, err = shake("tests/fib.shen", pruned, host, "sub", true) })
-	if err != nil {
+	if _, err := shake("tests/fib.shen", pruned, host, "sub", true, withPrune("go")); err != nil {
 		t.Fatalf("shake --prune-init: %v", err)
 	}
 	got, ok := runFib(pruned)
@@ -737,5 +731,144 @@ func TestContractLegendPromisesNoMoreThanCheckedBySays(t *testing.T) {
 			t.Errorf("%s's checked_by does not say in which direction the named test "+
 				"catches drift, and the legend no longer says it for them: %q", name, s)
 		}
+	}
+}
+
+// ---- the mode is an argument, and an unverified list is refused ----
+//
+// These four need no host: they are about the expression the Go side builds,
+// which is the whole of what --prune-init, --target and --trace mean here.
+
+// The default shake's host expression is untouched -- the property every
+// other stage-4 promise rests on. Asserted on the string, not on a golden
+// artifact, so a regression names itself.
+func TestShakeExprDefaultIsByteIdentical(t *testing.T) {
+	const want = `(yggdrasil.shake ["/p/prog.shen"] "/p/out")`
+	got, err := shakeExpr("/p/prog.shen", "/p/out", shakeOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("default shakeExpr = %q, want %q", got, want)
+	}
+	wrapped, err := wrapShakeExpr(got, shakeOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wrapped != want {
+		t.Errorf("default wrapShakeExpr rewrote the expression:\n  got  %q\n  want %q", wrapped, want)
+	}
+	// And each mode picks its own entry point off the options alone.
+	for _, c := range []struct {
+		o  shakeOpts
+		fn string
+	}{
+		{shakeOpts{}, "yggdrasil.shake"},
+		{shakeOpts{full: true}, "yggdrasil.shake-full"},
+		{shakeOpts{trace: true}, "yggdrasil.shake-traced"},
+	} {
+		got, err := shakeExpr("/p/prog.shen", "/p/out", c.o)
+		if err != nil {
+			t.Fatalf("shakeExpr(%+v): %v", c.o, err)
+		}
+		if !strings.HasPrefix(got, "("+c.fn+" ") {
+			t.Errorf("shakeExpr(%+v) = %q, want the %s entry point", c.o, got, c.fn)
+		}
+	}
+	if _, err := shakeExpr("/p/prog.shen", "/p/out", shakeOpts{full: true, trace: true}); err == nil {
+		t.Error("--trace with --no-shake must still be refused")
+	}
+}
+
+// torvalds-11: --prune-init against a target whose port_reads list is a
+// placeholder used to prune silently. It must now refuse, by name.
+func TestPruneInitRefusesUnverifiedTarget(t *testing.T) {
+	builders, err := loadBuilders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var unverified string
+	for name := range builders {
+		// T4 replaced the port_reads_verified boolean with
+		// port_reads_checked_by; portReadsVerified is the one place that
+		// word is defined now, and it is what wrapShakeExpr consults, so
+		// the test asks the same question the refusal does.
+		if !portReadsVerified(name) {
+			unverified = name
+			break
+		}
+	}
+	if unverified == "" {
+		t.Skip("every target's port_reads is verified; nothing to refuse")
+	}
+	const expr = `(yggdrasil.shake ["/p/prog.shen"] "/p/out")`
+	_, err = wrapShakeExpr(expr, shakeOpts{pruneInit: true, target: unverified})
+	if err == nil {
+		t.Fatalf("--prune-init --target %s was accepted; its port_reads list is a placeholder", unverified)
+	}
+	if !strings.Contains(err.Error(), unverified) {
+		t.Errorf("the refusal must name the target; got %q", err)
+	}
+	for _, want := range []string{"port_reads", "--prune-init-unverified"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal must mention %q; got %q", want, err)
+		}
+	}
+
+	// The escape hatch proceeds, and still installs that target's list.
+	got, err := wrapShakeExpr(expr, shakeOpts{pruneInit: true, target: unverified, allowUnverifiedPortReads: true})
+	if err != nil {
+		t.Fatalf("--prune-init-unverified must proceed: %v", err)
+	}
+	if !strings.Contains(got, "(set ygg.*prune-init* true)") {
+		t.Errorf("the escape hatch must still ask for pruning:\n%s", got)
+	}
+
+	// A verified target is never refused, and neither is the target-agnostic
+	// union -- the conservative case by construction.
+	if _, err := wrapShakeExpr(expr, shakeOpts{pruneInit: true, target: "go"}); err != nil {
+		t.Errorf("--prune-init --target go must be accepted: %v", err)
+	}
+	if _, err := wrapShakeExpr(expr, shakeOpts{pruneInit: true}); err != nil {
+		t.Errorf("--prune-init with no target must be accepted (it uses the union): %v", err)
+	}
+}
+
+// hickey-9 / torvalds-9: `facts --target T` selects a port_reads list. It used
+// to have to say pruneInit to do so, because a global was the only channel.
+func TestFactsTargetSelectsListWithoutPruning(t *testing.T) {
+	const expr = `(yggdrasil.facts ["/p/prog.shen"] "/p/out")`
+	got, err := wrapShakeExpr(expr, shakeOpts{target: "go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "(set ygg.*prune-init* false)") {
+		t.Errorf("a target without --prune-init must not ask the shaker to prune:\n%s", got)
+	}
+	reads, err := portReadsFor("go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "(set ygg.*port-reads* ["+strings.Join(reads, " ")+"])") {
+		t.Errorf("go's port_reads list is not installed:\n%s", got)
+	}
+	// An unverified target is fine here: nothing is being pruned.
+	if _, err := wrapShakeExpr(expr, shakeOpts{target: "lua"}); err != nil {
+		t.Errorf("facts --target lua must not be refused (it prunes nothing): %v", err)
+	}
+}
+
+// shake()/facts() take AT MOST one shakeOpts. The variadic is a default
+// argument; two would silently mean one of them was ignored.
+func TestShakeOptsVariadicTakesOne(t *testing.T) {
+	if _, err := only(nil); err != nil {
+		t.Errorf("no options must mean the zero value: %v", err)
+	}
+	o, err := only([]shakeOpts{{trace: true}})
+	if err != nil || !o.trace {
+		t.Errorf("one option must pass through: %+v %v", o, err)
+	}
+	if _, err := only([]shakeOpts{{}, {}}); err == nil {
+		t.Error("two shakeOpts must be an error, not a silent choice")
 	}
 }

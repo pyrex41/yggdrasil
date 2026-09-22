@@ -63,12 +63,6 @@ import (
 	"time"
 )
 
-// traceMode makes shake() call (yggdrasil.shake-traced ...) instead of
-// (yggdrasil.shake ...). It is a package variable rather than a parameter so
-// that the default shake path -- and every existing caller of shake() -- is
-// untouched, which is also what keeps untraced output byte-identical.
-var traceMode bool
-
 // shakeExpr is the host expression shakeMode() evaluates: the entry point
 // that --trace and --no-shake choose between, before prune.go's
 // wrapShakeExpr wraps it with --prune-init's globals.
@@ -82,16 +76,16 @@ var traceMode bool
 // dominated by machinery the sliced artifact does not contain.
 // --prune-init composes with either, and with --trace deliberately: the
 // weaver runs after pruning, so a trace describes the artifact as shipped.
-func shakeExpr(prog, outdir string, full bool) (string, error) {
+func shakeExpr(prog, outdir string, o shakeOpts) (string, error) {
 	fn := "yggdrasil.shake"
 	switch {
-	case full && traceMode:
+	case o.full && o.trace:
 		return "", errors.New("--trace and --no-shake cannot be used together: " +
 			"--no-shake emits the full program as scip-check's reference, and the trace " +
 			"checks a slice against its own reach. Trace the shaken build instead")
-	case full:
+	case o.full:
 		fn = "yggdrasil.shake-full"
-	case traceMode:
+	case o.trace:
 		fn = "yggdrasil.shake-traced"
 	}
 	return fmt.Sprintf(`(%s ["%s"] "%s")`, fn, prog, outdir), nil
@@ -478,14 +472,15 @@ func traceCheck(prog, outdir, target, stdinFile string, host []string, evalStyle
 		return nil, fmt.Errorf("fact dump: %w", err)
 	}
 
-	traceMode = true
-	_, err := shake(prog, outdir, host, evalStyle, true)
-	traceMode = false
-	if err != nil {
+	// The traced shake is a shake with trace set, not a global flipped
+	// around the call: there is nothing to restore, so no error path and no
+	// panic between here and the next line can leave tracing on.
+	if _, err := shake(prog, outdir, host, evalStyle, true, shakeOpts{trace: true}); err != nil {
 		return nil, fmt.Errorf("traced shake: %w", err)
 	}
 
 	var runArgv []string
+	var err error
 	runStdin := stdinFile
 	if target == klTarget {
 		var feed string

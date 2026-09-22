@@ -224,10 +224,10 @@ func TestManifestKeySetsMatch(t *testing.T) {
 
 	// The two modes that share write-manifest: yggdrasil.shake, and with
 	// full=true yggdrasil.shake-full (the CLI's --no-shake).
-	if _, err := shakeMode(prog, shakenDir, host, "sub", true, false); err != nil {
+	if _, err := shakeMode(prog, shakenDir, host, "sub", true, shakeOpts{}); err != nil {
 		t.Fatalf("shaken build of %s: %v", prog, err)
 	}
-	if _, err := shakeMode(prog, fullDir, host, "sub", true, true); err != nil {
+	if _, err := shakeMode(prog, fullDir, host, "sub", true, shakeOpts{full: true}); err != nil {
 		t.Fatalf("full (--no-shake) build of %s: %v", prog, err)
 	}
 
