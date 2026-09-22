@@ -134,11 +134,12 @@
                     TopsOut    (map (/. T (trim-top T Foot EvalFree Arities)) Tops)
                     InitOrder  (ygg.init-order-check TopsOut KL)
                     InitDefun  (synthesize-initialise TopsOut)
-                    OutCode    (append FootCode [InitDefun])
-                    Prims      (find-primitives (append OutCode KL))
+                    OutCode    (ygg.trace-kernel (append FootCode [InitDefun]))
+                    UserKL     (ygg.trace-user KL)
+                    Prims      (find-primitives (append OutCode UserKL))
                     WriteK     (write-kl-file (@s Dir "/kernel.kl") OutCode)
-                    UserOut    (write-user-files KLFiles KL Dir)
-                    WriteM     (write-manifest Dir UserOut KL Prims CNames)
+                    UserOut    (write-user-files KLFiles UserKL Dir)
+                    WriteM     (write-manifest Dir UserOut UserKL Prims CNames)
                     Restore    (set *maximum-print-sequence-size* MaxPrint)
                     done))
 
@@ -1384,6 +1385,7 @@
          WA3 (pr-kl-line ["computed-names" Computed] Sink)
          WB (pr-kl-line ["reaches" | Reaches] Sink)
          WC (pr-kl-line ["cannot-reach" | Cannot] Sink)
+         WD (ygg.trace-manifest-sexp Sink)
          (close Sink)))
 
 (define write-manifest-txt
@@ -1403,6 +1405,7 @@
          WA3 (pr (make-string "computed-names=~A~%" Computed) Sink)
          WB (ygg.mapc (/. C (pr (make-string "reaches=~A~%" C) Sink)) Reaches)
          WC (ygg.mapc (/. C (pr (make-string "cannot-reach=~A~%" C) Sink)) Cannot)
+         WD (ygg.trace-manifest-txt Sink)
          (close Sink)))
 
 \\ ======================= initialisation order check =====================
@@ -1709,6 +1712,17 @@
            W15 (ygg.facts-file Dir "initprim" (map (/. P [P]) (find-primitives TopsOut)))
            W16 (ygg.facts-file Dir "userintern" (ygg.rows-of userintern (ygg.cn-facts KL)))
            W17 (ygg.facts-file Dir "userglobal" (ygg.rows-of userglobal (ygg.cn-facts KL)))
+           \\ Runtime trace (docs/analysis-rules.md, "Runtime trace"): initwrite
+           \\ is the EDB half of uncoveredRead; called/readglobal are written
+           \\ EMPTY here and overwritten by `yggdrasil trace-check` from a real
+           \\ run, so that a facts dir is always a complete .input set for
+           \\ analysis.dl whether or not a trace was taken.
+           W18 (ygg.facts-file Dir "initwrite"
+                                (map (/. V [V]) (ygg.trace-initwrites TopsOut KL)))
+           W18b (ygg.facts-file Dir "defunwrite"
+                                (map (/. V [V]) (ygg.trace-defunwrites Foot Kernel KL)))
+           W19 (ygg.facts-file Dir "called" [])
+           W20 (ygg.facts-file Dir "readglobal" [])
            Restore (set *maximum-print-sequence-size* MaxPrint)
            Report  (pr (make-string "yggdrasil-facts: mode=~A dir=~A kernel=~A~%"
                                     (if EvalFree "eval-free" "eval-capable")
@@ -1850,3 +1864,255 @@
 (define ygg.fact-str
   X -> X where (string? X)
   X -> (str X))
+
+\\ ================= runtime call trace (--trace weaving) =================
+\\ Stage-3 companion to the rule set (docs/analysis-rules.md, "Runtime
+\\ trace").  The rules say which kernel defuns a program can reach; this
+\\ says which ones a RUN actually entered, so the two can be compared.
+\\
+\\ It is aspect weaving, done at the KLambda IR rather than at a target's
+\\ object code, which is what makes it target-independent: one weaver, and
+\\ every stage-2 builder inherits it for free.
+\\
+\\   pointcut   every defun entry; every (value V) with a literal symbol V
+\\   advice     append one line to a trace stream
+\\   join model the woven form is still KL, so it compiles on every port
+\\
+\\ A defun (defun F Args Body) becomes (defun F Args (do (ygg.traced F)
+\\ Body)), and (value V) becomes (ygg.traced-value V) - which records V and
+\\ then performs the read, so the advice is around, not instead of.
+\\ Weaving runs AFTER the footprint, the rewrites, trim-top and the
+\\ init-order check, and just before anything is written, so it cannot
+\\ perturb any decision the shake made: the traced kernel.kl has exactly
+\\ the defuns of the untraced one, plus the five helpers.
+\\
+\\ The helpers must not be traced (infinite recursion: ygg.traced calling
+\\ ygg.traced) and must not depend on the footprint, because the footprint
+\\ was decided before they existed.  They therefore use only KL primitives
+\\ - open, write-byte, string->n, pos, tlstr, str, value, set, plus the
+\\ special forms if/let/do - and in particular NOT `pr`, which is a kernel
+\\ defun (writer.kl) that reads *hush* and need not be in the footprint.
+\\
+\\ Default is off, and the whole of this section is inert then:
+\\ ygg.trace-kernel and ygg.trace-user are the identity, and the manifest
+\\ writers emit nothing, so an untraced shake is byte-identical.
+
+(set ygg.*trace* false)
+(set ygg.*trace-file* "yggdrasil.trace")
+
+\\ The public traced entry point.  (yggdrasil.shake Files Dir) is unchanged.
+(define yggdrasil.shake-traced
+  Files Dir -> (let On  (set ygg.*trace* true)
+                    R   (trap-error (yggdrasil.shake Files Dir)
+                                    (/. E (ygg.trace-off-then E)))
+                    Off (set ygg.*trace* false)
+                    R))
+
+(define ygg.trace-off-then
+  E -> (do (set ygg.*trace* false) (simple-error (error-to-string E))))
+
+\\ ---------------------------- the weaver --------------------------------
+
+(define ygg.trace-kernel
+  Code -> Code  where (not (value ygg.*trace*))
+  Code -> (append (map (fn ygg.trace-defun) Code) (ygg.trace-helpers)))
+
+(define ygg.trace-user
+  Files -> Files  where (not (value ygg.*trace*))
+  Files -> (map (/. Forms (map (fn ygg.trace-defun) Forms)) Files))
+
+\\ A user file's toplevel (non-defun) forms get the (value V) rewrite but
+\\ no entry advice: they are not a join point, they are the boot itself.
+(define ygg.trace-defun
+  [defun shen.initialise Args Body]
+   -> [defun shen.initialise Args
+       [do [ygg.trace-open]
+           [do [ygg.traced shen.initialise] (ygg.trace-values Body)]]]
+  [defun F Args Body]
+   -> [defun F Args [do [ygg.traced F] (ygg.trace-values Body)]]
+  Form -> (ygg.trace-values Form))
+
+\\ (value V) -> (ygg.traced-value V), for a literal symbol V only.  A
+\\ (value X) whose X is a KL variable - the eta-wrapper trim-top builds for
+\\ the `value` primitive is literally (lambda X1 (value X1)) - names a
+\\ global only at run time and is left alone; that case is exactly what
+\\ ygg.cn-global? already reports as a computed name.
+(define ygg.trace-values
+  [value V] -> [ygg.traced-value V]  where (ygg.cn-literal-sym? V)
+  [X | Y] -> [(ygg.trace-values X) | (ygg.trace-values Y)]
+  X -> X)
+
+\\ ---------------------------- the advice --------------------------------
+\\ Emitted as KL into kernel.kl, after the woven defuns.  The stream lives
+\\ in a global that shen.initialise opens as its very first form, before
+\\ its own entry advice fires, so no traced entry can ever run before the
+\\ stream exists - including the entries inside the initialiser itself.
+\\
+\\ Line format, one record per line, chosen so the dedup on the Go side is
+\\ a string split and so a human can read the file:
+\\   f<TAB>NAME      a defun entry
+\\   v<TAB>NAME      a global read
+\\ The KL variable names are interned rather than written literally: a bare
+\\ uppercase S in a Shen body is a free variable and `define` rejects it,
+\\ the same reason (value *shake-rules*) goes through ygg.dl-varify.
+(define ygg.trace-helpers
+  -> (let S   (intern "S")
+          Stm (intern "Stm")
+          Tag (intern "Tag")
+          F   (intern "F")
+          V   (intern "V")
+       [[defun ygg.trace-open []
+          [set ygg.*trace-stream* [open (value ygg.*trace-file*) out]]]
+        [defun ygg.trace-str [S Stm]
+          [if [= S ""]
+              Stm
+              [do [write-byte [string->n [pos S 0]] Stm]
+                  [ygg.trace-str [tlstr S] Stm]]]]
+        \\ Tag is a byte (102 = "f", 118 = "v"), and the separator and
+        \\ terminator are written as bytes too, so kernel.kl carries no
+        \\ string literal with a control character in it.
+        [defun ygg.trace-line [Tag S]
+          [let Stm [value ygg.*trace-stream*]
+            [do [write-byte Tag Stm]
+                [do [write-byte 9 Stm]
+                    [do [ygg.trace-str S Stm]
+                        [write-byte 10 Stm]]]]]]
+        [defun ygg.traced [F]
+          [do [ygg.trace-line 102 [str F]] F]]
+        [defun ygg.traced-value [V]
+          [do [ygg.trace-line 118 [str V]] [value V]]]]))
+
+\\ --------------------------- manifest keys ------------------------------
+
+(define ygg.trace-manifest-sexp
+  Sink -> done  where (not (value ygg.*trace*))
+  Sink -> (do (pr-kl-line ["traced" true] Sink)
+              (pr-kl-line ["trace-file" (value ygg.*trace-file*)] Sink)))
+
+(define ygg.trace-manifest-txt
+  Sink -> done  where (not (value ygg.*trace*))
+  Sink -> (do (pr (make-string "traced=true~%") Sink)
+              (pr (make-string "trace-file=~A~%" (value ygg.*trace-file*)) Sink)))
+
+\\ ------------------------- the containment check ------------------------
+\\ The obligation this discharges empirically is obligation 1 of the design
+\\ note: everything the artifact can call is in the footprint.  A run gives
+\\ one witness set; `called(F), kernel(F), !reach(F)` must be empty.
+\\
+\\ These rules are the mirror of the `called` / `readGlobal` block at the
+\\ foot of analysis/analysis.dl, and they are a SEPARATE program from
+\\ (value *shake-rules*) on purpose: their EDB (initwrite, defunwrite) is
+\\ derived from trim-top's output, which the shake only has AFTER the
+\\ shake rules have run, and a stratum that derives nothing has no business
+\\ costing every shake a round.  Read the two side by side.
+\\
+\\   uncoveredCall(F) :- called(F), kernel(F), !reach(F).
+\\   uncoveredRead(V) :- readGlobal(V), !initwrite(V), !defunwrite(V),
+\\                       !portGlobal(V).
+\\
+\\ `kernel(F)` is what keeps user defuns, the five helpers and the
+\\ synthesised shen.initialise out of the check: none of them is a row of
+\\ the kernel call graph, so none of them is something `reach` could have
+\\ derived, and a run entering them says nothing about the footprint.
+
+(set *trace-rules*
+  (ygg.dl-varify
+   [[[[uncoveredCall f] [called f] [kernel f] [not [reach f]]]]
+    [[[uncoveredRead g] [readGlobal g] [not [initwrite g]]
+                        [not [defunwrite g]] [not [portGlobal g]]]]]))
+
+\\ Globals written by the kept toplevel forms - the kernel's initialiser
+\\ and then the user files' toplevel forms, in boot order.  This is the
+\\ `writes` relation docs/analysis-rules.md stage 4 needs; ygg.io-writes
+\\ (the init-order check) already computes exactly it, at the same depth
+\\ and with the same defun/lambda/freeze exclusions.
+(define ygg.trace-initwrites
+  Tops UserKL -> (ygg.remove-dups
+                  (mapcan (fn ygg.io-writes)
+                          (append Tops (ygg.user-tops UserKL)))))
+
+\\ Globals written from INSIDE a kept defun.  Not part of stage 4's
+\\ liveGlobal story - a set that only ever runs when a function is called
+\\ does not keep an initialiser alive - but it is what stops uncoveredRead
+\\ from flagging every counter the kernel maintains at run time
+\\ (shen.*call*, shen.*gensym* and friends are set and read inside defuns,
+\\ never at toplevel).
+(define ygg.trace-defunwrites
+  Foot Kernel UserKL -> (ygg.remove-dups
+                         (append (mapcan (fn ygg.trace-body-writes)
+                                         (footcode Foot Kernel))
+                                 (mapcan (/. Fs (mapcan (fn ygg.trace-body-writes) Fs))
+                                         UserKL))))
+
+(define ygg.trace-body-writes
+  [defun _ _ Body] -> (ygg.trace-sets Body)
+  _ -> [])
+
+(define ygg.trace-sets
+  [set V Val] -> [V | (ygg.trace-sets Val)]  where (ygg.cn-literal-sym? V)
+  [X | Y] -> (append (ygg.trace-sets X) (ygg.trace-sets Y))
+  _ -> [])
+
+\\ (yggdrasil.trace-check Files FactsDir): re-run the shake's analysis over
+\\ Files, load the run's called/readglobal facts out of FactsDir, close the
+\\ trace rules over the lot and report.  Output contract, the Go driver
+\\ parses these and nothing else:
+\\   yggdrasil-trace-check: OK called=N reach=M
+\\   yggdrasil-trace-check: FAIL uncovered=F,G
+(define yggdrasil.trace-check
+  Files FactsDir
+   -> (let MaxPrint (value *maximum-print-sequence-size*)
+           Unlimit  (set *maximum-print-sequence-size* 1000000000)
+           Kernel   (kernel-code)
+           Graph    (call-graph Kernel)
+           KLFiles  (map (fn bootstrap) Files)
+           RawKL    (map (fn read-file) KLFiles)
+           RawFs    (function-calls RawKL)
+           EvalFree (eval-free? RawFs)
+           KL       (strip-user-declares RawKL EvalFree)
+           AllTops  (toplevel-forms Kernel)
+           Tops     (prepare-tops AllTops EvalFree)
+           Seeds    (append (mapcan (fn called-fns) Tops) (function-calls KL))
+           Rules    (ygg.shake-rules-run Kernel Graph AllTops KL RawFs)
+           Foot     (ygg.rule-footprint Seeds Graph)
+           Arities  (arity-literal Tops)
+           TopsOut  (map (/. T (trim-top T Foot EvalFree Arities)) Tops)
+           Called   (ygg.trace-read (@s FactsDir "/called.facts"))
+           Reads    (ygg.trace-read (@s FactsDir "/readglobal.facts"))
+           Add      (ygg.mapc (fn ygg.dl-add)
+                     (append (map (/. F [called F]) Called)
+                     (append (map (/. V [readGlobal V]) Reads)
+                     (append (map (/. V [initwrite V])
+                                  (ygg.trace-initwrites TopsOut KL))
+                     (append (map (/. V [defunwrite V])
+                                  (ygg.trace-defunwrites Foot Kernel KL))
+                             (map (/. V [portGlobal V])
+                                  (value *global-primitives*)))))))
+           Run      (ygg.mapc (fn ygg.dl-stratum) (value *trace-rules*))
+           Bad      (append (ygg.dl-col1 uncoveredCall) (ygg.dl-col1 uncoveredRead))
+           Restore  (set *maximum-print-sequence-size* MaxPrint)
+           Report   (ygg.trace-report Bad (ygg.len Called)
+                                      (ygg.len (ygg.dl-col1 reach)))
+           done))
+
+(define ygg.trace-report
+  [] NCalled NReach -> (pr (make-string "yggdrasil-trace-check: OK called=~A reach=~A~%"
+                                        NCalled NReach)
+                           (stoutput))
+  Bad _ _ -> (pr (make-string "yggdrasil-trace-check: FAIL uncovered=~A~%"
+                              (ygg.cn-commas (ygg.remove-dups Bad)))
+                 (stoutput)))
+
+\\ One interned symbol per non-empty line of a one-column .facts file; a
+\\ missing file is an empty relation.  Byte-level, like parse-graph, and
+\\ for the same reason: the Shen reader would curry and re-intern.
+(define ygg.trace-read
+  File -> (trap-error (ygg.trace-lines (read-file-as-bytelist File) "" [])
+                      (/. E [])))
+
+(define ygg.trace-lines
+  [] Token Acc -> (reverse (close-token Token Acc))
+  [10 | Bs] Token Acc -> (ygg.trace-lines Bs "" (close-token Token Acc))
+  [13 | Bs] Token Acc -> (ygg.trace-lines Bs Token Acc)
+  [9 | Bs] Token Acc -> (ygg.trace-lines Bs "" (close-token Token Acc))
+  [B | Bs] Token Acc -> (ygg.trace-lines Bs (cn Token (n->string B)) Acc))

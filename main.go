@@ -17,6 +17,9 @@
 //	                               also available as --typecheck on shake/build/run,
 //	                               which gates the shake and records typechecked=
 //	                               in the manifest
+//	trace-check PROG OUTDIR --target T
+//	                               shake with --trace, run on T, and check that
+//	                               every kernel defun the run entered is in reach
 //	parity PROG OUTDIR             behavioural parity gate: run the shaken slice on
 //	                               every target and diff outputs against a reference
 //	targets                        list available stage-2 targets
@@ -233,7 +236,9 @@ func shake(prog, outdir string, host []string, evalStyle string, quiet bool) (st
 	if err != nil {
 		return "", fmt.Errorf("materialising shaker: %w", err)
 	}
-	expr := fmt.Sprintf(`(yggdrasil.shake ["%s"] "%s")`, prog, outdir)
+	// shakeExpr (trace.go) picks yggdrasil.shake or yggdrasil.shake-traced.
+	// Untraced is the default and is byte-for-byte the old expression.
+	expr := shakeExpr(prog, outdir)
 
 	var argv []string
 	if evalStyle == "positional" {
@@ -706,7 +711,7 @@ func main() { os.Exit(run(os.Args[1:])) }
 
 func run(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: yggdrasil <shake|build|run|check|why|facts|parity|targets> ...")
+		fmt.Fprintln(os.Stderr, "usage: yggdrasil <shake|build|run|check|why|facts|trace-check|parity|targets> ...")
 		return 2
 	}
 	cmd, rest := args[0], args[1:]
@@ -735,6 +740,8 @@ func run(args []string) int {
 		return cmdWhy(rest)
 	case "facts":
 		return cmdFacts(rest)
+	case "trace-check":
+		return cmdTraceCheck(rest)
 	case "parity":
 		return cmdParity(rest)
 	default:
@@ -751,6 +758,7 @@ func cmdStage(cmd string, rest []string) int {
 	target := fs.String("target", "", "stage-2 target (lisp/lua/go/joy/rust/js/julia/scheme/swift/erlang/truffle/truffle-native/c)")
 	web := fs.Bool("web", false, "with --target js: emit a browser-safe ES module (passes --web to ShenScript's builder)")
 	typecheck := fs.Bool("typecheck", false, "typecheck PROG under (tc +) on the host before shaking; failure aborts with no artifacts, success is recorded as typechecked= in the manifest")
+	trace := fs.Bool("trace", false, "weave runtime call tracing into the emitted KL: every defun records its entry and every (value V) its read, to ./"+traceFileName+" at run time (see yggdrasil trace-check)")
 	// Allow flags after the PROG/OUTDIR positionals (Go's flag stops at the
 	// first non-flag token otherwise).
 	if err := fs.Parse(reorderArgs(rest, "host", "eval-style", "target")); err != nil {
@@ -768,6 +776,10 @@ func cmdStage(cmd string, rest []string) int {
 			host[0] = hit
 		}
 	}
+	// --trace changes only what shake() asks the host for; every other stage
+	// is unaware, because a woven artifact is ordinary KL.
+	traceMode = *trace
+	defer func() { traceMode = false }()
 
 	// --typecheck gates the shake: check first in its own host process, so a
 	// type failure aborts before any artifact is written.
@@ -1052,6 +1064,7 @@ var factRelations = []string{
 	"top", "formmentions", "formmentionsef",
 	"rawsym", "usersym", "entry", "prim", "cap", "portGlobal", "initprim",
 	"userintern", "userglobal",
+	"initwrite", "defunwrite", "called", "readglobal",
 }
 
 func cmdFacts(rest []string) int {

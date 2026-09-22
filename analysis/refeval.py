@@ -28,7 +28,7 @@ import os
 import sys
 
 # Relations read from FACTSDIR, with their arity. A missing file is an empty
-# relation, not an error: the dump writes all seventeen, but a hand-built fact
+# relation, not an error: the dump writes all twenty-one, but a hand-built fact
 # directory that omits one should still evaluate.
 INPUTS = {
     "kernel": 1,
@@ -48,7 +48,17 @@ INPUTS = {
     "initprim": 1,
     "userintern": 1,
     "userglobal": 1,
+    "initwrite": 1,
+    "defunwrite": 1,
+    # The runtime trace: empty in an ordinary dump, filled by
+    # `yggdrasil trace-check`. readGlobal lives in readglobal.facts, the name
+    # stage 4 consumes (docs/analysis-rules.md, "Runtime trace").
+    "called": 1,
+    "readGlobal": 1,
 }
+
+# Relations whose fact file is not named after the relation.
+FILENAMES = {"readGlobal": "readglobal"}
 
 F_ERROR = "shen.f-error"
 
@@ -58,7 +68,7 @@ def load(factsdir):
     db = {}
     for name, arity in INPUTS.items():
         rows = set()
-        path = os.path.join(factsdir, name + ".facts")
+        path = os.path.join(factsdir, FILENAMES.get(name, name) + ".facts")
         try:
             handle = open(path, encoding="utf-8")
         except FileNotFoundError:
@@ -159,6 +169,16 @@ def evaluate(db):
 
     reaches = {c for c, p in db["cap"] if p in usedprim}
 
+    # ---- runtime trace ----------------------------------------------
+    # uncoveredCall(F) :- called(F), kernel(F), !reach(F).
+    # uncoveredRead(V) :- readGlobal(V), !initwrite(V), !defunwrite(V),
+    #                     !portGlobal(V).
+    called = one("called")
+    readglobal = one("readGlobal")
+    uncoveredcall = (called & kernel) - reach
+    written = one("initwrite") | one("defunwrite") | one("portGlobal")
+    uncoveredread = readglobal - written
+
     # ---- computed names (stage 3, decides nothing) ------------------
     # computedName(F) :- userintern(F).  computedName(F) :- userglobal(F).
     computedname = one("userintern") | one("userglobal")
@@ -171,6 +191,10 @@ def evaluate(db):
         "reaches": {(c,) for c in reaches},
         "needsEval": {("1",)} if "eval-kl" in usedprim else set(),
         "computedName": {(f,) for f in computedname},
+        "called": {(f,) for f in called},
+        "readGlobal": {(v,) for v in readglobal},
+        "uncoveredCall": {(f,) for f in uncoveredcall},
+        "uncoveredRead": {(v,) for v in uncoveredread},
     }
 
 

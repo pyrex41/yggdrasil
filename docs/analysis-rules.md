@@ -1,9 +1,12 @@
 # Design note: the shake as a rule set
 
-**Status**: stages 1–3 shipped, stages 4–5 proposed (Yggdrasil, September 2026)
+**Status**: stages 1–3 shipped, with the runtime trace beside them; stages
+4–5 proposed (Yggdrasil, September 2026)
 **Code**: `analysis/analysis.dl`, `analysis/refeval.py`; `yggdrasil.shen` —
-`ygg.dl`, `*shake-rules*`, `yggdrasil.facts`, `yggdrasil.footprints`;
-`main.go` — `cmdFacts`; `analysis_test.go`, `footprint_test.go`
+`ygg.dl`, `*shake-rules*`, `*trace-rules*`, `yggdrasil.facts`,
+`yggdrasil.shake-traced`, `yggdrasil.trace-check`, `yggdrasil.footprints`;
+`main.go` — `cmdFacts`; `trace.go` — `cmdTraceCheck`; `analysis_test.go`,
+`footprint_test.go`, `trace_test.go`
 
 **Motivation**: Mark Tarver, *The Future of Shen* (Shen group): Yggdrasil
 enters the core of trust next to the kernel and the backend, so it should be
@@ -59,10 +62,12 @@ What `yggdrasil facts` actually dumps
 is that list with `form-mentions` split into `formmentions` (raw) and
 `formmentionsef` (after `prepare-tops`), `usersym` joined by `rawsym` (the
 user KL before `strip-user-declares`), `mentions` narrowed to
-`mentionsprim`, and `initprim` added; `reads`/`writes`/`readsIn`/
-`portReads` are stage 2 and 4 and are not dumped yet. `portGlobal` is
-dumped and declared now so the fact set does not move under stage 2. See
-the declarations at the top of `analysis/analysis.dl`.
+`mentionsprim`, and `initprim` added; `writes` dumped as `initwrite` (with
+`defunwrite` beside it) and `called`/`readGlobal` declared for the runtime
+trace, empty until `yggdrasil trace-check` fills them. `reads`/`readsIn`/
+`portReads` are stage 4 and are not dumped yet. `portGlobal` is dumped and
+declared now so the fact set does not move under stage 2. See the
+declarations at the top of `analysis/analysis.dl`.
 
 ## Rules
 
@@ -156,13 +161,213 @@ evaluator's footprint, set for set, on every fixture. Disagreement is a
 bug in one of them. This is the differential oracle role; Soufflé never
 runs in a user's shake.
 
+## Runtime trace (AspectJ-style weaving at the KL level)
+
+The rules above derive `reach`: the kernel defuns a program **can** call. The
+soundness obligation under the whole shake is that nothing outside `reach`
+ever runs. That is argued on paper — a name the artifact can call occurs
+syntactically in the artifact — and stage 3's `computedName` records the two
+ways the argument can be broken. This is the other half: **evidence**, from a
+real run, per target.
+
+`yggdrasil shake|build|run --trace` weaves advice into the KL the shake is
+about to write, and `yggdrasil trace-check PROG OUTDIR --target T` shakes,
+builds, runs, and evaluates the containment query against the trace.
+
+### Pointcut and advice
+
+It is aspect weaving in the AspectJ sense, done at the **KLambda IR** rather
+than in any backend. That is the whole design decision: the woven artifact is
+ordinary KL, so one weaver serves all eight stage-2 targets and the thing
+being measured is the thing the shake actually emits.
+
+| | |
+|---|---|
+| pointcut | every `defun` entry, in `kernel.kl` and in every user file |
+| pointcut | every `(value V)` whose `V` is a literal symbol |
+| advice | append one record to a trace stream |
+| join model | around for the read (record, then perform it), before for the entry |
+
+```
+(defun F Args Body)   ->  (defun F Args (do (ygg.traced F) Body'))
+(value V)             ->  (ygg.traced-value V)
+```
+
+`ygg.traced-value` records `V` and then returns `(value V)`, so the advice
+observes the read without replacing it. A `(value X)` whose `X` is a KL
+variable is left alone: it names a global only at run time, and that case is
+exactly what `computedName` already reports.
+
+Weaving runs **after** the footprint, `rewrite-f-error`, `trim-top` and the
+init-order check, and immediately before anything is written, so it cannot
+perturb a decision the shake made. A traced `kernel.kl` has exactly the
+defuns of the untraced one plus five helpers, and the manifests gain
+`traced=true` and `trace-file=yggdrasil.trace`. With `--trace` off the weaver
+is the identity and the output is byte-identical.
+
+### The advice's own dependencies
+
+The five helpers are emitted into `kernel.kl` and must satisfy two
+constraints that the ordinary shake never has to think about.
+
+They **must not be woven themselves** — `ygg.traced` calling `ygg.traced` is
+unbounded recursion — so they are appended after the weave, not before it.
+
+They **must not depend on the footprint**, because the footprint was decided
+before they existed and re-deciding it would make `--trace` change the very
+answer it is checking. So they use only KL primitives: `open`, `write-byte`,
+`string->n`, `pos`, `tlstr`, `str`, `value`, `set`, plus `if`/`let`/`do`. In
+particular **not `pr`**, which looks like a primitive and is not: it is a
+kernel defun in `writer.kl` that reads `*hush*`, and a program whose
+footprint excludes it would weave a call to a function that is not there.
+
+The stream is opened by the synthesised initialiser as its **very first
+form**, ahead of the initialiser's own entry advice, so no traced entry can
+run before the stream exists — including the entries inside `shen.initialise`
+itself, which is where the great majority of them happen.
+
+The record format is a tag byte, a tab, the name, a newline: `f<TAB>NAME` for
+an entry, `v<TAB>NAME` for a read. Tag, separator and terminator are written
+as bytes, so `kernel.kl` carries no string literal with a control character
+in it.
+
+Weaving adds primitives, so `primitive=` grows (`open`, `write-byte`,
+`string->n`, `pos`, `tlstr`). On every fixture measured, `reaches=` and
+`cannot-reach=` are unchanged — those primitives are already in the slice of
+anything that prints — and `needs-eval=` cannot move, since the weaver
+introduces no eval entry point. `trace_test.go` asserts the `needs-eval=`
+half, which is the one that would silently disqualify `--web`.
+
+### The check
+
+Two relations are added to `analysis/analysis.dl`, mirrored in
+`(value *trace-rules*)` in `yggdrasil.shen` and in `analysis/refeval.py`:
+
+```
+uncoveredCall(F) :- called(F), kernel(F), !reach(F).
+uncoveredRead(V) :- readGlobal(V), !initwrite(V), !defunwrite(V),
+                    !portGlobal(V).
+```
+
+`called` and `readGlobal` are `.input` relations, empty in an ordinary
+`yggdrasil facts` dump and filled by `trace-check` from a run. `kernel(F)` is
+what keeps user defuns, the weaver's helpers and the synthesised
+`shen.initialise` out of the first rule: none of them is a row of the kernel
+call graph, so `reach` could not have derived them and a run entering them
+says nothing about the footprint. `initwrite` is the globals a kept
+**toplevel** form writes (stage 4's `writes`, computed by the same
+`ygg.io-writes` the init-order check uses); `defunwrite` is the globals a
+kept **defun body** writes, which is what stops `uncoveredRead` from flagging
+every counter the kernel maintains at run time (`shen.*call*`, `shen.*infs*`,
+`shen.*gensym*`).
+
+`uncoveredCall` is necessarily empty if the shake is sound, so a non-empty
+one is a counterexample to the shake, not to the trace.
+
+The rules live in a program of their own rather than in `(value
+*shake-rules*)`, for one reason: their EDB is derived from `trim-top`'s
+output, which the shake only has *after* the shake rules have run, and a
+stratum that derives nothing has no business costing every shake a round.
+They are written to be read side by side with the block at the foot of
+`analysis.dl`.
+
+### What it checks, and what it cannot
+
+It checks that on the inputs tried, on that target, the artifact called
+nothing outside its footprint and read no global nothing writes. That is
+evidence for soundness obligation 1, **not a proof**: a run exercises one
+path, and a different input can enter a function this one did not.
+
+The converse containment does not hold and is not asserted. `reach ⊋ called`
+on every fixture, which is ordinary imprecision (`called-fns` is a
+position-insensitive cons walk, D1) plus the fact that one run takes one
+path. Shrinking that gap is not what this is for; `docs/why.md` explains why
+precision is the wrong thing to optimise on a 686-node graph.
+
+### Measured
+
+`yggdrasil trace-check FIXTURE OUT --target go`, stage-1 host shen-go,
+stage-2 shen-go's `yggdrasil-build`. All four `OK`; Soufflé and
+`analysis/refeval.py` agree with the Shen engine on `uncoveredCall` and
+`uncoveredRead` over the same fact dirs, both on these traces and on traces
+with an out-of-footprint call injected.
+
+| fixture | mode | `reach` | `called` | `readGlobal` | records |
+|---|---|---|---|---|---|
+| `fib` | eval-free | 53 | 34 | 3 | 49,078 |
+| `partial` | eval-free | 53 | 34 | 3 | 27,176 |
+| `stdin-sum` | eval-free | 54 | 38 | 4 | 27,545 |
+| `prolog` | eval-free | 66 | 43 | 5 | 27,646 |
+
+So a run enters 64–70% of the footprint. The 30–36% that never runs is the
+kernel's boot machinery on paths this input does not take, plus the
+over-approximation the edge rule is built on; it is what the shake keeps
+because it cannot prove otherwise, which is the correct trade.
+
+The `kl` runner agrees with `go` on all four, name for name — worth knowing,
+because it says the compiled backend introduced no call the interpreter did
+not. It is not guaranteed to: the trace is a property of the **runtime**, not
+only of the KL, and a runtime that binds a kernel function natively records
+no entry for it. Run against shen-go master's VM, which binds `<-vector` and
+`vector->` natively, the `kl` figures for `fib`, `partial` and `stdin-sum`
+come out two lower for exactly that reason. Both readings are contained,
+which is the check doing its job across a real runtime difference rather
+than in spite of one.
+
+The three globals of `fib` are `*hush*`, `*property-vector*` and
+`*stoutput*` — the first two written by the initialiser, the third a
+`portGlobal`. `prolog` adds `shen.*infs*` and `shen.*prolog-memory*`.
+
+Weaving does not move the manifest's decisions: on all four, the traced
+shake's `needs-eval=`, `reaches=` and `cannot-reach=` lines are identical to
+the untraced shake's. `primitive=` does grow, by the weaver's own
+`open`/`write-byte`/`string->n`/`pos`/`tlstr`.
+
+### Targets, and a port caveat
+
+`--target T` takes any target in `builders.json`, plus one that is not in it:
+`kl`, the shaken KL run directly on shen-go's bare KLambda VM (`cmd/kl` in
+the sibling checkout). It is the most direct reading of the question — the
+claim is about the KL the shake writes, and this executes that KL verbatim,
+with no backend in between — and it is the fallback that keeps the check
+runnable when a stage-2 builder is not.
+
+Which is not hypothetical. On shen-go master at the time of writing,
+`cmd/yggdrasil-build` panics in `shen.change-pointer-value` while booting its
+own `kernel/klambda/declarations.kl`, before it has seen a shaken artifact at
+all — a regression in shen-go commit `5edf47e` ("Native kernel hot paths"),
+reproducible from a bare `kl.Eval` loop over `kernelLoadOrder` with no
+Yggdrasil involvement. The numbers above were taken against the prior commit
+`24b2c00` (`YGGDRASIL_SHEN_GO_DIR` pointed at a checkout of it), which builds
+and runs the shaken `fib` correctly. `trace_test.go` therefore establishes
+the `go` target's usability by building an untraced fixture first and drops
+it from the run with a log line if that fails, so a broken sibling builder
+cannot read as a tracing regression — while a builder that works is checked,
+and a tracing regression on it still fails.
+
+Buffered output was the other thing to watch for: a trace stream that is
+opened and never closed can lose its tail. It does not on either runtime —
+`open`/`write-byte` reaches disk, and the record counts above come from runs
+whose stdout is correct — so the fallback of buffering names in a global and
+flushing them from the last user toplevel form is not needed and is not
+implemented. A port that did lose the tail would show up as a `called` set
+that is a strict prefix of the run.
+
+### For stage 4
+
+`readglobal.facts` is written as one symbol per line, TSV, in the facts dir
+beside the rest of the dump. That is the shape stage 4's `liveGlobal` wants:
+a global that no run ever reads is a candidate for `deadInit` pruning, and a
+global some run does read is direct evidence that it is not. `initwrite.facts`
+is stage 4's `writes` relation, already dumped.
+
 ## Staging
 
 1. **Rules on paper, oracle first.** — **done.**
    `analysis/analysis.dl` is the rule set as Soufflé Datalog; `yggdrasil
    facts PROG DIR` (`yggdrasil.facts` in `yggdrasil.shen`, a sibling of
    `yggdrasil.shake` that reuses its pipeline and writes no artifact) dumps
-   fifteen TSV relations; `analysis/refeval.py` is a stdlib-Python
+   twenty-one TSV relations; `analysis/refeval.py` is a stdlib-Python
    semi-naive evaluator of the same rules for developers without Soufflé,
    and `analysis_test.go` runs whichever is available — both, when both
    are — over every fixture in `tests/`, in whichever mode it lands in.
@@ -271,7 +476,12 @@ runs in a user's shake.
    not routinely violated. `footprint_test.go` is the host-gated test.
 4. **Dead initialisation.** Write `portReads` for each builder by reading
    its runtime, enable `deadInit` pruning behind a flag, and let the
-   parity gate decide per target whether it is safe to default on.
+   parity gate decide per target whether it is safe to default on. The
+   runtime trace supplies two of its inputs already: `initwrite.facts` is
+   the `writes` relation, and `readglobal.facts` is per-run evidence for
+   `liveGlobal` — a global some run reads is demonstrably live, whatever
+   the syntax says. Both are TSV, one symbol per line, in the facts dir
+   (see "Runtime trace" above).
 5. **SCIP export**, optional and last, and a level-2 oracle rather than a
    picture. Emit a SCIP index of the shaken program — each symbol carrying
    its `adds` and `exclusive` in the documentation field, so an editor can

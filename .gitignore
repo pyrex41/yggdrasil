@@ -15,3 +15,6 @@ pybin/*/_bin/
 
 # Local launcher binaries built by integration scripts.
 .bin/
+
+# Runtime trace written by a --trace artifact run from the repo root.
+/yggdrasil.trace
