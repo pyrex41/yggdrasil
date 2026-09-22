@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -110,10 +111,16 @@ func TestKLDelta(t *testing.T) {
 // caller then deletes.
 func TestKernelDefunNames(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "kernel.kl")
+	// The last defun is the shape of kernel.kl line 889: the KL writer's own
+	// source text, quoted. A scan that does not know about string literals
+	// reports `fail` as a kept defun and the footprint gates the exit code,
+	// so that is a phantom kl-delta-missing in any slice that keeps
+	// shen.write-kl-h without fail.
 	const src = `(defun do (V1 V2) V2)
 (defun not (V1) (if V1 false true))
 (defun shen.app (V1 V2 V3) (cn (shen.str V1) V2))
 (defun shen.initialise () (do (shen.load-kernel) ()))
+(defun shen.write-kl-h (V1) (shen.prhush "(defun fail () shen.fail!)" V1))
 `
 	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
 		t.Fatal(err)
@@ -122,7 +129,7 @@ func TestKernelDefunNames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("kernelDefunNames: %v", err)
 	}
-	want := set("do", "not", "shen.app", "shen.initialise")
+	want := set("do", "not", "shen.app", "shen.initialise", "shen.write-kl-h")
 	if len(got) != len(want) {
 		t.Fatalf("names = %v, want %v", sortedKeys(got), sortedKeys(want))
 	}
@@ -130,6 +137,9 @@ func TestKernelDefunNames(t *testing.T) {
 		if !got[n] {
 			t.Errorf("missing name %q (got %v)", n, sortedKeys(got))
 		}
+	}
+	if got["fail"] {
+		t.Error("`fail` came from a string literal, not from a defun: the scan is not skipping strings")
 	}
 	// A file with no defuns is an error, not an empty footprint: an empty
 	// footprint would make the delta check vacuously pass.
@@ -139,6 +149,45 @@ func TestKernelDefunNames(t *testing.T) {
 	}
 	if _, err := kernelDefunNames(empty); err == nil {
 		t.Error("a kernel.kl with no defuns must be an error, not an empty set")
+	}
+}
+
+// TestKLHeads covers the residue diagnosis: whether the KL a residue name
+// came from calls that name anywhere. It changes no verdict, so the thing to
+// get right is that it never claims a call site the text does not have.
+func TestKLHeads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "kernel.kl")
+	// shen.scan-body builds `(shen.f-error V761)` with cons rather than
+	// writing it, which is why the rules see an edge to shen.f-error and no
+	// backend can: there is no call site to compile.
+	const src = `(defun shen.scan-body (V761 V762) (cons (cons shen.f-error (cons V761 ())) ()))
+(defun shen.op1 (V836) (cond ((= @v V836) hdv) (true (not V836))))
+(defun shen.noisy (V1) (pr "(input V1)" V1))
+`
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	heads, err := klHeads(path)
+	if err != nil {
+		t.Fatalf("klHeads: %v", err)
+	}
+	for _, want := range []string{"defun", "cons", "cond", "not", "pr"} {
+		if !heads[want] {
+			t.Errorf("%q is called here and klHeads missed it", want)
+		}
+	}
+	// The whole point: these occur, but never as the head of a written form.
+	for _, none := range []string{"shen.f-error", "hdv"} {
+		if heads[none] {
+			t.Errorf("%q has no call site in this KL, only a quoted occurrence", none)
+		}
+	}
+	// A `(name ` inside a string literal is not a call site either. This
+	// direction is the safe one -- claiming a call site that is not there
+	// only ever makes a residue name read as the more serious of the two --
+	// but the scanner should still not invent it.
+	if heads["input"] {
+		t.Error("`(input ` came from a string literal, not from a call site")
 	}
 }
 
@@ -155,12 +204,79 @@ func TestGoBuilderDeclaresSpecialForms(t *testing.T) {
 	if !ok {
 		t.Fatal("no go builder")
 	}
-	if strings.Join(bd.SpecialForms, ",") != "do,not" {
-		t.Errorf("special_forms = %v, want [do not]", bd.SpecialForms)
+	// The declaration is a CLASS -- every kernel defun shen-go lowers without
+	// a symbol lookup -- not the residue of whichever fixture was run last.
+	// It is `do` (the one parse head in src/compiler.shen that is also a
+	// kernel defun) plus the whole intersection of codegen.go's shenPrimitive
+	// table with kernel.kl's defun names. Fitting it to one fixture is what
+	// turned scip-check red on metaeval and tc-interp.
+	want := []string{"do", "integer?", "not", "read-file-as-bytelist", "read-file-as-string", "symbol?", "variable?"}
+	got := append([]string(nil), bd.SpecialForms...)
+	sort.Strings(got)
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("special_forms = %v, want %v", got, want)
 	}
 	if bd.SpecialFormsSource == "" {
-		t.Error("special_forms without a special_forms_source is an undeclared subtraction")
+		t.Fatal("special_forms without a special_forms_source is an undeclared subtraction")
 	}
+	// A source that does not cite a line of the port is not a citation.
+	for _, n := range want {
+		if !strings.Contains(bd.SpecialFormsSource, n) {
+			t.Errorf("special_forms_source does not account for %q", n)
+		}
+	}
+	if !strings.Contains(bd.SpecialFormsSource, "codegen.go:") || !strings.Contains(bd.SpecialFormsSource, "compiler.shen:") {
+		t.Errorf("special_forms_source cites no shen-go file:line: %q", bd.SpecialFormsSource)
+	}
+}
+
+// TestSpecialFormsAudit covers the third residue: the declaration itself.
+// klDelta subtracts every declared name without asking whether the name is
+// real, so a stale or misspelled entry would silence a finding with no
+// output at all. specialFormsAudit is what says so.
+func TestSpecialFormsAudit(t *testing.T) {
+	foot, rs := fibFootprint(), fibReach()
+	// The full kernel has every name the port could possibly lower.
+	full := set("do", "not", "symbol?", "variable?", "integer?", "shen.app", "shen.str", "hd")
+
+	t.Run("applied names are the ones that did work", func(t *testing.T) {
+		applied, unused, unknown := specialFormsAudit(foot, rs, set("do", "not", "symbol?"), full)
+		if strings.Join(applied, ",") != "do,not" {
+			t.Errorf("applied = %v, want [do not]", applied)
+		}
+		// symbol? is a real kernel defun this slice simply did not keep.
+		if strings.Join(unused, ",") != "symbol?" {
+			t.Errorf("unused = %v, want [symbol?]", unused)
+		}
+		if len(unknown) != 0 {
+			t.Errorf("unknown = %v, want none", unknown)
+		}
+	})
+
+	t.Run("a declared name the artifact reaches anyway is unused, not applied", func(t *testing.T) {
+		applied, unused, _ := specialFormsAudit(foot, rs, set("hd"), full)
+		if len(applied) != 0 {
+			t.Errorf("applied = %v, want none: hd is reached by an ordinary lookup", applied)
+		}
+		if strings.Join(unused, ",") != "hd" {
+			t.Errorf("unused = %v, want [hd]", unused)
+		}
+	})
+
+	// The failing case: a declaration that no longer names a kernel defun.
+	t.Run("a stale declaration is a finding", func(t *testing.T) {
+		_, _, unknown := specialFormsAudit(foot, rs, set("do", "not", "nto"), full)
+		if strings.Join(unknown, ",") != "nto" {
+			t.Fatalf("unknown = %v, want exactly [nto]", unknown)
+		}
+	})
+
+	// With no full footprint to check against, nothing can be called stale.
+	t.Run("no full kernel means no unknown verdict", func(t *testing.T) {
+		if _, _, unknown := specialFormsAudit(foot, rs, set("nto"), nil); len(unknown) != 0 {
+			t.Errorf("unknown = %v, want none without a full kernel", unknown)
+		}
+	})
 }
 
 // ---- the host-gated end-to-end check ----
@@ -201,7 +317,12 @@ func TestScipCheckFixtures(t *testing.T) {
 			if !strings.Contains(s, "kl-level delta accounted: special_forms=do,not") {
 				t.Fatalf("no accounted line naming the special forms:\n%s", lastLines(s, 20))
 			}
-			for _, bad := range []string{"kl-delta-missing", "kl-delta-extra", "kl-missing-in-full"} {
+			// The declaration is audited too: a name that is not a kernel
+			// defun at all must be reported rather than silently subtracted.
+			if !strings.Contains(s, "unknown=none") {
+				t.Fatalf("no special_forms audit line, or a stale declaration:\n%s", lastLines(s, 20))
+			}
+			for _, bad := range []string{"kl-delta-missing", "kl-delta-extra", "kl-missing-in-full", "special-forms-unknown"} {
 				if strings.Contains(s, bad) {
 					t.Fatalf("residue reported (%s):\n%s", bad, lastLines(s, 20))
 				}

@@ -11,28 +11,24 @@
 //	A   the full program K + user  (yggdrasil.shake-full, --no-shake)
 //
 // with the SAME builder into two module directories, recovers the KL-level
-// call graph from each generated module (see klGraph below), and asserts two
-// things BY NAME:
+// call graph from each generated module (see klGraph below), and asserts BY
+// NAME that (1) every defun the shake kept in kernel.kl is reachable in the
+// graph the backend actually emitted, and (2) every name reachable in A* is
+// reachable in A.
 //
-//	(1) every defun the shake kept in kernel.kl is reachable in the graph the
-//	    backend actually emitted, except for names the target is declared to
-//	    lower without a symbol lookup (builders.json `special_forms`); and
-//	(2) every name reachable in A* is also reachable in A.
+// The only subtraction on (1) is the names the target is DECLARED to lower
+// without a symbol lookup (builders.json `special_forms`, with a
+// `special_forms_source` citing the line of the port for each), plus the
+// user's own defuns and the synthesised shen.initialise. There is no integer
+// "delta" to eyeball; residue on any side is printed name by name and fails,
+// and the declaration itself is audited (see specialFormsAudit) so a stale
+// entry cannot silence a finding.
 //
-// Residue on either side is printed name by name and fails the check. There
-// is no integer "delta" to eyeball and no subtraction a person performs in
-// their head: the accounted-for set is declared in builders.json, with a
-// `special_forms_source` naming the line of the port that does the lowering,
-// and anything outside it is a finding.
-//
-// Why the KL level and not the Go level. shen-go's yggdrasil-build does not
-// emit one Go function per KL defun -- see the klGraph comment below. The
-// Go-level node graph of its output has a handful of nodes however big the
-// program is, so comparing it proves only that both builds produced the same
-// shape of module, which is true by construction. An earlier version of this
-// file indexed both modules with scip-go, decoded the index with a
-// hand-written protobuf reader, and compared that graph; the inclusion it
-// checked was the trivial direction and it could not fail. It is gone.
+// Why the KL level and not the Go level: see the klGraph comment below. An
+// earlier version of this file indexed both modules with scip-go and decoded
+// the index with a hand-written protobuf reader, but the graph it got that
+// way has four nodes however big the program is, so the inclusion it checked
+// was the trivial direction and could not fail. It is gone.
 package main
 
 import (
@@ -266,6 +262,15 @@ func sortedKeys(m map[string]bool) []string {
 // what the artifact's emitted call graph is held against. Counting them was
 // not enough: a count can only produce a delta, and a delta has to be
 // explained by a person.
+//
+// The scan skips string literals, because kernel.kl contains its own writer's
+// source text: line 889 of the full kernel is `"(defun fail () shen.fail!)"`
+// inside shen.write-kl-h. A naive substring scan reports `fail` as a kept
+// defun whether the shake kept it or not, and since the footprint now gates
+// the exit code that is a phantom `kl-delta-missing fail` in any slice that
+// keeps shen.write-kl-h without fail. KL string literals have no backslash
+// escape -- Shen spells control characters `c#N;` -- so a quote toggle is the
+// entire lexer this needs.
 func kernelDefunNames(path string) (map[string]bool, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -274,25 +279,104 @@ func kernelDefunNames(path string) (map[string]bool, error) {
 	src := string(b)
 	out := map[string]bool{}
 	const marker = "(defun "
-	for i := 0; i < len(src); {
-		j := strings.Index(src[i:], marker)
-		if j < 0 {
-			break
+	inString := false
+	for i := 0; i < len(src); i++ {
+		if src[i] == '"' {
+			inString = !inString
+			continue
 		}
-		k := i + j + len(marker)
+		if inString || !strings.HasPrefix(src[i:], marker) {
+			continue
+		}
+		k := i + len(marker)
 		e := k
-		for e < len(src) && !strings.ContainsRune(" \t\r\n()", rune(src[e])) {
+		for e < len(src) && !strings.ContainsRune(" \t\r\n()\"", rune(src[e])) {
 			e++
 		}
 		if e > k {
 			out[src[k:e]] = true
 		}
-		i = e
+		i = e - 1
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("no defuns found in %s", path)
 	}
 	return out, nil
+}
+
+// klHeads returns the names that occur in HEAD position -- written `(name `
+// -- anywhere in a kernel.kl, outside string literals. It is not part of the
+// verdict; it is what turns a bare residue name into a diagnosis.
+//
+// The rules' edge relation is "the name occurs in this defun's body". That
+// counts a quoted symbol in code the kernel *constructs* -- `(cons shen.f-error
+// (cons V761 ()))` in shen.scan-body, `(= input Select5848)` in shen.macros --
+// as an edge, deliberately and soundly, because the kernel may later evaluate
+// what it built. A backend's edge relation cannot: there is no call site to
+// compile, so no `PrimFunc` lookup is emitted and the recovered graph has no
+// edge. A residue name with no head-position occurrence anywhere in the KL is
+// that disagreement; a residue name that IS called somewhere is a different
+// animal, and the two should not read alike in the output.
+//
+// Being text, this over-reports rather than under-reports: a `(name ` inside
+// a string literal is skipped, but one inside quoted data that happens to be
+// written out literally still counts as a call site, which can only move a
+// name from the first description to the second.
+func klHeads(path string) (map[string]bool, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	src := string(b)
+	out := map[string]bool{}
+	inString := false
+	for i := 0; i < len(src); i++ {
+		if src[i] == '"' {
+			inString = !inString
+			continue
+		}
+		if inString || src[i] != '(' {
+			continue
+		}
+		e := i + 1
+		for e < len(src) && !strings.ContainsRune(" \t\r\n()\"", rune(src[e])) {
+			e++
+		}
+		if e > i+1 {
+			out[src[i+1:e]] = true
+		}
+	}
+	return out, nil
+}
+
+// specialFormsAudit holds the DECLARATION itself to account. A subtraction
+// that is never checked is not reviewable: a stale or over-broad
+// `special_forms` entry would silence a real residue with no output at all,
+// and nothing would ever say the declaration had rotted. So every declared
+// name is classified against this run and every class is printed.
+//
+//	unknown  the name is not a defun in the FULL kernel at all, so it cannot
+//	         be a kernel name this port lowers specially: the declaration is
+//	         stale or misspelled. A finding; it fails the check.
+//	applied  the name is in the footprint and NOT reachable, so the
+//	         subtraction did work here: it is the reason a residue is absent.
+//	unused   a real kernel defun that was not subtracted in this run, either
+//	         because this shake did not keep it or because the artifact
+//	         reaches it by an ordinary lookup anyway. Reported, not a
+//	         finding: which special forms a slice exercises is a property of
+//	         the program, while the declaration is a property of the port.
+func specialFormsAudit(foot, rs, special, fullFoot map[string]bool) (applied, unused, unknown []string) {
+	for _, name := range sortedKeys(special) {
+		switch {
+		case len(fullFoot) > 0 && !fullFoot[name]:
+			unknown = append(unknown, name)
+		case foot[name] && !rs[name]:
+			applied = append(applied, name)
+		default:
+			unused = append(unused, name)
+		}
+	}
+	return applied, unused, unknown
 }
 
 // klDelta is the whole accounting, as a pure function so it can be tested
@@ -412,6 +496,20 @@ func cmdScipCheck(rest []string) int {
 	}
 	delete(foot, "shen.initialise") // synthesised; the rules never put it in reach
 
+	// The full build's kernel.kl is every defun the port has, and is what a
+	// declared special form has to be one of.
+	fullFoot, err := kernelDefunNames(filepath.Join(fullDir, "kernel.kl"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "yggdrasil-scip-check: FAIL reading the full kernel's defun names: %v\n", err)
+		return 1
+	}
+
+	heads, err := klHeads(filepath.Join(shakenDir, "kernel.kl"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "yggdrasil-scip-check: FAIL reading the shaken kernel's call sites: %v\n", err)
+		return 1
+	}
+
 	rs := klReach(klShaken)
 	rf := klReach(klFull)
 	users := userDefuns(shakenDir)
@@ -425,6 +523,8 @@ func cmdScipCheck(rest []string) int {
 	}
 	// (1) the footprint accounted for, by name.
 	missing, extra := klDelta(foot, rs, special, users)
+	// (3) the declaration itself accounted for, by name.
+	applied, unusedSpecial, unknownSpecial := specialFormsAudit(foot, rs, special, fullFoot)
 
 	kernelSide := 0
 	for name := range klShaken.Defuns {
@@ -436,8 +536,13 @@ func cmdScipCheck(rest []string) int {
 	fmt.Printf("yggdrasil-scip-check: kl-level shaken defuns=%d (kernel=%d user=%d) reachable=%d; full defuns=%d reachable=%d\n",
 		len(klShaken.Defuns), kernelSide, len(klShaken.Defuns)-kernelSide, len(rs), len(klFull.Defuns), len(rf))
 	fmt.Printf("yggdrasil-scip-check: kl-level footprint=%d reachable=%d\n", len(foot), len(rs))
+	// The subtraction the residue below actually used is `applied`, not the
+	// whole declaration: naming the declaration here would credit this run
+	// with subtractions it never made.
 	fmt.Printf("yggdrasil-scip-check: kl-level delta accounted: special_forms=%s user-defuns=%s initialise=1\n",
-		joinOrNone(specialNames), joinOrNone(sortedKeys(users)))
+		joinOrNone(applied), joinOrNone(sortedKeys(users)))
+	fmt.Printf("yggdrasil-scip-check: special_forms declared=%d applied=%s unused=%s unknown=%s\n",
+		len(specialNames), joinOrNone(applied), joinOrNone(unusedSpecial), joinOrNone(unknownSpecial))
 	if specialSource != "" {
 		fmt.Printf("yggdrasil-scip-check: special_forms source: %s\n", specialSource)
 	}
@@ -446,13 +551,20 @@ func cmdScipCheck(rest []string) int {
 			fmt.Printf("yggdrasil-scip-check:   kl-reachable %s\n", name)
 		}
 	}
-	if len(missing) == 0 && len(extra) == 0 && len(klMissing) == 0 {
+	if len(missing) == 0 && len(extra) == 0 && len(klMissing) == 0 && len(unknownSpecial) == 0 {
 		fmt.Printf("yggdrasil-scip-check: OK footprint=%d reachable=%d accounted=%d\n",
-			len(foot), len(rs), len(specialNames))
+			len(foot), len(rs), len(applied))
 		return 0
 	}
+	// Each residue name is annotated with whether the KL it came from calls
+	// it at all. This is a DIAGNOSIS, not a subtraction: no name leaves the
+	// residue because of it, and the exit code above is already decided.
 	for _, m := range missing {
-		fmt.Printf("yggdrasil-scip-check:   kl-delta-missing %s\n", m)
+		why := "called in kernel.kl but unreachable in the emitted graph"
+		if !heads[m] {
+			why = "no call site in kernel.kl: kept for a symbol occurrence in constructed code"
+		}
+		fmt.Printf("yggdrasil-scip-check:   kl-delta-missing %s (%s)\n", m, why)
 	}
 	for _, e := range extra {
 		fmt.Printf("yggdrasil-scip-check:   kl-delta-extra %s\n", e)
@@ -460,8 +572,11 @@ func cmdScipCheck(rest []string) int {
 	for _, k := range klMissing {
 		fmt.Printf("yggdrasil-scip-check:   kl-missing-in-full %s\n", k)
 	}
-	fmt.Printf("yggdrasil-scip-check: FAIL footprint=%d reachable=%d delta-missing=%d delta-extra=%d kl-missing-in-full=%d\n",
-		len(foot), len(rs), len(missing), len(extra), len(klMissing))
+	for _, u := range unknownSpecial {
+		fmt.Printf("yggdrasil-scip-check:   special-forms-unknown %s (declared for %s but not a defun in the full kernel)\n", u, *target)
+	}
+	fmt.Printf("yggdrasil-scip-check: FAIL footprint=%d reachable=%d delta-missing=%d delta-extra=%d kl-missing-in-full=%d special-forms-unknown=%d\n",
+		len(foot), len(rs), len(missing), len(extra), len(klMissing), len(unknownSpecial))
 	return 1
 }
 
