@@ -57,6 +57,19 @@ KL compiler.
 [showboat]) that shakes one program and produces a running artifact on all
 five targets; `showboat verify DEMO.md` re-executes every step.
 
+## Verifying the shake
+
+[`docs/verification-guide.md`](docs/verification-guide.md) is a guided tour
+of everything Yggdrasil does to justify that the shaken program behaves
+like the original: footprint attribution, the analysis as a Datalog rule
+set checked by Soufflé, initialisation-order and dead-initialisation
+checks, runtime tracing woven at the KL level, a SCIP-based inclusion
+check on the compiled artifact, the parity gate, and the contract a port
+must meet for all of it to apply. Each technology is introduced with
+links. The design notes it summarises are `docs/why.md`,
+`docs/analysis-rules.md`, `docs/port-contract.md`, `docs/parity.md` and
+`docs/reachability.md`.
+
 ## CLI (`yggdrasil`)
 
 A single static **Go binary** wraps both stages so you don't hand-write the

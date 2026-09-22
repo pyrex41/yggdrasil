@@ -1,0 +1,476 @@
+# Verifying the shake: a guided tour
+
+This guide walks through everything Yggdrasil does to justify one claim:
+that the small program it emits behaves like the big program you wrote.
+It is written for someone who knows Shen and wants to understand, and
+ideally check, the argument. Each technology is introduced where it first
+matters, with a link to learn more. The detailed design notes are linked
+from each section; this document is the map.
+
+Contents:
+
+1. [The problem: what a shake changes](#1-the-problem-what-a-shake-changes)
+2. [What "equivalent" has to mean](#2-what-equivalent-has-to-mean)
+3. [Reachability, and why the graph is small](#3-reachability-and-why-the-graph-is-small)
+4. [Footprint attribution: `yggdrasil why`](#4-footprint-attribution-yggdrasil-why)
+5. [The analysis as a rule set: Datalog](#5-the-analysis-as-a-rule-set-datalog)
+6. [Three engines, one answer: Soufflé, Python, Shen](#6-three-engines-one-answer-soufflé-python-shen)
+7. [Two checks the rules made possible](#7-two-checks-the-rules-made-possible)
+8. [Runtime tracing: aspect weaving at the KL level](#8-runtime-tracing-aspect-weaving-at-the-kl-level)
+9. [Static inclusion: SCIP and the graph extractor](#9-static-inclusion-scip-and-the-graph-extractor)
+10. [Behavioural parity](#10-behavioural-parity)
+11. [The port contract](#11-the-port-contract)
+12. [What is proved, what is evidence, what is assumed](#12-what-is-proved-what-is-evidence-what-is-assumed)
+13. [Reproducing everything](#13-reproducing-everything)
+
+---
+
+## 1. The problem: what a shake changes
+
+Yggdrasil is a **tree shaker** for [Shen](https://shenlanguage.org)
+programs. Tree shaking is the general name for removing code a program
+cannot reach; the term comes from the JavaScript bundler world
+([Rollup's explanation](https://rollupjs.org/introduction/#tree-shaking)
+is a good short one), but the idea is older, and Mark Tarver's
+[original Yggdrasil paper](../yggdrasil.pdf) proposed it for Shen in 2023.
+
+Shen programs compile to **KLambda** (KL), a tiny Lisp with about forty
+primitives that every Shen port implements. The Shen kernel itself, the
+typechecker, reader, printer and Prolog engine, is written in Shen and
+ships as KL: 686 functions in the S42 kernel. A "hello world" needs about
+fifty of them. The shake computes which fifty, emits just those as
+`kernel.kl`, and hands the result to a per-target builder that compiles
+KL to Go, Lua, JavaScript, Rust, and so on. See the
+[README](../README.md) for the pipeline and targets.
+
+The shaken program is not just a subset. Along the way the shake also:
+
+- wraps the kernel's toplevel initialisation forms into a synthesised
+  `shen.initialise`;
+- when the program can never evaluate code at runtime ("eval-free"),
+  replaces the interactive partial-function handler `shen.f-error` with a
+  plain error, blanks the macro registration, and trims three kernel
+  tables to the functions that survive;
+- drops type declarations, which only the typechecker reads.
+
+So the question "is the shaken program the same program?" is a real one,
+and the rest of this guide is the answer in stages.
+
+## 2. What "equivalent" has to mean
+
+Two programs are not syntactically the same here, by construction. The
+right notion is **closed trace equivalence**: on every input, running the
+whole program produces the same observable trace, meaning the bytes
+written, the files opened and closed, termination, and the exit status.
+Time and memory are excluded on purpose.
+
+Even that is too strong as stated, because one rewrite is visible: on a
+partial-function failure, the full program opens Shen's interactive
+tracker and the shaken program raises `simple-error` with the function's
+name. So the honest theorem is *equivalence on every trace that does not
+hit a partial-function failure, plus a stated refinement on those that do*.
+
+The argument then splits in two, and the split matters for the rest of
+this guide:
+
+**At the KL level**, a
+[bisimulation](https://en.wikipedia.org/wiki/Bisimulation) between the
+full and shaken programs, with four obligations:
+
+1. *Reachability soundness*: any function the program ever calls is in the
+   computed footprint. (Section 3, checked in sections 5 and 8.)
+2. *Footprint closure*: every function in the footprint is emitted.
+3. *Initialiser equivalence*: after the synthesised initialiser runs, every
+   global the slice reads has the value the full boot would give it.
+   (Section 7.)
+4. *Failure refinement*: the `f-error` rewrite changes only the trace after
+   a failure.
+
+**At the target-language level**, a transfer step through the backend. If
+the backend compiles each function independently, KL equivalence transfers
+without proving the backend correct, because a miscompiled function is
+miscompiled identically in both programs. That is what section 9 checks,
+and section 11 turns into a contract per port.
+
+Obligation 1 has a hypothesis: no function name is computed at runtime.
+`((intern (cn "rev" "erse")) X)` is legal KL, mentions no `reverse`, and
+would be shaken out. The shake now reports this case (section 7).
+
+Design note: [analysis-rules.md](analysis-rules.md), "The claim".
+
+## 3. Reachability, and why the graph is small
+
+The footprint is **single-source reachability** over a call graph: start
+from the functions the user program and the kernel's init forms mention,
+follow calls, keep everything you touch. The graph is built once from the
+kernel's KL by walking every symbol in every function body, and cached.
+
+Two facts about this graph decide much of what follows.
+
+It is small and sparse: 686 nodes and about 2,600 edges. A worklist
+traversal takes milliseconds. Tarver's 1.0 design used
+[Warshall's algorithm](https://en.wikipedia.org/wiki/Floyd%E2%80%93Warshall_algorithm)
+for the full transitive closure, which is cubic and answers a question
+nobody asked; Yggdrasil keeps a finished Warshall as a differential
+oracle only. Design note: [reachability.md](reachability.md).
+
+And precision is not where the size comes from. The edge rule counts
+every symbol mentioned in a body, whether in call position or inside a
+data literal. Measured on S42 without eval stripping, the most aggressive
+syntactic alternative (call position only, which is unsound) shrinks the
+graph by 7% and the floor by eleven functions out of 661. What actually
+decides the footprint is a step: with no eval entry point reachable the
+floor is 48 functions; with one, it is 548. A symbol test, not a graph
+problem. This is why none of the later machinery is about precision.
+
+## 4. Footprint attribution: `yggdrasil why`
+
+The first tool built for this work answers Tarver's request on the Shen
+group for "some kind of device that scans the code and highlights parts of
+your program that drag in kernel":
+
+```
+yggdrasil why prog.shen --trace read
+```
+
+prints the floor every program pays, the total, and for each user defun,
+the file's toplevel forms, and each kernel function the program mentions
+directly, two numbers: what it *adds* over the floor alone, and what would
+leave `kernel.kl` if it went away (*exclusive*). `--trace F` prints the
+shortest call chain to any kernel function.
+
+Two things it showed immediately. The S42 kernel's own `bootstrap` already
+rewrites a partial function's `(shen.f-error f)` into a plain error, so the
+example in the thread costs nothing in a bootstrapped program. And when
+creep happens it is that step function again: the eval-capable trace for
+`read` runs `eval -> shen->kl -> ... -> scan-body -> shen.f-error ->
+y-or-n? -> read`.
+
+Design note: [why.md](why.md). Fixtures: `tests/partial.shen` (eval-free),
+`tests/partial-eval.shen` (one stray `eval`).
+
+## 5. The analysis as a rule set: Datalog
+
+**Datalog** is a logic programming language: a program is a set of facts
+(`edge(f, g)`) and rules (`reach(G) :- reach(F), edge(F, G)`), and running
+it computes the least set of facts the rules can derive. Unlike Prolog,
+Datalog has no function symbols and no control flow, which makes every
+program terminate and every answer independent of rule order. It is the
+standard language for expressing static analyses declaratively; the
+[Doop](https://bitbucket.org/yanniss/doop/src/master/) framework for Java
+is the best-known example. Introductions:
+[Wikipedia](https://en.wikipedia.org/wiki/Datalog), and the first chapters
+of [*Foundations of Databases*](http://webdam.inria.fr/Alice/) (free
+online) for the theory.
+
+Two Datalog concepts recur below:
+
+- **Semi-naive evaluation**: rather than re-deriving everything each
+  round, join only against the facts that were new in the previous round.
+  Same answer, far less work.
+- **Stratified negation**: a rule may say `!reach(F)` only if `reach` is
+  fully computed in an earlier stratum. This keeps "not" well-defined.
+
+Why restate the shake this way? Not for speed: the worklist already takes
+0.1 s. For **legibility and auditability**. Before, the shake's decisions
+lived in a dozen pattern-match clauses spread through `yggdrasil.shen`:
+four special cases for kernel tables that look like code, an eval
+entry-point list, an `f-error` row strip, a lambda-table filter. As rules
+they fit on a page, and "the analysis is sound" becomes a single sentence
+about one object: *the dynamic call relation is contained in the least
+fixpoint of these rules*. That is a sentence a proof can be about.
+
+The rule set is [`analysis/analysis.dl`](../analysis/analysis.dl). Writing
+it from the code rather than the design found four places the design was
+wrong about the shake that exists; they are recorded in the file as
+deviations D1 to D10, and the design note keeps them.
+
+Design note: [analysis-rules.md](analysis-rules.md), "Facts" and "Rules".
+
+## 6. Three engines, one answer: Soufflé, Python, Shen
+
+A rule set is only trustworthy if something independent evaluates it. Three
+things do.
+
+**[Soufflé](https://souffle-lang.github.io/)** is the reference Datalog
+engine for program analysis: it compiles Datalog to parallel C++ and is
+what Doop runs on. `yggdrasil facts PROG DIR` dumps the shake's fact
+relations as TSV; `souffle -F DIR -D out analysis/analysis.dl` computes
+`reach`, and a test asserts it equals the functions in `kernel.kl`, on
+every fixture, in both modes. CI runs this
+(`.github/workflows/analysis-oracle.yml`). Soufflé never runs in a user's
+shake; it is an oracle.
+
+**[`analysis/refeval.py`](../analysis/refeval.py)** is a 190-line
+semi-naive evaluator in standard-library Python, for developers without
+Soufflé. The test runs whichever is present and, when both are, diffs them
+against each other.
+
+**The Shen engine** is the one the shake actually uses. Shen's own
+[Prolog](https://shenlanguage.org/learn-shen/prolog.html) cannot run these
+rules: it is top-down SLD resolution with no
+[tabling](https://en.wikipedia.org/wiki/Tabling), so `reach(G) :- reach(F),
+edge(F,G)` loops on a cyclic call graph, and it has no built-in negation.
+So `yggdrasil.shen` carries a bottom-up Datalog engine of about 150 lines:
+tuples as lists, rules as data, semi-naive, indexed by predicate and first
+argument, with stratification *checked* rather than assumed. The rules live
+beside a verbatim copy of `analysis.dl` so a reader can compare them line
+by line. Fixpoint time is 0.12 to 0.15 s eval-free and about 0.25 s
+eval-capable on the shen-go host; the naive prototype it replaced took
+6.5 s.
+
+The shake's output stayed **byte-identical** on every fixture across this
+change, and `(yggdrasil.footprints ["prog"])` computes the footprint by
+rules, by worklist and by Warshall and asserts agreement.
+
+One honest divergence, recorded as D8: Datalog derives a *set*, but the
+lambda-table literal is written by walking the footprint as a *list*, so
+order is part of the bytes. Membership is the rules'; ordering is
+presentation, done by the same depth-first walk as before, and a check
+errors if the rules derived anything the list lacks.
+
+Design note: [analysis-rules.md](analysis-rules.md), "Engine" and Stage 3.
+
+## 7. Two checks the rules made possible
+
+Once reads and writes of globals are facts, two checks are one rule each.
+
+**Initialisation order.** Tarver's example on the thread:
+
+```
+(set a 1)
+(set b (+ (value a) 1))
+(set c (+ (value b) 1))
+```
+
+Of the six orderings only one is right. The rule `readBeforeWrite(N, V)`
+fires when a toplevel form reads a global no earlier form wrote and no
+port supplies. The shake refuses such a program with
+`yggdrasil-shake: FAIL init-order form=N reads=V` and writes no
+`kernel.kl`; a clean run records `init-order=checked` in the manifest.
+Fixture: `tests/init-order-bad.shen`.
+
+**Dead initialisation.** `liveGlobal(V)` is a global some kept function or
+toplevel form reads, or the port's runtime reads natively; `deadInit(N,V)`
+is a write nothing reads. Behind `--prune-init` the shake drops dead
+literal sets from the initialiser: 28 of 35 forms on a typical eval-free
+program, about 6% of `kernel.kl`. It is off by default because "the port
+reads it natively" is a declared fact per target (`port_reads` in
+`builders.json`), verified today only for shen-go by reading its runtime
+source.
+
+The **computed-name** rule from section 2 also lives here:
+`computedName(F)` when a user function applies an `intern`ed name or
+reads a computed global. The shake warns and records
+`computed-names=` in the manifest. It decides nothing yet; it makes the
+hypothesis visible. On the current fixtures only the one written to
+trigger it does.
+
+Design note: [analysis-rules.md](analysis-rules.md), Stages 2 and 4.
+
+## 8. Runtime tracing: aspect weaving at the KL level
+
+Everything so far is static. The reachability lemma says what *could* run;
+it is worth checking against what *does*.
+
+**Aspect-oriented programming**, of which
+[AspectJ](https://eclipse.dev/aspectj/) is the canonical implementation,
+separates a cross-cutting concern such as logging from the code it cuts
+across: a *pointcut* names the places (every method entry), *advice* says
+what to do there (record the name), and a *weaver* inserts the advice
+without touching the source. Yggdrasil does exactly this, but weaves at
+the KL level rather than in any target language, so it works on every
+port without port code:
+
+- pointcut: every emitted defun's entry, and every `(value V)`;
+- advice: append `f<TAB>name` or `v<TAB>name` to a trace file;
+- weaver: `--trace` on `shake`, `build` and `run`.
+
+The advice uses only primitives, deliberately not `pr`, which is a kernel
+function that reads `*hush*` and need not be in the footprint. The trace
+stream is opened as the initialiser's first form. The helpers are added
+after weaving so they are not themselves woven.
+
+`yggdrasil trace-check PROG OUTDIR --target go` shakes traced, builds,
+runs with the fixture's stdin, turns the trace into `called` and
+`readGlobal` facts, and evaluates one query with the Shen engine:
+
+```
+uncoveredCall(F) :- called(F), kernel(F), !reach(F).
+```
+
+It must be empty. On four fixtures, on two runtimes (the Go artifact and
+shen-go's bare KL VM), it is:
+
+| fixture | reach | called | globals read |
+|---|---|---|---|
+| fib | 53 | 34 | 3 |
+| partial | 53 | 34 | 3 |
+| stdin-sum | 54 | 38 | 4 |
+| prolog | 66 | 43 | 5 |
+
+The gap between reach and called is the static over-approximation made
+visible: about twenty kept functions per program are never entered on that
+path. Injected violations, an out-of-footprint call and an unwritten
+global, are both caught, and all three engines agree.
+
+This is evidence, not proof: one run exercises one path. It is also the
+floor of the port contract in section 11, because it is identical in form
+on every target.
+
+Design note: [analysis-rules.md](analysis-rules.md), "Runtime trace".
+
+## 9. Static inclusion: SCIP and the graph extractor
+
+Section 2 said KL equivalence transfers to the target language if the
+backend compiles each function independently. That is checkable: build the
+full program A and the shaken program A* with the same builder, and
+compare the compiled artifacts function by function.
+
+**[SCIP](https://github.com/sourcegraph/scip)** (SCIP Code Intelligence
+Protocol) is Sourcegraph's index format for code navigation: for a
+codebase it records every symbol, every definition, and every reference
+with its range, as a [protobuf](https://protobuf.dev/) file. Indexers
+exist for [Go](https://github.com/sourcegraph/scip-go),
+[TypeScript](https://github.com/sourcegraph/scip-typescript), Rust (via
+rust-analyzer), Java, Python and others. An index is exactly a static
+reference graph, so indexing both artifacts and comparing the part
+reachable from `main` is the inclusion check with off-the-shelf tooling.
+
+`yggdrasil scip-check PROG OUTDIR --target go` does this: builds A with
+`--no-shake` and A* normally, runs `scip-go` on each, decodes both indexes
+in-repo (the `scip` CLI would not install here, so the wire format is read
+directly), computes main-reachable functions with a normalised body hash,
+and reports.
+
+What it found first was about the backend, not the shake: **shen-go is
+not compositional at the Go level.** Its builder emits each KL function as
+an anonymous closure bound at run time, and every call is a symbol lookup.
+The generated `fib` module has 136 closures and four named Go functions,
+all driver code, so the Go-level comparison is 4 against 4 and says
+nothing. The check therefore also recovers the *KL-level* graph from the
+generated Go, with bindings as nodes and lookups as edges, and there the
+statement holds: zero shaken nodes missing from the full build, on both
+fixtures. The delta against the footprint is two names, `shen.initialise`
+(the driver calls it) and `do` (compiled as a special form, so never
+looked up), both explained rather than waved through.
+
+The lesson generalises: SCIP is one way to get a graph out of an artifact.
+The contract in section 11 fixes the *graph* (three relations: `node`,
+`edge`, `body`) and the *query*, and lets each port supply an extractor:
+SCIP for direct-call languages with an indexer, source patterns or the
+language's own parser otherwise, the identity for interpreters whose
+artifact is the KL itself.
+
+What it cannot see: runtime lookups and computed names. That is the same
+blind spot as the shake, so it is an independent oracle for the same
+over-approximation, not a soundness proof.
+
+Design note: [analysis-rules.md](analysis-rules.md), Stage 5.
+
+## 10. Behavioural parity
+
+The oldest check, and still the top of the ladder: `yggdrasil parity`
+runs the same shaken slice on every target with a toolchain present,
+diffs stdout against a golden and against itself across two boots and two
+in-process passes. It is the only check that observes the *runtime* rather
+than the artifact's text, and the only one that can catch integer width,
+hash iteration order, and memoisation drift, which is how it caught
+identical KL computing different answers on shen-rust.
+
+Design note: [parity.md](parity.md).
+
+## 11. The port contract
+
+The checks above were built against one port. What an arbitrary port must
+declare and satisfy for them to apply is a five-level ladder:
+
+| level | what | port obligation |
+|---|---|---|
+| 0 | builder contract | load `kernel.kl`, call `shen.initialise`, run user files in order |
+| 1 | self-description in `builders.json` | truthful `port_reads`, `port_writes`, `special_forms`, `native_overrides` (+ what they call back into), `call_style`, `dispatch`, each with a verified flag and provenance |
+| 2 | runtime trace | flush open streams at exit, or declare that you cannot |
+| 3 | static inclusion | an extractor producing `node`/`edge`/`body` facts from a built artifact |
+| 4 | behavioural parity | already met by every target with a golden |
+
+Two obligations at level 1 deserve a mention. A **native override**
+(shen-go's `InstallKernelFast`, shen-scheme's `overrides.scm`) replaces a
+kernel function with native code whose callees the rules cannot see; the
+port must enumerate them or be reported unsound at level 1. And
+**dispatch**: a port that links the whole kernel behind the slice is not
+running the shaken program, and every higher check is vacuous for it.
+
+The output is a conformance table per port, one line per obligation,
+marked verified, declared, unsupported, or vacuous. The rows marked
+*declared* rather than *verified* are, exactly, what that port adds to the
+core of trust.
+
+Design note: [port-contract.md](port-contract.md), including a staging
+plan whose last step is taking shen-lua through the ladder.
+
+## 12. What is proved, what is evidence, what is assumed
+
+It helps to be blunt about which is which.
+
+**Proved (in the sense of a checked, deterministic computation, on every
+fixture, by three independent evaluators):** the footprint equals the least
+fixpoint of the published rules; the rules describe the shake that exists;
+the emitted `kernel.kl` is byte-identical across all of these changes and
+across eight host ports.
+
+**Evidence:** the reachability lemma holds on every traced run; the
+shen-go artifact's KL-level graph contains no node the rules did not
+derive; the parity gate passes on every target with a golden.
+
+**Assumed, and now written down rather than silent:** the computed-name
+hypothesis (`computed-names=none`); the truth of each port's level-1
+declarations; the correctness of the backend's KL compilation, which is the
+port's kernel test suite and is the same for the full and shaken program.
+
+This last point is the one Bruno Deferrari raised on the Shen group, and
+James Fetzer's
+[*Program Verification: The Very Idea*](https://dl.acm.org/doi/10.1145/48529.48530)
+(1988) is the classic statement of it: every verification rests on a core
+of trust certified by engineer's induction. The contribution here is not
+to remove that core but to make its contents a list.
+
+## 13. Reproducing everything
+
+Toolchain used for the numbers in this guide:
+
+- a Shen host: [shen-go](https://github.com/pyrex41/shen-go) built with
+  `make shen`; the reference is shen-cl. Set `YGGDRASIL_HOST`.
+- [Soufflé](https://souffle-lang.github.io/install) 2.4.1; obtained here
+  via [Nix](https://nixos.org/) from the `nixos-24.05` channel
+  (`nix-build -E '(import <nixpkgs> {}).souffle'`), or apt on Ubuntu 22.04.
+- `scip-go`: `go install github.com/scip-code/scip-go/cmd/scip-go@latest`
+  (the module moved from the `sourcegraph` path).
+- the shen-go Yggdrasil builder at commit `24b2c00`; master has a boot
+  regression, tracked as
+  [shen-go#46](https://github.com/pyrex41/shen-go/issues/46). Set
+  `YGGDRASIL_SHEN_GO_DIR` to that checkout.
+
+Then:
+
+```
+go build -o yggdrasil_bin .
+PATH=/path/to/souffle:/path/to/scip-go:$PATH \
+YGGDRASIL_HOST=/path/to/shen-go/shen \
+YGGDRASIL_SHEN_GO_DIR=/path/to/shen-go-24b2c00 \
+go test -count=1 ./...
+```
+
+runs every check described above (about ten minutes). Individual commands:
+
+```
+yggdrasil why tests/fib.shen --trace pr
+yggdrasil facts tests/fib.shen out/facts && souffle -F out/facts -D out analysis/analysis.dl
+yggdrasil shake tests/init-order-bad.shen out/          # refused
+yggdrasil shake tests/fib.shen out/ --prune-init --target go
+yggdrasil trace-check tests/fib.shen out/ --target go
+yggdrasil scip-check tests/fib.shen out/ --target go
+yggdrasil parity tests/fib.shen out/ --expect tests/fib.expected
+```
+
+Tests that need a tool that is absent skip with a message naming it; they
+never pass vacuously.
