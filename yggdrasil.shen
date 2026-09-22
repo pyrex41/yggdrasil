@@ -1390,6 +1390,7 @@
          WA4 (pr-kl-line ["pruned-init" NPruned] Sink)
          WB (pr-kl-line ["reaches" | Reaches] Sink)
          WC (pr-kl-line ["cannot-reach" | Cannot] Sink)
+         WD (ygg.shaken-line-sexp Sink)
          (close Sink)))
 
 (define write-manifest-txt
@@ -1410,6 +1411,7 @@
          WA4 (pr (make-string "pruned-init=~A~%" NPruned) Sink)
          WB (ygg.mapc (/. C (pr (make-string "reaches=~A~%" C) Sink)) Reaches)
          WC (ygg.mapc (/. C (pr (make-string "cannot-reach=~A~%" C) Sink)) Cannot)
+         WD (ygg.shaken-line-txt Sink)
          (close Sink)))
 
 \\ ======================= initialisation order check =====================
@@ -1988,3 +1990,89 @@
 (define ygg.fact-str
   X -> X where (string? X)
   X -> (str X))
+
+\\ ===================== stage 5: the unshaken build ======================
+\\ Stage 5 of docs/analysis-rules.md needs two artifacts built by the SAME
+\\ stage-2 builder: the shaken program A* and the full program A = K + user,
+\\ so that an index of each can be compared node for node.  Only A* has an
+\\ existing entry point; this section is A.
+\\
+\\ (yggdrasil.shake-full Files Dir) is yggdrasil.shake with every decision
+\\ that removes something turned off:
+\\   - no eval-strip: the toplevel init forms go out exactly as the kernel
+\\     wrote them - macro table, 161 declares, build-lambda-table and all -
+\\     so the artifact is the eval-capable one;
+\\   - no footprint: FootCode is every kernel defun, in kernel load order,
+\\     which is what footcode returns when the footprint is defun-names;
+\\   - no trim-top and no rewrite-f-error: the mode flag those two take is
+\\     false, so both are identities.
+\\ Everything else - the writer, the user pipeline, the init-order check,
+\\ the manifest - is shared with the shake, which is the point: A and A*
+\\ differ only by the shake, not by the code path that emitted them.
+\\
+\\ The manifest records shaken=false.  It is written ONLY in this mode: a
+\\ shaken manifest stays byte-identical to the one the pre-stage-5 binary
+\\ wrote, and a builder that has never heard of the key reads its absence
+\\ as the shaken default, which is what every manifest before this one was.
+(set ygg.*shake-full* false)
+
+(define yggdrasil.shake-full
+  Files Dir -> (let Set   (set ygg.*shake-full* true)
+                    Done  (trap-error (ygg.shake-full-h Files Dir)
+                                      (/. E (ygg.shake-full-fail E)))
+                    Unset (set ygg.*shake-full* false)
+                    Done))
+
+\\ The flag is process-global, so a failed full shake must not leave it set
+\\ for a later shake in the same host image (the facts and footprints entry
+\\ points do run several pipelines per process).
+(define ygg.shake-full-fail
+  E -> (let Unset (set ygg.*shake-full* false)
+            (simple-error (error-to-string E))))
+
+(define ygg.shake-full-h
+  Files Dir -> (let MaxPrint  (value *maximum-print-sequence-size*)
+                    Unlimit   (set *maximum-print-sequence-size* 1000000000)
+                    Kernel    (kernel-code)
+                    KLFiles   (map (fn bootstrap) Files)
+                    KL        (map (fn read-file) KLFiles)
+                    Tops      (toplevel-forms Kernel)
+                    Foot      (defun-names Kernel)
+                    FootCode  (footcode Foot Kernel)
+                    CNames    (ygg.cn-direct KL)
+                    Warn      (ygg.cn-warn CNames)
+                    InitOrder (ygg.init-order-check Tops KL)
+                    InitDefun (synthesize-initialise Tops)
+                    OutCode   (append FootCode [InitDefun])
+                    Prims     (find-primitives (append OutCode KL))
+                    WriteK    (write-kl-file (@s Dir "/kernel.kl") OutCode)
+                    UserOut   (write-user-files KLFiles KL Dir)
+                    WriteM    (write-manifest Dir UserOut KL Prims CNames)
+                    Restore   (set *maximum-print-sequence-size* MaxPrint)
+                    Report    (pr (make-string "yggdrasil-shake: shaken=false defuns=~A~%"
+                                               (ygg.len FootCode))
+                                  (stoutput))
+                    done))
+
+\\ computedName without the Datalog engine.  A full build runs no rule set
+\\ (there is no footprint to derive), but the manifest key has to keep its
+\\ meaning, so derive it straight from the same facts ygg.cn-facts extracts
+\\ for the rules: computedName(F) :- userintern(F) ; userglobal(F).
+(define ygg.cn-direct
+  KL -> (ygg.remove-dups (map (fn ygg.cn-row-name) (ygg.cn-facts KL))))
+
+(define ygg.cn-row-name
+  [_ F] -> F)
+
+\\ Stage 5.  Written only by yggdrasil.shake-full, so a shaken manifest is
+\\ byte-for-byte the one the pre-stage-5 binary wrote; absence of the key
+\\ means shaken, the only thing any manifest has ever meant.
+(define ygg.shaken-line-sexp
+  Sink -> (if (value ygg.*shake-full*)
+              (pr-kl-line ["shaken" false] Sink)
+              done))
+
+(define ygg.shaken-line-txt
+  Sink -> (if (value ygg.*shake-full*)
+              (pr (make-string "shaken=false~%") Sink)
+              done))
