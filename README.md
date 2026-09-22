@@ -78,6 +78,7 @@ yggdrasil build prog.shen out/ --target go     # stage 1 + build a Go artifact
 yggdrasil build prog.shen out/ --target js --web  # a BROWSER-safe ES module
 yggdrasil run   prog.shen out/ --target js     # build, then run it (prints stdout)
 yggdrasil parity prog.shen out/                # behavioural parity gate across targets
+yggdrasil scip-check prog.shen out/ --target go # stage-5 oracle: shaken vs full, node for node
 yggdrasil why    prog.shen --trace read        # what each part of the program costs in kernel defuns
 yggdrasil targets                              # list stage-2 targets
 ```
@@ -93,6 +94,8 @@ yggdrasil targets                              # list stage-2 targets
 | `facts PROG OUTDIR` | dump the shake's call-graph, seed and mode facts as TSV, one file per relation in [`analysis/analysis.dl`](analysis/analysis.dl), for the Datalog oracle — `souffle -F OUTDIR -D out analysis/analysis.dl`, or `python3 analysis/refeval.py OUTDIR`; the computed `reach` must equal `kernel.kl`'s defun list, see [`docs/analysis-rules.md`](docs/analysis-rules.md) |
 | `trace-check PROG OUTDIR --target T` | shake with `--trace`, build and run on `T`, and check the run against the rules: every kernel defun the artifact actually entered must be in `reach`. Prints `yggdrasil-trace-check: OK called=N reach=M` or `FAIL uncovered=…`, and leaves `called.facts` / `readglobal.facts` beside a `yggdrasil facts` dump — see [`docs/analysis-rules.md`](docs/analysis-rules.md#runtime-trace-aspectj-style-weaving-at-the-kl-level) |
 | `shake\|build\|run … --trace` | weave the trace advice into the emitted KL: every defun records its entry and every `(value V)` its read, to `./yggdrasil.trace` at run time. Records `traced=true` / `trace-file=` in both manifests; the default (untraced) output is byte-identical to a build without the flag. (Unrelated to `why --trace FN`, which takes a function name and prints a call chain.) |
+| `shake … --no-shake` | emit the FULL program instead of the shaken slice: every kernel defun and the eval-capable initialiser, no trimming, manifest `shaken=false`. The reference build for `scip-check`; the default path is unchanged and its artifacts are byte-identical. Mutually exclusive with `--trace`, which weaves into a slice |
+| `scip-check PROG OUTDIR --target go` | stage-5 level-2 oracle: build the shaken program and the full program with the same builder, index both with `scip-go`, and check that every node the shaken artifact can reach from `main` is in the full one with an identical body. Prints `OK reachable=N identical=N`, falls back to `go/ast` when `scip-go` is missing (the verdict says `path=scip` or `path=go-ast`) — see [`docs/analysis-rules.md`](docs/analysis-rules.md) |
 | `targets` | list available targets (`lisp`/`lua`/`go`/`joy`/`erlang`/`rust`/`js`/`julia`/`scheme`/`swift`/`truffle`/`truffle-native`/`c`) |
 
 The stage-1 **host** defaults to the sibling `../shen-cl/bin/sbcl/shen`
@@ -169,6 +172,33 @@ only after an earlier form set it, or because the port supplies it
 (`*stinput*`, `*stoutput*`). A program that violates the rule is refused
 with no artifacts written (see `docs/analysis-rules.md`). Builders must
 ignore manifest keys they do not recognise, so the key is contract-safe.
+
+Every shake also records `pruned-init=N` after `computed-names`: the
+number of toplevel forms the synthesised initialiser dropped because
+nothing can read the global they set. It is `0` unless you pass
+**`--prune-init`** (`shake` / `build` / `run`), which is off by default —
+pruning changes the bytes of `kernel.kl`, and `docs/analysis-rules.md`
+gives the parity gate, not the flag, the job of deciding whether a target
+may default it on. With the flag off the emitted `kernel.kl` is
+byte-identical to a pre-stage-4 shake's.
+
+A global counts as live when a reachable kernel defun reads it, when a
+kept toplevel form reads it, when its name occurs anywhere in your
+program, or when the **port's own runtime** reads it natively — shen-go's
+`fn` reads `shen.*lambdatable*` from Go, its `arity` reads
+`*property-vector*`, its `open` resolves paths through `*home-directory*`.
+That last list is per-backend data, so it lives in `builders.json` next to
+the backend, as a **`"port_reads"`** array with a `"port_reads_verified"`
+flag saying whether it was read off that port's runtime (today only `go`'s
+was; every other target carries a conservative superset). With no `--target`
+the union of every list is used, which is the only choice sound for a slice
+that may be built anywhere; `--target T` uses `T`'s own, which is smaller
+and prunes more.
+
+Only a form that is exactly `(set V Lit)` for an atomic `Lit` is ever
+dropped. A form whose value is a call — `(set *property-vector* (vector
+20000))` — is an effect in its own right and stays however dead its global
+is.
 
 **Stage 2 — build** (one builder per target port, living in that port's
 repo):

@@ -145,6 +145,21 @@ the probe started passing and the gate failed with *"stale KNOWN_GAPS entries:
 metaeval:js"* until the line was removed. `metaeval` is now gated on go, lua,
 rust and js like every other fixture.
 
+### Dead-initialisation pruning (stage 4)
+
+`yggdrasil parity ... --prune-init` shakes with `docs/analysis-rules.md`'s
+stage-4 pruning on and gates the pruned slice. That is the gate's other job:
+pruning is off by default precisely because *this* gate, per target, is what
+says it is safe to turn on. A target whose `builders.json` `port_reads` list
+is missing an entry produces an artifact with a global left unbound, which
+shows up here as a run failure or a `vs-truth DIFFER`, and nowhere earlier.
+With one `--target T` the shake uses `T`'s own `port_reads`; with several, or
+none, it uses the union of every target's, which is the conservative list.
+
+No target defaults it on yet. Only `go`'s `port_reads` has been verified
+against a runtime, and the `go` builder did not boot on the machine stage 4
+was written on, so the gate has not returned a verdict for it.
+
 ### CI
 
 `.github/workflows/parity-gate.yml` runs the gate nightly and on

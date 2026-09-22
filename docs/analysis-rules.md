@@ -1,12 +1,14 @@
 # Design note: the shake as a rule set
 
-**Status**: stages 1–3 shipped, with the runtime trace beside them; stages
-4–5 proposed (Yggdrasil, September 2026)
+**Status**: stages 1–5 shipped, with the runtime trace beside them
+(Yggdrasil, September 2026)
 **Code**: `analysis/analysis.dl`, `analysis/refeval.py`; `yggdrasil.shen` —
-`ygg.dl`, `*shake-rules*`, `*trace-rules*`, `yggdrasil.facts`,
-`yggdrasil.shake-traced`, `yggdrasil.trace-check`, `yggdrasil.footprints`;
-`main.go` — `cmdFacts`; `trace.go` — `cmdTraceCheck`; `analysis_test.go`,
-`footprint_test.go`, `trace_test.go`
+`ygg.dl`, `*shake-rules*`, `ygg.*init-rules*`, `*trace-rules*`,
+`yggdrasil.facts`, `yggdrasil.footprints`, `yggdrasil.shake-full`,
+`yggdrasil.shake-traced`, `yggdrasil.trace-check`; `main.go` — `cmdFacts`;
+`prune.go`; `scip.go` — `scip-check`; `trace.go` — `cmdTraceCheck`;
+`builders.json` — `port_reads`; `analysis_test.go`, `footprint_test.go`,
+`prune_test.go`, `scip_test.go`, `trace_test.go`
 
 **Motivation**: Mark Tarver, *The Future of Shen* (Shen group): Yggdrasil
 enters the core of trust next to the kernel and the backend, so it should be
@@ -62,12 +64,12 @@ What `yggdrasil facts` actually dumps
 is that list with `form-mentions` split into `formmentions` (raw) and
 `formmentionsef` (after `prepare-tops`), `usersym` joined by `rawsym` (the
 user KL before `strip-user-declares`), `mentions` narrowed to
-`mentionsprim`, and `initprim` added; `writes` dumped as `initwrite` (with
-`defunwrite` beside it) and `called`/`readGlobal` declared for the runtime
-trace, empty until `yggdrasil trace-check` fills them. `reads`/`readsIn`/
-`portReads` are stage 4 and are not dumped yet. `portGlobal` is dumped and
-declared now so the fact set does not move under stage 2. See the
-declarations at the top of `analysis/analysis.dl`.
+`mentionsprim`, and `initprim` added; `reads`/`writes`/`readsIn`/
+`portReads` were stage 2 and 4 and are all dumped now (stage 4), with
+`defunwrite` and the runtime trace's `called`/`readGlobal` beside them —
+the last two empty until `yggdrasil trace-check` fills them. That is
+twenty-four relations. See the declarations at the top of
+`analysis/analysis.dl`.
 
 ## Rules
 
@@ -138,11 +140,22 @@ liveGlobal(V) :- portReads(V).
 deadInit(N, V) :- writes(N, V), !liveGlobal(V).
 ```
 
-A `deadInit` form can be dropped from the synthesised initialiser. On fib
-that is up to 29 of 35 sets, before `portReads` is subtracted. This is the
-one place the rule set makes the artifact smaller, and it is gated on a
-per-builder fact list that has to be written by reading each port's
-runtime, so it ships after the checks, not with them.
+A `deadInit` form can be dropped from the synthesised initialiser. Measured
+on fib against the `go` runtime's `portReads`: 29 of the 35 globals the
+initialiser sets are dead, and 28 of the forms that set them are prunable.
+This is the one place the rule set makes the artifact smaller, and it is
+gated on a per-builder fact list that has to be written by reading each
+port's runtime, so it ships after the checks, not with them.
+
+Two clauses of this rule set are not in the note's sketch, and both are
+recorded as deviations (D9, D10) in `analysis.dl`. The first is the
+over-approximation the rest of the shake already makes: a global whose name
+occurs *anywhere* in the user KL, in any position, is live, because the
+shake's soundness argument is symbol occurrence and nothing narrower.
+(`rawsym`, not `usersym`: whether the name is in the program the user wrote
+is a mode-independent fact, and `strip-user-declares` must not be able to
+make a global look dead.) The second is that the rules decide only which
+*indices* are dead — what is *prunable* is narrower, and is not a rule.
 
 ## Engine
 
@@ -323,6 +336,24 @@ shake's `needs-eval=`, `reaches=` and `cannot-reach=` lines are identical to
 the untraced shake's. `primitive=` does grow, by the weaver's own
 `open`/`write-byte`/`string->n`/`pos`/`tlstr`.
 
+### How it composes with the other two flags
+
+`--prune-init` and `--trace` compose, and deliberately: the weaver is the
+last thing that runs before the writer, so it sees the initialiser that
+survived pruning and a trace therefore describes the artifact as shipped.
+(It is also how the two checks could be pointed at each other — see "Against
+stage 4" below.)
+
+`--no-shake` and `--trace` are **refused together**. They ask for
+contradictory artifacts: `--no-shake` emits the full program as the
+reference A for `scip-check`, and the trace exists to check a *slice*
+against its own `reach`. Tracing A would compare a run of the unshaken
+program against the shaken program's footprint, which is not a question
+anyone asked; and A's initialiser is eval-capable, so the trace would be
+dominated by machinery the shipped artifact does not contain. `shakeExpr` in
+`trace.go` is the one place that chooses a Shen entry point, and it returns
+the error there rather than letting one flag quietly win.
+
 ### Targets, and a port caveat
 
 `--target T` takes any target in `builders.json`, plus one that is not in it:
@@ -353,13 +384,24 @@ flushing them from the last user toplevel form is not needed and is not
 implemented. A port that did lose the tail would show up as a `called` set
 that is a strict prefix of the run.
 
-### For stage 4
+### Against stage 4
 
 `readglobal.facts` is written as one symbol per line, TSV, in the facts dir
-beside the rest of the dump. That is the shape stage 4's `liveGlobal` wants:
-a global that no run ever reads is a candidate for `deadInit` pruning, and a
-global some run does read is direct evidence that it is not. `initwrite.facts`
-is stage 4's `writes` relation, already dumped.
+beside the rest of the dump — the shape stage 4's `liveGlobal` wants. Stage 4
+decides liveness syntactically (`readsIn`, `reads`, `portReads`, and any
+occurrence in the user KL); `readGlobal` is the *empirical* counterpart. A
+global some run reads is live whatever the syntax concluded, so intersecting
+`readglobal.facts` with `deadInit` answers "did this run read anything the
+pruner was about to drop?" — a check on stage 4 rather than on stage 1.
+`trace-check` does not perform that intersection today: it shakes untraced
+facts with pruning off, so its `initwrite` is the unpruned `writes` and
+`uncoveredRead` cannot see a pruned global. Doing it needs one more
+comparison, not new facts, which is why the relation is written in stage 4's
+own shape.
+
+Stage 4's `writes` is also where `initwrite` comes from — `initwrite(V) :-
+writes(_, V)` in `analysis.dl`, derived rather than dumped, so the two
+cannot drift apart.
 
 ## Staging
 
@@ -474,32 +516,210 @@ is stage 4's `writes` relation, already dumped.
    every other fixture, the eval-capable ones included, is `none` — which is
    the result worth having, since it says the hypothesis is not vacuous and
    not routinely violated. `footprint_test.go` is the host-gated test.
-4. **Dead initialisation.** Write `portReads` for each builder by reading
-   its runtime, enable `deadInit` pruning behind a flag, and let the
-   parity gate decide per target whether it is safe to default on. The
-   runtime trace supplies two of its inputs already: `initwrite.facts` is
-   the `writes` relation, and `readglobal.facts` is per-run evidence for
-   `liveGlobal` — a global some run reads is demonstrably live, whatever
-   the syntax says. Both are TSV, one symbol per line, in the facts dir
-   (see "Runtime trace" above).
-5. **SCIP export**, optional and last, and a level-2 oracle rather than a
-   picture. Emit a SCIP index of the shaken program — each symbol carrying
-   its `adds` and `exclusive` in the documentation field, so an editor can
-   colour-band by footprint as the thread suggested — and a second index of
-   the *full* compiled artifact. Restricted to the nodes reachable from
-   `main`, the two must agree node for node for a compositional builder,
-   one whose backend emits a direct call per KL call (shen-go's direct-call
-   output is the reference case). That makes SCIP a check on stage 2 and
-   not only on stage 1: the shake's claim is about the KL it writes, and a
-   node-for-node agreement between the index of the shaken artifact and the
-   index of the unshaken one says the backend did not invent an edge the
-   rules never saw. Disagreement is a bug in the builder or in the rules,
-   the same status the Soufflé oracle has for stage 1. It stays optional
-   because it only holds for builders that compile calls compositionally;
-   a builder that routes everything through a dispatch table has no node
-   graph to compare.
+4. **Dead initialisation.** — **done.**
+   `readsIn`, `reads`, `writes` and `portReads` join the fact dump (twenty-one
+   relations now); `liveGlobal`/`deadInit` join `analysis.dl`,
+   `analysis/refeval.py` and — as `(value ygg.*init-rules*)` beside
+   `*shake-rules*` — the Shen engine. `yggdrasil shake|build|run
+   ... --prune-init` drops every dead form from the synthesised initialiser.
+   Off by default.
+
+   **What is prunable.** The rules answer which form indices write a global
+   nothing can read. The shake then drops a form only when it is *exactly*
+   `(set V Lit)` with `Lit` an atom — a number, a string, a boolean, a symbol
+   or `()`. A form whose value is a call is never pruned, however dead its
+   global is: evaluating `(set *property-vector* (vector 20000))` or `(set
+   shen.*special* (cons @p ...))` is an effect in its own right, and dropping
+   it would change what the artifact *does*, not just what it remembers. Nor
+   is a form that is not a `set` at all, or one that sets more than one
+   global. That is `ygg.prunable?`; on fib it is the difference between 29
+   dead globals and 28 dropped forms (`shen.*special*`'s value is a cons
+   chain). The initialiser that comes out is therefore always a
+   *subsequence* of the one that went in — same forms, same order, fewer of
+   them — which is what `prune_test.go` asserts.
+
+   **`port_reads` provenance.** `portReads` is a fact about a backend, so it
+   lives next to the backend: a `"port_reads"` array on each target in
+   `builders.json`, with `"port_reads_verified"` saying whether it was read
+   off that port's runtime. Today exactly one target is verified:
+
+   - **`go`** (`port_reads_verified: true`), five entries, each read out of
+     shen-go's `kl/` package: `*stinput*` (`PrimReadByte`'s EOF sentinel in
+     `kl/primitives.go`), `*stoutput*` (the port global bound in the same
+     file), `*home-directory*` (`ResolveHomePath`, which `open`, `load-file`
+     and the native `read-file` all resolve through), `*property-vector*`
+     (`kernelArity` in `kl/kernelfast.go`, behind the native `arity` and
+     `fn`), and `shen.*lambdatable*` (`nativeFn`, same file). The generated
+     `main.go` (`cmd/yggdrasil-build`) reads no global of its own. The lambda
+     table and the arity table are therefore live on `go` because its port
+     reads them, not because a rule says tables are special; the
+     external-symbols `put` is not a `set` and so is never prunable anyway.
+   - **every other target** (`port_reads_verified: false`) carries a
+     conservative superset: `go`'s five plus every global the kernel's own
+     defuns read in the full boot (`readsIn` over the unshaken kernel,
+     intersected with what the initialiser writes) — 35 entries. Against that
+     list only `shen.*call*` and `shen.*system*` are ever dead, so pruning is
+     nearly a no-op until someone reads those runtimes. A `shake` with no
+     `--target` uses the union of every list, which is that same superset.
+
+   **Measured**, `--prune-init --target go`, over all sixteen fixtures that
+   shake (init-order-bad is refused on purpose). Of the 35 forms the
+   initialiser writes, the eval-free fixtures drop 28 (`computed-name`,
+   `fib`, `hello`, `init-order-ok`, `joy-sum`, `parity`, `partial`,
+   `stdin-sum`, `typed-ok`), 29 (`interpreter`, `typed-bad`,
+   `typed-unsigned`) or 26 (`prolog`) — `kernel.kl` 13.5 kB → 12.7 kB, about
+   6%. The eval-capable ones drop 10 (`metaeval`, `partial-eval`) or 9
+   (`tc-interp`): 253 kB → 252 kB, 0.1%. An eval-capable program reaches
+   nearly the whole kernel, so nearly every global has a live reader, which
+   is the answer the rules should give. That is the shape the note predicted:
+   stage 4 shrinks artifacts, and by little.
+
+   **Byte-identity**, verified as stages 1–3 were, with the pre-change binary
+   built from 7644a0a: with the flag off, `kernel.kl` is byte-identical on all
+   sixteen fixtures that shake, both manifests differ by exactly the new
+   `pruned-init=0` line, and user `.kl` differs only in gensym numbering.
+
+   **Parity.** `yggdrasil parity PROG DIR --target go --prune-init --expect
+   tests/PROG.expected` is the gate for this, and it takes `--prune-init`
+   so the slice it builds is the pruned one. It has not yet returned a
+   verdict: on the machine this stage was written on the `go` stage-2
+   builder does not boot at all (`shen-go/cmd/yggdrasil-build` panics in
+   `shen.change-pointer-value` loading its own `kernel/klambda/
+   declarations.kl`), identically for the pruned slice, the unpruned slice
+   and the pre-stage-4 binary — so every one of the six fixtures with a
+   golden reports `build failed`, and none of it is about pruning. `go` stays
+   off by default until that gate is green somewhere it can run; the flag and
+   the verified `port_reads` are what make running it possible.
+
+   **Why it is not on by default.** The parity gate decides that per target,
+   and it cannot decide it from a design note. A `port_reads` list that is
+   missing an entry is a silent miscompile — the artifact boots with a global
+   unbound and fails only when something reaches it — so `port_reads_verified`
+   is the gate's precondition, and only `go` has it.
+5. **SCIP level-2 oracle.** — **done.**
+   `yggdrasil scip-check PROG OUTDIR --target go` builds the program twice
+   with the *same* stage-2 builder — `A*`, the shaken slice, and `A`, the
+   full program `K + user`, the latter from the new `--no-shake` mode
+   (`yggdrasil.shake-full` in `yggdrasil.shen`: every kernel defun, the
+   eval-capable initialiser, no `trim-top`, no `rewrite-f-error`, manifest
+   `shaken=false`) — indexes each module with `scip-go`, decodes the two
+   `index.scip` files, and compares the set of function symbols reachable
+   from `main` plus a normalised body hash per function. `scip.go` is the
+   whole implementation; `scip_test.go` is the host-gated fixture test and
+   the decoder unit test.
+
+   The SCIP index is decoded in-repo, by hand, from the protobuf wire
+   format (`Index.documents`, `Document.relative_path`/`occurrences`,
+   `Occurrence.range`/`symbol`/`symbol_roles`/`enclosing_range`). The `scip`
+   CLI cannot be installed — its `go.mod` carries `replace` directives, so
+   `go install github.com/scip-code/scip/cmd/scip@v0.7.1` is refused — and
+   the Go bindings are a module dependency, which this repo does not have
+   and should not acquire for an optional check. An edge is what the index
+   itself says: a reference occurrence lying inside a definition's
+   `enclosing_range` is a reference *by* that definition. A `go/ast`
+   fallback computes the same graph without an indexer; the subcommand
+   prints `path=scip` or `path=go-ast` so the verdict always says which ran.
+   Both paths ran here and agreed.
+
+   **Running it.** The `go` target needs a sibling shen-go whose
+   `cmd/yggdrasil-build` can boot its own kernel. shen-go master at
+   `5edf47e` ("Native kernel hot paths") cannot: it panics in
+   `shen.change-pointer-value` part way through `declarations.kl`, because
+   the interpreted `put` probes its bucket with `<-vector` in tail position
+   inside `trap-error` and the interpreter's `trap-error` does not cover a
+   tail call, so the "vector element not found" error escapes as a value
+   into the property vector. `cmd/shen` never sees it (it installs the
+   native `put` via `InstallKernelFast`); the builder does not install them,
+   so it dies. Point `$YGGDRASIL_SHEN_GO_DIR` at a checkout that works
+   (`24b2c00` is the last one before the regression). Without one,
+   `scip-check` reports the stage-2 failure and the host-gated test skips
+   rather than failing — a broken sibling is not a broken shake.
+
+   **What the numbers actually are, and why the interesting one is not the
+   SCIP one.** Stage 5 was written expecting shen-go's output to be
+   compositional at the Go level: one Go function per KL defun, one direct
+   Go call per KL call. It is not. `shen-go/codegen` emits one 0-arity
+   module thunk per *chunk* —
+   `var KernelChunk0 = MakeNative(func(__e *ControlFlow) { ... })` — inside
+   which every defun is an anonymous closure bound at run time
+   (`Call(__e, ns2_1set, symF, MakeNative(...))`, `ns2_1set` being `defun`)
+   and every call is a run-time symbol lookup
+   (`Call(__e, PrimFunc(symF), ...)`). The generated module for `fib` has
+   **not one** named Go function per KL defun: its 54 kernel defuns are 136
+   anonymous closures inside one `var KernelChunk0`, and the only named
+   functions in the whole module are the driver's four. So the Go-level
+   main-reachable set is 4 nodes for A and 4 for A* on both `fib` and
+   `hello` — `main`, `run`, `runHelper` and `fail`, the generated driver —
+   of which 3 have byte-identical `go/printer` bodies across the two builds
+   and 1, `main` itself, is *required* to differ: the builder generates it from the
+   manifest, so it names the chunks and replays the user arities of
+   whichever program it built. That comparison is true and worth having —
+   it says the builder packaged both programs the same way — but it is not
+   a statement about the shake.
+
+   The node graph Stage 5 wanted is one level down, and `scip-check`
+   recovers it from the same generated Go with `go/ast`: the defun bindings
+   are the nodes, the `PrimFunc` lookups are the edges. Measured on
+   shen-go, wall clock 68-85 s per fixture end to end (two shakes, two
+   stage-2 builds, two `scip-go` runs):
+
+   | | `fib` | `hello` |
+   |---|---|---|
+   | Go-level main-reachable, A\* / A | 4 / 4 | 4 / 4 |
+   | Go-level identical bodies | 3 | 3 |
+   | KL defuns emitted, A\* (kernel + user) | 55 (54+1) | 54 (54+0) |
+   | KL nodes reachable from the initialiser, A\* | 53 | 52 |
+   | KL defuns emitted, A | 688 | 687 |
+   | KL nodes reachable, A | 604 | 603 |
+   | shake footprint `reach` | 53 | 53 |
+   | A\* nodes missing from A | 0 | 0 |
+
+   **The delta.** It is small and it is entirely explained, which is the
+   useful outcome. `kernel.kl` carries 54 defuns for `fib`: the 53 the
+   rules put in `reach`, plus the synthesised `shen.initialise`. Of the 55
+   defuns the backend emits (those 54 plus the user's own `fib`), the
+   backend-level walk reaches 53. The two it does not reach are:
+
+   - `shen.initialise`, which is not a `reach` member and never was --
+     nothing inside the program calls it; the builder's generated `main`
+     does, from the manifest's `init=` key; and
+   - **`do`**, which is the direct-vs-lookup half of the delta in one
+     word. It is a kernel defun the shake keeps, and the Shen-to-Go
+     compiler lowers it as a special form at every call site, so its name
+     is never looked up and no `PrimFunc` edge to it exists.
+
+   Running the other way, the seed set the backend's output yields is 82
+   names where the rules' `reach` is 53, because the initialiser mentions
+   names that are data -- arity-table pairs and the external-symbols list
+   -- rather than calls. Neither direction is a bug; both are the backend
+   and the rules disagreeing about what an *edge* is, which is exactly the
+   disagreement this stage exists to measure. `hello` is the same story
+   with no user defun, so its 52 against a footprint of 53 is `do` alone.
+
+   **What this proves.** For every fixture checked, every node A\* can
+   reach, A can reach too, and the bodies the two builds share are
+   identical after `go/printer` normalisation. That is compositional
+   level-2 *inclusion*: the backend did not invent an edge the rules never
+   saw, and it did not compile a kept function differently because its
+   neighbours were gone. Disagreement would be a bug in the builder or in
+   the rules, the status the Soufflé oracle has for stage 1.
+
+   **What it cannot see.** Exactly what the shake cannot see, and this is
+   the point of it being an *independent* oracle for the same
+   over-approximation rather than a soundness proof: a runtime `(fn F)`
+   lookup or a name computed with `intern` is a string until it is applied,
+   so it appears in neither graph. An eval-capable A\* keeps the machinery
+   that could resolve such a name, and the check would not notice if the
+   backend resolved one differently. It is also only meaningful for a
+   builder whose output has a node graph at all: a target that routes every
+   call through one dispatch table has nothing to compare, which is why
+   `--target` refuses anything but `go` today.
 
 Stages 1 and 2 are the ones that change what Yggdrasil can claim. Stage 3
 is what makes the trust argument true in the code rather than in a
 document, and it is now true there. Stage 4 is the only one that shrinks
-artifacts, and by little; stage 5 is the only one that checks stage 2.
+artifacts, and by little — 6% of `kernel.kl` on an eval-free program, 0.1%
+on an eval-capable one, which is the measurement that says where the
+remaining bytes are and that it is not here. Stage 5 is the only one that
+checks stage 2, and what it found first was that the reference backend is
+not compositional at the level the note assumed — see its entry.

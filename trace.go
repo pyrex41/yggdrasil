@@ -33,7 +33,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 )
@@ -44,13 +43,32 @@ import (
 // untouched, which is also what keeps untraced output byte-identical.
 var traceMode bool
 
-// shakeExpr is the host expression shake() evaluates.
-func shakeExpr(prog, outdir string) string {
+// shakeExpr is the host expression shakeMode() evaluates: the entry point
+// that --trace and --no-shake choose between, before prune.go's
+// wrapShakeExpr wraps it with --prune-init's globals.
+//
+// --trace and --no-shake are refused together rather than ordered. The two
+// ask for contradictory artifacts: --no-shake emits the FULL program as the
+// reference A for scip-check, and the trace exists to check a SLICE against
+// its own `reach`. Tracing A would compare a run of the unshaken program
+// against the shaken program's footprint, which is not a question anyone
+// asked; and the full initialiser is eval-capable, so the trace would be
+// dominated by machinery the sliced artifact does not contain.
+// --prune-init composes with either, and with --trace deliberately: the
+// weaver runs after pruning, so a trace describes the artifact as shipped.
+func shakeExpr(prog, outdir string, full bool) (string, error) {
 	fn := "yggdrasil.shake"
-	if traceMode {
+	switch {
+	case full && traceMode:
+		return "", errors.New("--trace and --no-shake cannot be used together: " +
+			"--no-shake emits the full program as scip-check's reference, and the trace " +
+			"checks a slice against its own reach. Trace the shaken build instead")
+	case full:
+		fn = "yggdrasil.shake-full"
+	case traceMode:
 		fn = "yggdrasil.shake-traced"
 	}
-	return fmt.Sprintf(`(%s ["%s"] "%s")`, fn, prog, outdir)
+	return fmt.Sprintf(`(%s ["%s"] "%s")`, fn, prog, outdir), nil
 }
 
 // traceFileName is the path the woven ygg.trace-open opens, relative to the
@@ -101,14 +119,8 @@ func parseTrace(path string) (*traceFacts, error) {
 	return &traceFacts{called: sortedKeys(calls), reads: sortedKeys(reads), lines: n}, nil
 }
 
-func sortedKeys(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
-}
+// sortedKeys lives in scip.go; the two stages want the same thing of a
+// string set and there is no reason for two copies of it.
 
 // writeFactsTSV writes one symbol per line, which is both Soufflé's default
 // .input format for a unary relation and the shape docs/analysis-rules.md

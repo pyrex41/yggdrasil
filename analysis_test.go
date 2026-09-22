@@ -201,6 +201,12 @@ func TestAnalysisOracleMatchesShake(t *testing.T) {
 					sample(extra), sample(missing))
 			}
 
+			// Stage 4's deadInit decides nothing on this path either (the
+			// shake under test ran with --prune-init off, so its pruned-init=
+			// is 0 by construction); what it must do is mean the same thing to
+			// both engines, over the reach set they have just agreed on.
+			pyDead := relWithRefeval(t, factsDir, "deadInit")
+
 			if souffle != "" {
 				rel := souffleRun(t, souffle, factsDir)
 				so := rel("reach")
@@ -214,6 +220,10 @@ func TestAnalysisOracleMatchesShake(t *testing.T) {
 				}
 				if extra, missing := diffSets(rel("computedName"), pyCN); len(extra)+len(missing) > 0 {
 					t.Errorf("souffle and refeval.py disagree on computedName\n  only souffle: %v\n  only refeval: %v",
+						sample(extra), sample(missing))
+				}
+				if extra, missing := diffSets(rel("deadInit"), pyDead); len(extra)+len(missing) > 0 {
+					t.Errorf("souffle and refeval.py disagree on deadInit\n  only souffle: %v\n  only refeval: %v",
 						sample(extra), sample(missing))
 				}
 			}

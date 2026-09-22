@@ -17,7 +17,7 @@ is a bug in one of them; the Go oracle test runs Soufflé when it is on PATH
 and this otherwise, and CI runs Soufflé.
 
 The rules are transcribed from analysis.dl clause for clause, in the same
-order, with the same deviation numbering (D1-D8) -- read that file first.
+order, with the same deviation numbering (D1-D10) -- read that file first.
 Stratification is by hand rather than computed: the only negation is
 `evalfree :- !anyeval`, and `anyeval` is derived from facts alone, so
 evaluating the mode first and everything else after is a valid stratum
@@ -28,7 +28,7 @@ import os
 import sys
 
 # Relations read from FACTSDIR, with their arity. A missing file is an empty
-# relation, not an error: the dump writes all twenty-one, but a hand-built fact
+# relation, not an error: the dump writes all twenty-four, but a hand-built fact
 # directory that omits one should still evaluate.
 INPUTS = {
     "kernel": 1,
@@ -48,11 +48,14 @@ INPUTS = {
     "initprim": 1,
     "userintern": 1,
     "userglobal": 1,
-    "initwrite": 1,
-    "defunwrite": 1,
+    "readsIn": 2,
+    "reads": 2,
+    "writes": 2,
+    "portReads": 1,
     # The runtime trace: empty in an ordinary dump, filled by
     # `yggdrasil trace-check`. readGlobal lives in readglobal.facts, the name
     # stage 4 consumes (docs/analysis-rules.md, "Runtime trace").
+    "defunwrite": 1,
     "called": 1,
     "readGlobal": 1,
 }
@@ -169,19 +172,36 @@ def evaluate(db):
 
     reaches = {c for c, p in db["cap"] if p in usedprim}
 
-    # ---- runtime trace ----------------------------------------------
-    # uncoveredCall(F) :- called(F), kernel(F), !reach(F).
-    # uncoveredRead(V) :- readGlobal(V), !initwrite(V), !defunwrite(V),
-    #                     !portGlobal(V).
-    called = one("called")
-    readglobal = one("readGlobal")
-    uncoveredcall = (called & kernel) - reach
-    written = one("initwrite") | one("defunwrite") | one("portGlobal")
-    uncoveredread = readglobal - written
-
     # ---- computed names (stage 3, decides nothing) ------------------
     # computedName(F) :- userintern(F).  computedName(F) :- userglobal(F).
     computedname = one("userintern") | one("userglobal")
+
+    # ---- dead initialisation (stage 4, D9/D10) ----------------------
+    # liveGlobal(V) :- readsIn(F,V), reach(F).
+    # liveGlobal(V) :- reads(_,V).
+    # liveGlobal(V) :- portReads(V).
+    # liveGlobal(V) :- writes(_,V), rawsym(V).
+    # deadInit(N,V)  :- writes(N,V), !liveGlobal(V).
+    written = {v for _n, v in db["writes"]}
+    live = {v for f, v in db["readsIn"] if f in reach}
+    live |= {v for _n, v in db["reads"]}
+    live |= one("portReads")
+    live |= written & rawsym
+    deadinit = {(n, v) for n, v in db["writes"] if v not in live}
+
+    # ---- runtime trace ----------------------------------------------
+    # initwrite(V)     :- writes(_, V).
+    # uncoveredCall(F) :- called(F), kernel(F), !reach(F).
+    # uncoveredRead(V) :- readGlobal(V), !initwrite(V), !defunwrite(V),
+    #                     !portGlobal(V).
+    # `written` above IS initwrite: the globals some kept toplevel form
+    # writes. defunwrite adds the ones only a kept defun body writes, which
+    # is what keeps the kernel's run-time counters out of the answer.
+    called = one("called")
+    readglobal = one("readGlobal")
+    uncoveredcall = (called & kernel) - reach
+    anywrite = written | one("defunwrite") | one("portGlobal")
+    uncoveredread = readglobal - anywrite
 
     return {
         "evalcapable": {(s,) for s in evalcapable},
@@ -191,6 +211,8 @@ def evaluate(db):
         "reaches": {(c,) for c in reaches},
         "needsEval": {("1",)} if "eval-kl" in usedprim else set(),
         "computedName": {(f,) for f in computedname},
+        "liveGlobal": {(v,) for v in live},
+        "deadInit": deadinit,
         "called": {(f,) for f in called},
         "readGlobal": {(v,) for v in readglobal},
         "uncoveredCall": {(f,) for f in uncoveredcall},
