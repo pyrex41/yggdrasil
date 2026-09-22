@@ -67,8 +67,7 @@ tracker and the shaken program raises `simple-error` with the function's
 name. So the honest theorem is *equivalence on every trace that does not
 hit a partial-function failure, plus a stated refinement on those that do*.
 
-The argument then splits in two, and the split matters for the rest of
-this guide:
+The argument then splits in two:
 
 **At the KL level**, a
 [bisimulation](https://en.wikipedia.org/wiki/Bisimulation) between the
@@ -105,26 +104,36 @@ kernel's KL by walking every symbol in every function body, and cached.
 Two facts about this graph decide much of what follows.
 
 It is small and sparse: 686 nodes and about 2,600 edges. A worklist
-traversal takes milliseconds. Tarver's 1.0 design used
-[Warshall's algorithm](https://en.wikipedia.org/wiki/Floyd%E2%80%93Warshall_algorithm)
-for the full transitive closure, which is cubic and answers a question
-nobody asked; Yggdrasil keeps a finished Warshall as a differential
-oracle only. Design note: [reachability.md](reachability.md).
+traversal takes milliseconds. Tarver's 1.0 design computed the full
+transitive closure with
+[Warshall's algorithm](https://en.wikipedia.org/wiki/Floyd%E2%80%93Warshall_algorithm),
+which answers reachability for every pair of functions; the shake needs
+only the rows for its seeds, so Yggdrasil uses a worklist and keeps a
+finished Warshall as a differential oracle. Design note:
+[reachability.md](reachability.md).
 
-And precision is not where the size comes from. The edge rule counts
-every symbol mentioned in a body, whether in call position or inside a
-data literal. Measured on S42 without eval stripping, the most aggressive
-syntactic alternative (call position only, which is unsound) shrinks the
-graph by 7% and the floor by eleven functions out of 661. What actually
-decides the footprint is a step: with no eval entry point reachable the
-floor is 48 functions; with one, it is 548. A symbol test, not a graph
-problem. This is why none of the later machinery is about precision.
+And a more precise graph would not make the footprint much smaller. The
+edge rule counts every symbol mentioned in a body, whether in call
+position or as an argument. The obvious refinement, counting only call
+position, is unsound in KL because functions are passed by name: in
+`(map f xs)` the symbol `f` is an argument, not a call, yet `map` applies
+it at runtime. Drop that edge and `f` is shaken out of a program that
+calls it. Measured on S42 without eval stripping, even that unsound
+refinement shrinks the graph by 7% and the floor by eleven functions out
+of 661. What actually decides the footprint is a step: with no eval entry
+point reachable the floor is 48 functions; with one, it is 548, because
+the macro expander, typechecker and reader come in together. That
+difference of five hundred functions is a symbol test, not a graph
+problem. So the machinery in the rest of this guide is not about making
+the footprint smaller; it is about establishing that the footprint is
+*correct*, and about where the remaining bytes actually are (section 7,
+section 12).
 
 ## 4. Footprint attribution: `yggdrasil why`
 
-The first tool built for this work answers Tarver's request on the Shen
-group for "some kind of device that scans the code and highlights parts of
-your program that drag in kernel":
+The first tool built for this work answers Tarver's request on
+[the Shen group](https://groups.google.com/g/qilang/c/duE01tE5oIU) for "some kind of device that scans the
+code and highlights parts of your program that drag in kernel":
 
 ```
 yggdrasil why prog.shen --trace read
@@ -175,7 +184,7 @@ four special cases for kernel tables that look like code, an eval
 entry-point list, an `f-error` row strip, a lambda-table filter. As rules
 they fit on a page, and "the analysis is sound" becomes a single sentence
 about one object: *the dynamic call relation is contained in the least
-fixpoint of these rules*. That is a sentence a proof can be about.
+fixpoint of these rules*.
 
 The rule set is [`analysis/analysis.dl`](../analysis/analysis.dl). Writing
 it from the code rather than the design found four places the design was
@@ -220,11 +229,24 @@ The shake's output stayed **byte-identical** on every fixture across this
 change, and `(yggdrasil.footprints ["prog"])` computes the footprint by
 rules, by worklist and by Warshall and asserts agreement.
 
-One honest divergence, recorded as D8: Datalog derives a *set*, but the
-lambda-table literal is written by walking the footprint as a *list*, so
-order is part of the bytes. Membership is the rules'; ordering is
-presentation, done by the same depth-first walk as before, and a check
-errors if the rules derived anything the list lacks.
+One divergence needs explaining, recorded as D8. Datalog derives a *set*
+of reachable functions; it has no notion of order. But two things the
+shake writes depend on an order. `kernel.kl` lists the kept functions in
+kernel load order, which is fine, since that order comes from the kernel
+files, not the footprint. The lambda table does not: for an eval-free
+program the shake replaces the kernel's boot-time table construction with
+a literal `(set shen.*lambdatable* (cons (cons f (lambda ...)) ...))`, one
+entry per footprint function, and that literal is emitted by walking the
+footprint *as a list*. Whatever order the list has becomes the order of
+the entries and therefore the bytes of `kernel.kl`. Since byte-identical
+output across the eight host ports is a headline guarantee, the order has
+to be deterministic and had to stay what it was. So the engine derives the
+set, then renders it as a list using the same depth-first walk over the
+same graph rows the old worklist used, following only edges the rules
+derived and emitting only nodes the rules put in `reach`. A walk that can
+only drop nodes cannot invent a footprint, and a check errors if the rules
+derived anything the list lacks. Membership is decided by the rules;
+ordering is a presentation choice that keeps the bytes stable.
 
 Design note: [analysis-rules.md](analysis-rules.md), "Engine" and Stage 3.
 
@@ -232,7 +254,8 @@ Design note: [analysis-rules.md](analysis-rules.md), "Engine" and Stage 3.
 
 Once reads and writes of globals are facts, two checks are one rule each.
 
-**Initialisation order.** Tarver's example on the thread:
+**Initialisation order.** Tarver's example on
+[the thread](https://groups.google.com/g/qilang/c/duE01tE5oIU):
 
 ```
 (set a 1)
@@ -348,9 +371,21 @@ all driver code, so the Go-level comparison is 4 against 4 and says
 nothing. The check therefore also recovers the *KL-level* graph from the
 generated Go, with bindings as nodes and lookups as edges, and there the
 statement holds: zero shaken nodes missing from the full build, on both
-fixtures. The delta against the footprint is two names, `shen.initialise`
-(the driver calls it) and `do` (compiled as a special form, so never
-looked up), both explained rather than waved through.
+fixtures.
+
+The artifact's reachable set is not identical to the footprint, and the
+check requires every difference to be accounted for by a known cause;
+anything else is reported as a failure. On shen-go there are exactly two
+differences. `shen.initialise` is in the artifact's graph but not in
+`reach`, because the shake synthesises it *after* reachability runs, from
+the kernel's toplevel forms, and the generated `main` calls it. `do` is in
+`reach` but not in the artifact's graph, because S42 defines `do` as a
+kernel function and the footprint keeps it, while shen-go's compiler
+lowers every `(do ...)` form inline as a special form and never looks the
+name up. Both causes are structural properties of the shake and of the
+backend, not of the program, and the port contract (section 11) makes the
+second one a declared fact (`special_forms`) so that the check can
+subtract it rather than a person.
 
 The lesson generalises: SCIP is one way to get a graph out of an artifact.
 The contract in section 11 fixes the *graph* (three relations: `node`,
@@ -407,29 +442,83 @@ plan whose last step is taking shen-lua through the ladder.
 
 ## 12. What is proved, what is evidence, what is assumed
 
-It helps to be blunt about which is which.
+Sections 3 to 11 each establish something different, and it is easy to
+lose track of which kind of thing. This table is the whole guide in one
+place. "Checked" means a deterministic computation that runs in the test
+suite and fails loudly; "evidence" means a check that can only observe the
+runs or fixtures it was given; "assumed" means a premise that is written
+down and reported but not established by anything here.
 
-**Proved (in the sense of a checked, deterministic computation, on every
-fixture, by three independent evaluators):** the footprint equals the least
-fixpoint of the published rules; the rules describe the shake that exists;
-the emitted `kernel.kl` is byte-identical across all of these changes and
-across eight host ports.
+| claim | kind | established by | section |
+|---|---|---|---|
+| The footprint is the least fixpoint of the published rules | checked | Soufflé, the Python evaluator and the Shen engine agree on `reach` for every fixture in both modes | 5, 6 |
+| The rules describe the shake that ships | checked | `reach` equals the functions in `kernel.kl`; deviations D1 to D10 record where the design had to bend to the code | 5, 6 |
+| The shake's output did not change under any of this work | checked | `kernel.kl` and both manifests byte-identical on every fixture, before and after each stage | 6, 7, 8, 9 |
+| The footprint is minimal for the rule set | checked, and qualified below | worklist, Warshall and rules agree; nothing reachable is dropped and nothing unreachable is kept, *relative to the rules' notion of an edge* | 3, 6 |
+| No toplevel form reads a global before it is written | checked | the init-order rule, on the final form sequence, refusing the shake on violation | 7 |
+| Every function actually entered on a run was in the footprint | evidence | the woven trace and the containment query, on four fixtures and two runtimes | 8 |
+| The backend compiled the same kept functions the same way in the full and shaken builds | evidence, and only for compositional backends | the KL-level graph recovered from the generated Go, with the two-name delta accounted for | 9 |
+| The shaken artifact computes what the full program computes | evidence | the parity gate against goldens, across targets, boots and passes | 10 |
+| No function name is computed at runtime | assumed, reported | `computed-names=` in the manifest; the shake warns when it is not `none` | 7 |
+| The port's self-description is truthful | assumed, reported | each `builders.json` fact carries a verified flag and a provenance; only shen-go's `port_reads` is verified today | 11 |
+| The backend compiles KL correctly | assumed | the port's own kernel test suite; the same assumption for the full and the shaken program | 2, 9 |
 
-**Evidence:** the reachability lemma holds on every traced run; the
-shen-go artifact's KL-level graph contains no node the rules did not
-derive; the parity gate passes on every target with a golden.
-
-**Assumed, and now written down rather than silent:** the computed-name
-hypothesis (`computed-names=none`); the truth of each port's level-1
-declarations; the correctness of the backend's KL compilation, which is the
-port's kernel test suite and is the same for the full and shaken program.
-
-This last point is the one Bruno Deferrari raised on the Shen group, and
+The last row is the one Bruno Deferrari raised on
+[the Shen group](https://groups.google.com/g/qilang/c/duE01tE5oIU), and
 James Fetzer's
 [*Program Verification: The Very Idea*](https://dl.acm.org/doi/10.1145/48529.48530)
 (1988) is the classic statement of it: every verification rests on a core
 of trust certified by engineer's induction. The contribution here is not
-to remove that core but to make its contents a list.
+to remove that core but to make its contents a list: the rows marked
+*assumed*.
+
+### Is this the smallest possible artifact?
+
+No, and it is worth being precise about the three ways it is not, because
+they are different in kind.
+
+**Unentered functions.** The trace in section 8 shows about twenty kept
+functions per program that a given run never enters. Some of these are
+genuinely reachable on other inputs; some are reachable only through the
+rules' over-approximation (a symbol mentioned as data, never applied). The
+rules could be sharpened, at the cost of a soundness argument for each
+refinement, and section 3 measured the ceiling on that: about eleven
+functions on the eval-free floor. The shake is minimal *for its rules*; the
+rules are deliberately coarse because the coarseness is what makes them
+easy to prove sound.
+
+**Dead initialisation.** Section 7's pruning removes about 6% of
+`kernel.kl` by dropping literal sets nothing reads. It is off by default
+only because its correctness depends on a declared fact per port.
+
+**Everything else is optimisation, and it is a different problem.** The
+shake removes; it never rewrites. A port that inlines a small kernel
+function into its caller, fuses `(f (g x))` into one compiled function,
+specialises `shen.app` for a statically known type, or unboxes a number,
+will produce a smaller and faster artifact than anything the shake alone
+can. Two things follow.
+
+First, such a port is still covered by the KL-level argument in section 2,
+because the shake happens before the backend and the backend sees the
+same KL for the full and shaken programs. What changes is which
+*evidence* is available. A backend that fuses functions is not
+compositional: the code it emits for `f` depends on whether `g` is present
+and on what else calls `g`, so the body comparison in section 9 is
+meaningless for it, and the port declares as much (`call_style` in the
+contract). For such a port the transfer step rests on parity (section 10)
+and on the backend's own correctness, exactly as it does for SBCL or Chez
+today. That is not a weakness introduced by optimisation; it is the same
+core of trust, with one more component in it.
+
+Second, if the optimisation is done at the KL level *by Yggdrasil* rather
+than by a port, it becomes a KL-to-KL transformation, and every such
+transformation carries its own equivalence obligation. This is precisely
+the gap Tarver identified for the kernel's own factorisation and
+triple-stack rewrites: elegant, working, and without a proof of
+extensional equivalence. Yggdrasil's checks certify the *removal* of code;
+they say nothing about a rewrite. A KL-level optimiser would need its own
+rule set, its own oracle, and its own trace check, and the machinery in
+this guide is the template for building them, not a substitute.
 
 ## 13. Reproducing everything
 
