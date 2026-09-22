@@ -597,13 +597,38 @@ cannot drift apart.
    One thing the rules do not give, and cannot: an order. Datalog derives a
    set, but `lambdatable-entries` walks the footprint *list* to build the
    `(set shen.*lambdatable* ...)` literal, so the order is part of
-   `kernel.kl`'s bytes. `ygg.dl-walk-order` renders the rule-derived set as
-   a list with the same depth-first walk the worklist always did, following
-   only edges the rules derived and emitting only nodes the rules put in
-   `reach`; `ygg.dl-covered?` checks the converse. Membership is the rules';
-   ordering is presentation. That is recorded as deviation D8 in
-   `analysis.dl`, and it is the only place the Shen rules needed help from
-   something that is not a rule. `strip-f-error-row` is no longer on the
+   `kernel.kl`'s bytes. It is **defined**, not walked: `ygg.rule-footprint`
+   renders the derived set as kernel load order — `(map (fn row-head)
+   Graph)`, the order `graph-rows` read the kernel in — restricted to
+   `reach`, followed by the seeds the rules do not reach, deduplicated.
+   That remainder is exactly the non-kernel seeds (primitives, user
+   function names, data symbols), which D6 keeps out of `reach` and which
+   `keep-set`/`trim-arity-pairs`/`eta-if-fn` still read. Membership is the
+   rules'; the order is a value.
+
+   Stage 3 originally kept the *old* order instead, by re-running the
+   pre-rules depth-first walk over the raw graph rows and emitting only
+   nodes the rules had put in `reach`, with `ygg.dl-covered?` erroring if
+   the rules derived anything the list lacked. That was a second
+   reachability implementation over a second graph from a second seed
+   computation, alive only so `kernel.kl`'s bytes would not move, and it is
+   deleted: `ygg.dl-walk-order`, `ygg.dl-covered?`, `ygg.dl-succs` and
+   `ygg.dl-edge?` no longer exist. The bytes moved once, at the commit that
+   deleted them ("D8: one defined footprint ordering, the old depth-first
+   walk deleted"): one line of `kernel.kl` on each eval-free fixture, the
+   synthesised `shen.initialise`, whose lambda-table literal is a
+   permutation of the same entries; the eval-capable fixtures build that
+   table at boot and are byte-identical. The defun set, both manifests and
+   every `tests/*.expected` are unchanged, and `fn` reads the table with
+   `assoc`, so the order was never semantically meaningful. Byte identity
+   *across ports* is the guarantee and is untouched; byte identity across
+   versions of Yggdrasil was a self-imposed constraint, given up there,
+   once, deliberately. `footprint_test.go`'s
+   `TestFootprintOrderIsKernelLoadOrder` now checks the definition — the
+   footprint restricted to kernel defuns is a subsequence of kernel load
+   order — on every fixture that shakes; the old walk's order fails it, so
+   it is a regression test, not a golden. That is recorded as deviation D8
+   in `analysis.dl`. `strip-f-error-row` is no longer on the
    shake's path at all — the mode guard in the `edge` clauses (D3) does its
    job — and it, the worklist `reach` and the Warshall closure stay as
    differential oracles. `(yggdrasil.footprints ["prog.shen"])` is the
@@ -614,11 +639,14 @@ cannot drift apart.
 
    Byte-identity, verified the way stages 1 and 2 were: the pre-change
    binary built from 48a5170 and the new one shaken over every fixture in
-   `tests/`. `kernel.kl` is **byte-identical on all fifteen fixtures that
+   `tests/`. `kernel.kl` was **byte-identical on all fifteen fixtures that
    shake** (init-order-bad is refused on purpose), both manifests differ by
    exactly the new `computed-names=` line, and user `.kl` differs only in
    gensym numbering. The Soufflé and `refeval.py` oracles still agree with
-   `reach`.
+   `reach`. The later D8 ordering change above is the one place that
+   equality was given up: from that commit on, the eval-free fixtures'
+   `kernel.kl` differs from a pre-D8 shake's in exactly the one
+   `shen.initialise` line, manifests and defun sets unchanged.
 
    **Computed names.** The soundness argument for the whole shake is that a
    name the artifact can call occurs syntactically in the artifact.

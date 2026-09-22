@@ -869,44 +869,48 @@
    -> (ygg.dl-run (ygg.shake-edb Kernel Graph AllTops KL RawFs)
                   (value *shake-rules*)))
 
-(define ygg.dl-edge?
-  F G -> (element? [edge F G] (ygg.dl-get (ygg.dl-key edge F))))
-
-\\ The rules decide WHICH kernel defuns are in the footprint; this decides
-\\ the ORDER the footprint list is in, which the rules neither do nor can -
-\\ Datalog derives a set.  The order is load-bearing in exactly one place:
-\\ lambdatable-entries walks the footprint to build the literal
-\\ (set shen.*lambdatable* ...), so a different order is a different
-\\ kernel.kl.  It is therefore reproduced here rather than redefined: the
-\\ same depth-first walk the worklist `reach` does, over the same rows in
-\\ the same order, except that (a) a successor is followed only when the
-\\ rules derived an edge for it (which is what strip-f-error-row used to
-\\ do by editing the graph) and (b) a node is emitted only when the rules
-\\ put it in the set.  A walk that can only drop nodes cannot invent a
-\\ footprint; and ygg.dl-covered? checks the other direction, that every
-\\ tuple the rules derived did come out, so neither half can drift.
-\\ Recorded as deviation D8 in analysis/analysis.dl.
+\\ The rules decide WHICH kernel defuns are in the footprint.  The ORDER of
+\\ the list they are rendered in is not something Datalog derives - Datalog
+\\ derives a set - so it is DEFINED here, as a value rather than as a second
+\\ traversal: kernel load order, i.e. the order graph-rows walked the kernel
+\\ in, which is what (map (fn row-head) Graph) reads back off.
+\\
+\\   Foot = [ F in kernel load order | reach F ]
+\\          ++ [ S in Seeds, deduplicated | not (reach S) ]
+\\
+\\ ygg.remove-dups keeps the LAST occurrence of a repeated name, so the
+\\ remainder is in last-occurrence Seeds order; deterministic either way,
+\\ and nothing downstream reads that order.
+\\
+\\ The remainder is exactly the NON-kernel seeds - primitives, user function
+\\ names, data symbols - because every kernel-defun seed is in `reach` by the
+\\ seed -> reach rule; they carry no row in Graph and so cannot appear in the
+\\ first half, and keep-set / trim-arity-pairs / eta-if-fn read them, so they
+\\ are not droppable.  Membership is therefore unchanged from the depth-first
+\\ walk this replaced: that walk emitted F only when F was in Reach u Seeds,
+\\ emitted every seed (each starts in its worklist and every seed is in the
+\\ set), and was asserted to emit every reach tuple - so its answer was
+\\ Reach u Seeds as a set, which is what the two halves above produce.
+\\
+\\ The order is observable in exactly one place: lambdatable-entries walks
+\\ this list to build the (set shen.*lambdatable* ...) literal that lands in
+\\ the synthesised shen.initialise.  footcode filters the kernel by
+\\ MEMBERSHIP, so every defun in kernel.kl is written in kernel load order
+\\ whatever this list says, and fn looks the lambdatable up with assoc, so
+\\ the order carries no meaning beyond the bytes.  Recorded as deviation D8
+\\ in analysis/analysis.dl.
 (define ygg.rule-footprint
-  Seeds Graph -> (let Reach (ygg.dl-col1 reach)
-                      Set   (append Reach Seeds)
-                      Foot  (ygg.dl-walk-order Seeds [] Graph Set)
-                      Check (ygg.dl-covered? Reach Foot)
-                      Foot))
+  Seeds Graph -> (let Reached (ygg.filter (fn ygg.dl-reach?)
+                                          (map (fn row-head) Graph))
+                      Extra   (ygg.filter (/. S (not (ygg.dl-reach? S)))
+                                          (ygg.remove-dups Seeds))
+                      (append Reached Extra)))
 
-(define ygg.dl-walk-order
-  [] Seen _ _ -> Seen
-  [F | Fs] Seen Graph Set -> (ygg.dl-walk-order Fs Seen Graph Set)
-      where (or (element? F Seen) (not (element? F Set)))
-  [F | Fs] Seen Graph Set -> (ygg.dl-walk-order (append (ygg.dl-succs F Graph) Fs)
-                                                [F | Seen] Graph Set))
-
-(define ygg.dl-succs
-  F Graph -> (ygg.filter (/. G (ygg.dl-edge? F G)) (row-calls F Graph)))
-
-(define ygg.dl-covered?
-  [] _ -> true
-  [G | Gs] Foot -> (ygg.dl-covered? Gs Foot)  where (element? G Foot)
-  [G | _] _ -> (simple-error (cn "ygg.dl: reach derived " (cn (str G) " but the footprint has not"))))
+\\ One lookup in the engine's index, not an element? scan over a 600-element
+\\ list.  reach is one-column, so its ygg.dl-key bucket holds [reach F] and
+\\ nothing else.
+(define ygg.dl-reach?
+  F -> (not (empty? (ygg.dl-get (ygg.dl-key reach F)))))
 
 \\ ------------------------- computed names (stage 3) ---------------------
 \\ The soundness argument for the whole shake is that a name the artifact
@@ -985,10 +989,17 @@
 \\ skipped and says so.
 \\
 \\   yggdrasil-footprints: mode=M rules=N worklist=N warshall=N agree=true
+\\   yggdrasil-footprint-order: F1 F2 ...
+\\   yggdrasil-kernel-order: K1 K2 ...
 \\
 \\ The Warshall count is deduplicated before it is printed: collect-reachable
 \\ unions one row per seed, so a seed that is also somebody's callee appears
 \\ twice - a multiset, not a disagreement.  agree= is a set comparison.
+\\
+\\ The two order lines carry the footprint LIST and kernel load order, so a
+\\ test can check the order ygg.rule-footprint DEFINES and not only the
+\\ membership the rules derive: the footprint restricted to kernel defuns
+\\ must be a subsequence of kernel load order.
 
 (set ygg.*warshall-limit* 150)
 
@@ -1010,7 +1021,6 @@
                 Rules    (ygg.rule-footprint Seeds Graph)
                 Work     (reach Seeds [] Graph2)
                 Wars     (ygg.warshall-leg Seeds Graph2 Rules)
-                Restore  (set *maximum-print-sequence-size* MaxPrint)
                 Report   (pr (make-string
                               "yggdrasil-footprints: mode=~A rules=~A worklist=~A warshall=~A agree=~A~%"
                               (if EvalFree "eval-free" "eval-capable")
@@ -1021,7 +1031,24 @@
                               (and (ygg.same-set? Rules Work)
                                    (or (= Wars skipped) (ygg.same-set? Rules Wars))))
                              (stoutput))
+                Order    (pr (make-string "yggdrasil-footprint-order: ~A~%"
+                                          (ygg.fp-join Rules))
+                             (stoutput))
+                Load     (pr (make-string "yggdrasil-kernel-order: ~A~%"
+                                          (ygg.fp-join (map (fn row-head) Graph)))
+                             (stoutput))
+                Restore  (set *maximum-print-sequence-size* MaxPrint)
                 done))
+
+\\ The two order lines are for footprint_test.go: it checks, outside this
+\\ file, that the footprint restricted to kernel defuns is a SUBSEQUENCE of
+\\ kernel load order.  Emitting both lists rather than a Shen-computed
+\\ verdict keeps the judgement on the Go side, where a regression in
+\\ ygg.rule-footprint cannot also silence its own check.
+(define ygg.fp-join
+  [] -> ""
+  [F] -> (str F)
+  [F | Fs] -> (cn (str F) (cn " " (ygg.fp-join Fs))))
 
 (define ygg.warshall-leg
   Seeds Graph Foot -> skipped  where (> (ygg.len Foot) (value ygg.*warshall-limit*))

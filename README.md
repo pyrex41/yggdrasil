@@ -202,7 +202,9 @@ nothing can read the global they set. It is `0` unless you pass
 pruning changes the bytes of `kernel.kl`, and `docs/analysis-rules.md`
 gives the parity gate, not the flag, the job of deciding whether a target
 may default it on. With the flag off the emitted `kernel.kl` is
-byte-identical to a pre-stage-4 shake's.
+byte-identical to a pre-stage-4 shake's, save for the single
+`shen.initialise` line the later D8 ordering change permutes (see
+[docs/verification-guide.md](docs/verification-guide.md) §6).
 
 A global counts as live when a reachable kernel defun reads it, when a
 kept toplevel form reads it, when its name occurs anywhere in your
