@@ -90,17 +90,49 @@
 // D8. Stage 3 makes these rules the shake's own implementation, evaluated by
 //     the `ygg.dl` engine in yggdrasil.shen over (value *shake-rules*) -- the
 //     same rules, as Shen data, one clause per clause below. One thing the
-//     rules do not and cannot give it: an ORDER. `lambdatable-entries` walks
-//     the footprint LIST to build the (set shen.*lambdatable* ...) literal,
-//     so the order is part of kernel.kl's bytes. The shake therefore renders
-//     the rule-derived SET as a list with `ygg.dl-walk-order`, the same
-//     depth-first walk the worklist `reach` always did, gated so that it
-//     follows only edges the rules derived and emits only nodes the rules
-//     put in `reach` (plus the non-kernel seeds, which D6 excludes from
-//     `reach` and the Shen footprint has always carried). A walk that can
-//     only drop nodes cannot invent a footprint, and `ygg.dl-covered?`
-//     checks the converse. Ordering is presentation; membership is the
-//     rules'.
+//     rules do not and cannot give it: an ORDER. Datalog derives a set, and
+//     `lambdatable-entries` walks the footprint LIST to build the
+//     (set shen.*lambdatable* ...) literal, so an order has to come from
+//     somewhere.
+//
+//     It is now DEFINED rather than walked. `ygg.rule-footprint` renders the
+//     derived set as
+//
+//         [ F in kernel load order | reach(F) ]
+//         ++ [ S in Seeds, deduplicated | not reach(S) ]
+//
+//     where kernel load order is (map (fn row-head) Graph), i.e. the order
+//     `graph-rows` read the kernel file in. The remainder is exactly the
+//     non-kernel seeds -- primitives, user function names, data symbols --
+//     which D6 excludes from `reach` and the Shen footprint has always
+//     carried for `keep-set`/`trim-arity-pairs`/`eta-if-fn`.
+//
+//     Until this commit the shake instead re-ran the PRE-RULES depth-first
+//     worklist over the raw call graph from its own seed list, emitted only
+//     the nodes the rules admitted, and asserted with `ygg.dl-covered?` that
+//     the two halves agreed. That was a second reachability implementation,
+//     over a second graph, from a second seed computation, kept alive only
+//     so that kernel.kl's bytes would not move; it is deleted, along with
+//     `ygg.dl-walk-order`, `ygg.dl-succs`, `ygg.dl-edge?` and
+//     `ygg.dl-covered?`. Membership is unchanged by construction: the walk
+//     emitted F only when F was in reach u Seeds, emitted every seed, and
+//     was asserted to emit every `reach` tuple, so its answer was reach u
+//     Seeds as a set -- what the two halves above produce.
+//
+//     The order is observable in exactly one place: the
+//     (set shen.*lambdatable* ...) literal inside the synthesised
+//     shen.initialise. `footcode` selects kernel defuns by MEMBERSHIP and so
+//     writes them in kernel load order whatever this list says, and `fn`
+//     reads the lambda table with `assoc`, so the order carries no meaning
+//     beyond those bytes. They moved once, at this commit: one line of
+//     kernel.kl, a permutation of the same entries, on every eval-free
+//     fixture (the eval-capable ones build the table at boot and are
+//     byte-identical). Byte identity ACROSS PORTS is a guarantee; byte
+//     identity across versions of Yggdrasil was a self-imposed constraint,
+//     and it is given up here, deliberately, to stop paying for it with a
+//     duplicate traversal. footprint_test.go's
+//     TestFootprintOrderIsKernelLoadOrder checks the definition on every
+//     fixture that shakes. Ordering is a value; membership is the rules'.
 
 // ============================== facts ==================================
 
