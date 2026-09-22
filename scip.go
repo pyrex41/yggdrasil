@@ -834,7 +834,7 @@ func cmdScipCheck(rest []string) int {
 		full bool
 		what string
 	}{{shakenDir, false, "shaken"}, {fullDir, true, "full"}} {
-		if _, err := shakeMode(prog, leg.dir, host, *evalStyle, true, leg.full); err != nil {
+		if _, err := shakeMode(prog, leg.dir, host, *evalStyle, true, shakeOpts{full: leg.full}); err != nil {
 			fmt.Fprintf(os.Stderr, "yggdrasil-scip-check: FAIL %s stage 1: %v\n", leg.what, err)
 			return 1
 		}

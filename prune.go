@@ -22,19 +22,10 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 )
-
-// pruneOpts is the stage-4 request for the current process: set once from the
-// command line, read by shake()/facts() when they build the host expression.
-// A package-level value rather than a parameter on shake() because every other
-// caller of shake() -- parity, the tests, the oracle -- wants the default, and
-// threading an always-zero argument through them all would be noise.
-var pruneOpts struct {
-	on     bool   // --prune-init
-	target string // "" means "no target: use the union over all builders"
-}
 
 // portReadsFor returns the globals a target's runtime reads natively. With an
 // empty target it returns the union over every builder, sorted, which is the
@@ -71,21 +62,49 @@ func portReadsFor(target string) ([]string, error) {
 // plain Shen `set`s on the two globals the shaker reads. Off by default: with
 // no --prune-init and no target the expression is returned untouched, which is
 // what keeps the default output byte-identical to a pre-stage-4 shake's.
-func wrapShakeExpr(expr string) (string, error) {
-	if !pruneOpts.on {
+//
+// The two settings are independent, and the options say so. `o.pruneInit` asks
+// for pruning; `o.target` only says WHICH port_reads list to install. A target
+// with pruning off is `yggdrasil facts --target T`, which wants T's list in
+// portReads.facts and prunes nothing -- yggdrasil.facts never calls
+// ygg.prune-init -- so the emitted `(set ygg.*prune-init* ...)` carries
+// o.pruneInit rather than an unconditional `true` the caller has to explain
+// away.
+//
+// Pruning against a target whose list is a PLACEHOLDER is refused. builders.json
+// records port_reads_verified per target; only `go`'s list has been read off a
+// real runtime. Pruning against an unverified list can drop a `(set V Lit)` the
+// port's runtime reads natively, and the failure is at run time, in the
+// artifact, far from this flag -- so it must be asked for explicitly.
+// A target-agnostic --prune-init (o.target == "") uses the UNION over every
+// builder, which is the conservative list by construction, and is not refused.
+func wrapShakeExpr(expr string, o shakeOpts) (string, error) {
+	if !o.pruneInit && o.target == "" {
 		return expr, nil
 	}
-	reads, err := portReadsFor(pruneOpts.target)
+	reads, err := portReadsFor(o.target) // also validates the target name
 	if err != nil {
 		return "", err
 	}
+	if o.pruneInit && o.target != "" && !portReadsVerified(o.target) {
+		if !o.allowUnverifiedPortReads {
+			return "", fmt.Errorf("--prune-init on target %s: its port_reads list in builders.json is a placeholder "+
+				"(port_reads_verified: false), not one read off the %s runtime, so pruning against it may drop a "+
+				"(set V Lit) that runtime reads natively.\n"+
+				"  Shake without --target (the union over every builder is sound for any of them), drop --prune-init, "+
+				"or pass --prune-init-unverified to prune against the placeholder anyway",
+				o.target, o.target)
+		}
+		fmt.Fprintf(os.Stderr, "yggdrasil: WARN --prune-init on target %s uses an unverified port_reads list; "+
+			"the artifact may read a global the initialiser no longer writes\n", o.target)
+	}
 	if len(reads) == 0 {
 		return "", fmt.Errorf("--prune-init: builders.json lists no port_reads for %s",
-			targetLabel(pruneOpts.target))
+			targetLabel(o.target))
 	}
 	// Shen symbols self-evaluate, so [a b c] is a literal symbol list.
 	set := fmt.Sprintf(`(set ygg.*port-reads* [%s])`, strings.Join(reads, " "))
-	return fmt.Sprintf(`(do (set ygg.*prune-init* true) (do %s %s))`, set, expr), nil
+	return fmt.Sprintf(`(do (set ygg.*prune-init* %t) (do %s %s))`, o.pruneInit, set, expr), nil
 }
 
 func targetLabel(target string) string {
