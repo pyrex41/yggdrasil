@@ -1,16 +1,67 @@
 name: go
 
-# Builds and tests the Go yggdrasil CLI on Linux, macOS and Windows. Unit tests
-# exercise the cross-platform helpers + the embedded builders.json on every OS.
-# (A full shake needs a Shen host + the kernel callgraph cache, which regenerates
-# at runtime; that path is covered by the integration demo, not this matrix.)
+# Builds and tests the Go yggdrasil CLI.
+#
+# Two jobs, because "go test ./..." means two different things depending on
+# whether a Shen stage-1 host is on the machine:
+#
+#   build-test  three OSes, NO host.  Portability of the cross-platform
+#               helpers and the embedded builders.json.  Every host-gated
+#               test calls checkHost(t) and skips here; that is correct and
+#               intended, and the job asserts HOW MANY skip so the pipeline
+#               cannot quietly become 100% skips.
+#   host-test   ubuntu only, WITH a shen-go stage-1 host built the way
+#               parity-gate.yml builds it.  This is the job that actually
+#               runs the shake, the typecheck gate, the footprint/trace/scip
+#               checks and the analysis engines.
+#
+# Before this file grew host-test, every run of this workflow was green with
+# twenty SKIPs and zero shakes: per test nothing passed vacuously, per
+# pipeline everything did.  The skip assertions below are what make that
+# visible, and both counts are measured, never guessed.
 
 on:
   push:
   pull_request:
   workflow_dispatch:
 
+env:
+  # Host-gated tests that legitimately skip when no Shen host is present.
+  # Measured on this branch with
+  #   unset YGGDRASIL_HOST; go test ./... -count=1 -v 2>&1 | grep -c '^--- SKIP'
+  # -> 21.  The twenty-one are:
+  #   analysis_test.go  TestAnalysisOracleMatchesShake TestFactsDoesNotChangeTheShake
+  #   check_test.go     TestCheckTypedOK TestCheckTypedBadFailsButShakes
+  #                     TestCheckUnsignedDefineFails
+  #   footprint_test.go TestFootprintEnginesAgree TestComputedNameWarnsAndRecords
+  #                     TestComputedNameNoneIsRecorded TestComputedNameWarnSentinel
+  #   initorder_test.go TestInitOrderBadIsRefused TestInitOrderOKShakesAndRecords
+  #   manifest_test.go  TestManifestKeySetsMatch
+  #   portable_test.go  TestRunCaptureHelper (helper subprocess, skips WITH a
+  #                     host too -- it is re-executed by its parent test)
+  #   prune_test.go     TestPruneInitDefaultIsInert TestPruneInitDropsOnlyWholeSets
+  #                     TestPruneInitGoArtifactStillRuns
+  #   scip_test.go      TestScipCheckFixtures
+  #   trace_test.go     TestTraceIsOptional TestTraceCheckRules TestTraceCheckFixtures
+  #   why_test.go       TestWhyPartialFixtures
+  # Raising this number is a deliberate act: it means a test that used to run
+  # everywhere now needs a host, and the reviewer should ask why.
+  NO_HOST_MAX_SKIPS: "21"
+  # With a host, only the helper subprocess above may skip.
+  HOST_MAX_SKIPS: "1"
+  # shen-go stage-1 host, pinned.  Taken from
+  #   git ls-remote https://github.com/pyrex41/shen-go.git refs/heads/master
+  # on 2026-09-22.  An unpinned "whatever master is tonight" host makes a red
+  # run unattributable; moving this SHA is a deliberate act, and the mover
+  # owns whatever the new host changes.  (docs/analysis-rules.md records a
+  # separate shen-go regression in cmd/yggdrasil-build; this job needs only
+  # cmd/shen, which builds and boots at this pin.)
+  SHEN_GO_REF: "22e6beca3c151c2d0c42c71286327338b0febc71"
+
 jobs:
+  # Job id and check name deliberately unchanged: this is the check that
+  # already exists on this repo, and renaming it would silently detach any
+  # branch protection that requires it.
   build-test:
     strategy:
       fail-fast: false
@@ -24,7 +75,65 @@ jobs:
           go-version: "1.27.x"
       - run: go build -o yggdrasil_bin ./...
       - run: go vet ./...
-      - run: go test ./...
+      - name: go test, and assert the skip count
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test ./... -count=1 -v 2>&1 | tee out.txt
+          # grep -c exits 1 on zero matches, which is a pass, not an error.
+          skips=$(grep -c '^--- SKIP' out.txt || true)
+          echo "host-less skips: $skips (max $NO_HOST_MAX_SKIPS)"
+          grep '^--- SKIP' out.txt || true
+          if [ "$skips" -gt "$NO_HOST_MAX_SKIPS" ]; then
+            echo "::error::$skips tests skipped without a host, max is $NO_HOST_MAX_SKIPS."
+            echo "::error::A pipeline that skips more than it runs is not a pass. Either the"
+            echo "::error::new test should not be host-gated, or bump NO_HOST_MAX_SKIPS in this"
+            echo "::error::file and say in the commit message which test moved and why."
+            exit 1
+          fi
       - name: targets smoke (no host needed)
         shell: bash
         run: ./yggdrasil_bin targets
+
+  host-test:
+    name: with a Shen stage-1 host
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.x"
+
+      # Pinned checkout, then checkout by SHA -- not `--depth 1 -b master`.
+      # Full clone because a shallow one has no object to check out by SHA.
+      - name: check out the shen-go stage-1 host (pinned)
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/.."
+          git clone -q https://github.com/pyrex41/shen-go.git
+          cd shen-go
+          git checkout -q "$SHEN_GO_REF"
+          echo "shen-go at $(git rev-parse HEAD)"
+
+      - name: build the shen-go stage-1 host
+        run: go build -o "$GITHUB_WORKSPACE/../shen-go-host" ./cmd/shen
+        working-directory: ${{ github.workspace }}/../shen-go
+
+      - name: go test with a host, and assert the skip count
+        env:
+          YGGDRASIL_HOST: ${{ github.workspace }}/../shen-go-host
+          YGGDRASIL_SHEN_GO_DIR: ${{ github.workspace }}/../shen-go
+        run: |
+          set -euo pipefail
+          go test ./... -count=1 -v 2>&1 | tee host-out.txt
+          skips=$(grep -c '^--- SKIP' host-out.txt || true)
+          echo "hosted skips: $skips (max $HOST_MAX_SKIPS)"
+          grep '^--- SKIP' host-out.txt || true
+          if [ "$skips" -gt "$HOST_MAX_SKIPS" ]; then
+            echo "::error::$skips tests skipped WITH a host, max is $HOST_MAX_SKIPS."
+            echo "::error::A host-gated test that still skips here is a test that never runs"
+            echo "::error::anywhere. Fix the gate, or the host, before touching this number."
+            exit 1
+          fi

@@ -19,10 +19,20 @@ name: analysis-oracle
 # without Soufflé, and go test uses it when `souffle` is off PATH. This job
 # runs both and diffs them, so the two readings of analysis.dl cannot drift.
 #
-# Not on `push`: it needs a shen-go build plus a shake per fixture, so it is
-# minutes. Nightly + manual, like parity-gate.yml.
+# It needs a shen-go build plus a shake per fixture, so it is minutes rather
+# than seconds -- but "minutes" was never a reason to let it run NEVER. Until
+# this trigger list grew a `push`, the job had schedule + workflow_dispatch +
+# a path-filtered `pull_request`, and the branch it was written on has no PR:
+# Soufflé had therefore never evaluated analysis/analysis.dl anywhere, on any
+# commit, and an oracle that has never run is a comment. `push` on the trunk
+# and on the development branch is the fix; the path filter stays on
+# `pull_request`, where an unrelated contributor's PR should not pay for it.
 
 on:
+  push:
+    branches:
+      - main
+      - claude/qilang-discussion-analysis-6pbsx2
   schedule:
     - cron: "41 5 * * *"
   workflow_dispatch:
@@ -42,6 +52,18 @@ jobs:
   oracle:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      # shen-go stage-1 host, PINNED, for exactly the reason the Soufflé
+      # version below is pinned: an oracle whose host is "whatever master was
+      # that night" cannot attribute a red run to the rules, to the shake, or
+      # to the host. Taken 2026-09-22 from
+      #   git ls-remote https://github.com/pyrex41/shen-go.git refs/heads/master
+      # Moving this SHA is a deliberate act. docs/analysis-rules.md records
+      # that shen-go master has been broken before (`5edf47e` panics in
+      # cmd/yggdrasil-build; `24b2c00` was the last good one, and the numbers
+      # in that document were taken there). This job needs only `cmd/shen`,
+      # which builds and boots at the pin below.
+      SHEN_GO_REF: "22e6beca3c151c2d0c42c71286327338b0febc71"
     steps:
       - uses: actions/checkout@v4
 
@@ -75,13 +97,17 @@ jobs:
           fi
           souffle --version
 
-      # The stage-1 host, built the same way parity-gate.yml builds it.
-      - name: check out and build the shen-go stage-1 host
+      # The stage-1 host, built the same way parity-gate.yml builds it, at the
+      # pinned SHEN_GO_REF above. A full clone, not `--depth 1`: a shallow
+      # clone carries no object to check a SHA out of.
+      - name: check out and build the shen-go stage-1 host (pinned)
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/.."
-          git clone --depth 1 -b master https://github.com/pyrex41/shen-go.git
+          git clone -q https://github.com/pyrex41/shen-go.git
           cd shen-go
+          git checkout -q "$SHEN_GO_REF"
+          echo "shen-go host pinned at $(git rev-parse HEAD)"
           make shen
           ls -l shen || ls -l bin/shen
 
@@ -137,6 +163,9 @@ jobs:
             checked=$((checked + 1))
           done
           echo "checked $checked fixtures"
-          # A run that checked nothing is not a pass.
-          [ "$checked" -ge 10 ] || { echo "::error::only $checked fixtures checked"; fail=1; }
+          # A run that checked nothing -- or quietly fewer than tests/ holds --
+          # is not a pass. tests/ carries 17 .shen fixtures at d1d1e23, one of
+          # which (init-order-bad) is refused by design, so 16 is the floor.
+          # Adding a fixture may raise it; losing one must be loud.
+          [ "$checked" -ge 16 ] || { echo "::error::only $checked fixtures checked, expected at least 16"; fail=1; }
           exit "$fail"

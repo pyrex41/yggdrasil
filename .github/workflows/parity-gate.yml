@@ -46,6 +46,12 @@ jobs:
     env:
       TARGETS: ${{ github.event.inputs.targets || 'go,js,lua' }}
       MIN_TARGETS: ${{ github.event.inputs.min_targets || '3' }}
+      # shen-go doubles as the stage-1 host here, so an unpinned master makes
+      # a red gate unattributable: rendering, host, or port? Taken 2026-09-22
+      # from `git ls-remote https://github.com/pyrex41/shen-go.git
+      # refs/heads/master`. Moving it is a deliberate act. (ShenScript and
+      # shen-lua below are still floating; pinning those is separate work.)
+      SHEN_GO_REF: "22e6beca3c151c2d0c42c71286327338b0febc71"
     steps:
       - uses: actions/checkout@v4
 
@@ -67,7 +73,11 @@ jobs:
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/.."
-          git clone --depth 1 -b master https://github.com/pyrex41/shen-go.git
+          # Full clone for shen-go: a shallow one carries no object to check
+          # SHEN_GO_REF out of.
+          git clone -q https://github.com/pyrex41/shen-go.git
+          git -C shen-go checkout -q "$SHEN_GO_REF"
+          echo "shen-go host pinned at $(git -C shen-go rev-parse HEAD)"
           git clone --depth 1 -b master https://github.com/pyrex41/ShenScript.git
           git clone --depth 1 -b main   https://github.com/pyrex41/shen-lua.git
 
