@@ -56,28 +56,54 @@ could contradict it.)
 
 Facts a target does not state are inherited from the `_default` block,
 and a target that states none is a target whose runtime nobody has
-measured -- the missing key is how that looks. Of the level-1 keys below,
-two exist; four are new.
+measured -- the missing key is how that looks.
 
-| key | meaning | consumed by | exists |
+### Level 1, as it exists: three keys
+
+Each has at least one consumer in the code and appears in
+`builders.json` (checked against Yggdrasil `3c499a1` with `grep -rn` over
+`*.go`, `*.shen` and `*.json`):
+
+| key | meaning | consumed by | status on `go` today |
 |---|---|---|---|
-| `port_reads` | globals the runtime reads natively | `liveGlobal` (dead-init) | yes, verified for go only |
-| `port_writes` | globals the runtime binds before `shen.initialise` runs | `readBeforeWrite`, `uncoveredRead` | today hardcoded as `*stinput*`/`*stoutput*` in `*global-primitives*`; should move here |
-| `special_forms` | KL names the port's compiler lowers without a lookup (`do` on shen-go) | level-3 delta accounting: a kept defun that is never entered | new |
-| `native_overrides` | kernel defuns the port replaces with natives (`InstallKernelFast` on shen-go, `overrides.scm` on shen-scheme), plus `native_overrides_installed_after`: the boot phase after which the swap happens | see the obligation below | yes, for `go` |
-| `native_deps` | for each override, the kernel names its native implementation calls back into | added as `edge(F, G)` facts | new |
-| `call_style` | `direct`, `lookup`, or `mixed`: how a compiled call resolves | decides whether level 3 is static inclusion or graph recovery | new |
+| `port_reads` | globals the runtime reads natively | `liveGlobal` (dead-init) in `prune.go`, `yggdrasil.shen` and `main.go` | **verified** (5 entries, `TestPruneInitGoArtifactStillRuns`); every other target inherits `_default`'s 35-name placeholder and reads **declared** |
+| `special_forms` | KL names the port's compiler lowers without a lookup (`do` on shen-go) | level-3 delta accounting in `scip.go`: a kept defun that is never looked up | **declared** (7 entries, each cited to a line of shen-go; `special_forms_checked_by` is `none`). Unknown on every other target |
+| `native_overrides` | kernel defuns the port replaces with natives (`InstallKernelFast` on shen-go, `overrides.scm` on shen-scheme), plus `native_overrides_installed_after`: the boot phase after which the swap happens | `prune.go`, and the obligations below | **verified** (58 entries, `installed_after=shen.initialise`, `TestNativeOverridesMatchKernelFast`). Unknown on every other target |
+
+### Level 1, proposed: four keys with a row and no data
+
+The four keys below are **proposed**, and appear here in the present
+tense nowhere else. None appears in `builders.json` for
+any target; the only code that mentions them is `contract.go`, which
+prints a row saying `unknown`, and `prune_test.go`, which asserts that it
+does. Nothing consumes them, and the "consumed by" column is what they
+would feed if they existed, not what reads them now.
+
+| key | meaning | would be consumed by |
+|---|---|---|
+| `port_writes` | globals the runtime binds before `shen.initialise` runs | `readBeforeWrite`, `uncoveredRead`. Today these read `*global-primitives*`, hardcoded in `yggdrasil.shen` as `*stinput*`/`*stoutput*`; moving it here is step 1 of the staging plan below |
+| `native_deps` | for each override, the kernel names its native implementation calls back into | `edge(F, G)` facts added before reachability |
+| `call_style` | `direct`, `lookup`, or `mixed`: how a compiled call resolves | deciding whether level 3 is static inclusion or graph recovery. `scip.go` today hardcodes graph recovery and `--target` refuses anything but `go` |
+| `dispatch` | `slice` or `full-kernel`: whether the artifact is the slice or links the whole kernel behind it | making every check above level 0 report vacuity. Today `trace.go` names it only in a comment |
+
+An earlier draft of this note also proposed `trace_flush`. It is gone: the
+weaver now appends `(ygg.trace-end)` unconditionally (Obligation F below),
+so there is nothing for a port to declare. No file in the repository
+mentions the key.
 
 **Obligation N (native overrides).** The footprint is computed from the
 kernel's KL. If the port swaps a defun for a native, the native's callees
-are invisible to the rules. So: a native override may call back into the
-kernel only through names listed in `native_deps`, and Yggdrasil adds those
-as edges before reachability. A port that cannot enumerate them leaves
-`native_deps` undeclared and `native_overrides_checked_by` at `none`, and
-the contract report prints `declared`, not `verified`, which is the form
-"the footprint is unsound for that port at level 1" takes in the table.
-shen-go's list is readable from `kl/kernelfast.go`; shen-scheme's from
-`overrides.scm`.
+are invisible to the rules. The *proposed* discharge is: a native override
+may call back into the kernel only through names listed in `native_deps`,
+and Yggdrasil adds those as edges before reachability.
+
+None of that exists. `native_deps` is undeclared on every target and
+nothing would read it if it were declared, so the obligation is open for
+every port including `go`, whose 58 overrides are enumerated and checked
+(`native_overrides` is `verified`) but whose callees are not. What the
+report can say today is `native_deps: unknown`, which is the honest form
+of "nobody has looked". shen-go's list would be readable from
+`kl/kernelfast.go`; shen-scheme's from `overrides.scm`.
 
 **The phase is half the fact.** A list of overridden defuns says nothing
 until it says *when* the swap happens, because the two readings differ on
@@ -102,9 +128,14 @@ through the artifact's own table (the trimmed lambda table and arity table
 the shake emits), and a name absent from it is an error, not a fallback
 into a full kernel the port happens to link. A port that links the whole
 kernel behind the slice (ShenScript `--linked`, an interpreter that loads
-its own kernel first) is not running the shaken program and must say so:
-`dispatch: full-kernel`. Every check above level 0 is vacuous for such a
-build, and the report must print that rather than a pass.
+its own kernel first) is not running the shaken program and *would* say
+so: `dispatch: full-kernel`. Every check above level 0 is vacuous for such
+a build.
+
+This too is proposed. No target declares `dispatch`, nothing branches on
+it, and no check reports vacuity; `trace.go` names the value in a comment
+explaining where the containment query would have teeth. The report prints
+`unknown`, which is accurate and is all it can be.
 
 ## Level 2: dynamic evidence (the runtime trace)
 
@@ -133,11 +164,24 @@ disk:
   name records itself; after, the native runs and it does not. Which half
   a given entry falls in is what `native_overrides_installed_after`
   states, and on shen-go it is `shen.initialise`, i.e. the whole boot is
-  in the first half. Measured on `tests/fib.shen` (shen-go da55c5d): of
-  the 18 native-overridden functions among that slice's kept kernel
-  defuns, 11 appear in `called.facts` -- so the reading that a native
-  override "never records itself" is false for that port, for every entry
-  the boot made, and an absence is not evidence either way.
+  in the first half. Measured at Yggdrasil `3c499a1`, shen-go `da55c5d`,
+  host shen-cl, on `tests/fib.shen --target go`: of the 18
+  native-overridden functions among that slice's 54 kept kernel defuns, 11
+  appear in `called.facts` -- so the reading that a native override "never
+  records itself" is false for that port, for every entry the boot made,
+  and an absence is not evidence either way.
+
+  The trace now carries the phase itself, so this is readable off the
+  artifact rather than inferred from shen-go's source: every record's
+  third column is `b` while `shen.initialise` runs and `p` afterwards,
+  and `trace-check` prints `phase: boot=N program=M`. On `fib --target go`
+  that line reads `boot=29 program=9`, and **all 11** of the override
+  entries above are tagged `b`. Not one override is entered in the program
+  phase, which is exactly what `installed_after: shen.initialise`
+  predicts. On `--target kl` the same run reports
+  `phase: DEGENERATE ... every record is tagged boot` -- shen-go's
+  `cmd/kl` never executes the woven flip -- and `trace-check` says so
+  rather than reporting `called-program=0` as a finding.
 
   What this means for the query below: a name missing from `called` may be
   an override entered only after installation, and a name present may be
@@ -204,9 +248,19 @@ three relations and the query.
 
 **Delta accounting.** The extractor's reachable set will not equal `reach`
 exactly on any real port, and the contract requires the difference to be
-explained by declared facts, never waved through: `shen.initialise` (the
-driver calls it), `special_forms` (never looked up), `native_overrides`
-(bound natively, no KL body). Anything else in the delta is a finding.
+explained by declared facts, never waved through. `scip.go` subtracts
+exactly three causes and there is no fourth: `shen.initialise` (the
+driver's generated `main` calls it), the user's own defuns (they live
+outside `kernel.kl`), and the target's declared `special_forms` together
+with whatever only they reach. Anything else in the delta is printed by
+name and fails.
+
+`native_overrides` is deliberately *not* a subtraction here, and the
+earlier draft that listed it was wrong on the reason as well as the fact:
+a native override's KL body is still emitted by the backend and is still a
+node in the recovered graph. Whether it is ever *entered* is Obligation E
+below, which is a level-2 question about a phase, not a level-3 question
+about a graph.
 
 ## Level 4: behavioural parity (exists today)
 
@@ -224,19 +278,26 @@ commands that run things rather than declarations to read, so the report
 names them and says it did not run them, rather than printing a row that
 could only ever say `ok`:
 
+Run at Yggdrasil `3c499a1` against a sibling shen-go at `da55c5d`, with
+the long `source:` and `checked_by:` strings elided at `...`:
+
 ```
 yggdrasil-contract: target=go
-  verified = a named test fails when the fact drifts; declared = stated, nothing checks it; unknown = not declared
+  verified = checked_by names a test; read it for what the test catches and in which direction
+  declared = stated, nothing checks it; unknown = not declared
 level0  builder            ok         runs on shen-go, 3 build steps, needs go
 level1  port_reads         verified   5 entries
                                       source:     shen-go da55c5d kl/primitives.go (*stinput*, *stoutput*), ...
                                       checked_by: TestPruneInitGoArtifactStillRuns (prune_test.go) and the parity gate: ...
 level1  port_writes        unknown    not declared in builders.json
-level1  special_forms      unknown    not declared in builders.json
+level1  special_forms      declared   7 entries
+                                      source:     shen-go da55c5d, derived as a class and not from a fixture's residue. ...
+                                      checked_by: none
 level1  native_overrides   verified   58 entries, installed_after=shen.initialise
                                       source:     shen-go da55c5d kl/kernelfast.go InstallKernelFast: ...
                                       checked_by: TestNativeOverridesMatchKernelFast (prune_test.go): ...
                                       phase:      the natives replace these KL bodies only after shen.initialise, so whatever the boot reached before that point ran as KL
+                                      phase src:  shen-go da55c5d cmd/yggdrasil-build/main.go genMain: ...
 level1  native_deps        unknown    not declared in builders.json
 level1  call_style         unknown    not declared in builders.json
 level1  dispatch           unknown    not declared in builders.json
@@ -248,10 +309,19 @@ level4  parity             not-run    yggdrasil parity
 Three statuses, and `unknown` is the important one: an undeclared key gets
 a row saying so rather than being omitted, because "nobody measured this"
 and "this port has none" are different claims and only the first is true.
-Four of the six level-1 keys are `unknown` on every target today, and the
-report is where that is visible. A target with no `port_reads` of its own
-reports `declared` with an `inherited: builders.json _default` line -- the
-conservative placeholder, named as one.
+Four of the seven level-1 keys are `unknown` on **every** target today --
+the four marked proposed above -- and the report is where that is visible.
+`special_forms` shows the other axis: it is declared, sourced line by line
+to shen-go, and `checked_by: none`, so the word `verified` is withheld --
+even though `TestGoBuilderDeclaresSpecialForms` pins all seven names and
+requires the source to cite a line of the port for each, and `scip-check`
+fails loudly if the declaration is wrong for a fixture it runs. Naming
+either in `special_forms_checked_by` would make the row `verified`
+honestly; until someone does, the report says what `builders.json` says. A target with no `port_reads` of its own reports
+`declared` with an `inherited: builders.json _default` line -- the
+conservative placeholder, named as one. `TestContractReportNamesSourceAndPhase`
+and `TestContractLegendPromisesNoMoreThanCheckedBySays` in `prune_test.go`
+are what fail if any of that drifts.
 
 This table, per port, is the honest form of "the guarantees survive
 translation": a list of which rungs were climbed and which were declared
@@ -284,7 +354,9 @@ declarations marked `declared` rather than `verified`, and nothing else.
 2. Generalise `scip-check` into `graph-check` behind the extractor
    contract: shen-go's recovery becomes one extractor, the `kl` runner's
    identity extractor a second, and the query moves into `analysis.dl`
-   and `*shake-rules*` so all three engines run it.
+   and `*shake-rules*` so all three rule evaluators run it (two
+   transcriptions and one independent engine -- `verification-guide.md`
+   section 6).
 3. Extend `yggdrasil contract --target P` from reading the level-1
    declarations (which it does today) to composing levels 0 to 4 by
    running them, with a test asserting every row for go.

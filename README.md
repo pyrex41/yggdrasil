@@ -13,8 +13,10 @@
 > initialiser at shake time), no dict layer (property vector instead),
 > and a leaner surface: 686 boot defuns vs 1,152. The lua, rust, go and
 > js targets are green on their migrated ports (all four fixtures;
-> eval-free `fib` shakes to **54 defuns / 13.4 KB**, metaeval to 548;
-> four-target parity gate PASS). The reference stage-1 host is shen-cl
+> at Yggdrasil `3c499a1` on shen-cl, eval-free `fib` shakes to **54
+> defuns / 13.4 KB** and eval-capable `metaeval` to 551 / 247 KB, both
+> counts including the synthesised `shen.initialise`; four-target parity
+> gate PASS). The reference stage-1 host is shen-cl
 > built from its refreshed master (same lineage); a community-41.2
 > shen-cl binary is a verified-working alternative — both produce
 > byte-identical `kernel.kl` + manifest on every fixture. Prose below
@@ -63,8 +65,9 @@ five targets; `showboat verify DEMO.md` re-executes every step.
 of everything Yggdrasil does to justify that the shaken program behaves
 like the original: footprint attribution, the analysis as a Datalog rule
 set checked by Soufflé, initialisation-order and dead-initialisation
-checks, runtime tracing woven at the KL level, a SCIP-based inclusion
-check on the compiled artifact, the parity gate, and the contract a port
+checks, runtime tracing woven at the KL level, an inclusion check that
+recovers the KL-level call graph from the compiled artifact (the contract
+is SCIP's; no indexer runs), the parity gate, and the contract a port
 must meet for all of it to apply. Each technology is introduced with
 links. The design notes it summarises are `docs/why.md`,
 `docs/analysis-rules.md`, `docs/port-contract.md`, `docs/parity.md` and
@@ -199,9 +202,13 @@ Every shake also records `pruned-init=N` after `computed-names`: the
 number of toplevel forms the synthesised initialiser dropped because
 nothing can read the global they set. It is `0` unless you pass
 **`--prune-init`** (`shake` / `build` / `run`), which is off by default —
-pruning changes the bytes of `kernel.kl`, and `docs/analysis-rules.md`
-gives the parity gate, not the flag, the job of deciding whether a target
-may default it on. With the flag off the emitted `kernel.kl` is
+pruning changes the bytes of `kernel.kl`, and pruning against a
+`port_reads` list nobody has checked can drop a `(set V Lit)` the port's
+runtime reads natively. The CLI refuses `--prune-init --target T` outright
+unless `T`'s `port_reads` names a test in `builders.json`; only `go` does.
+Shake without `--target` (the union over every builder is sound for any of
+them), or pass `--prune-init-unverified` to prune against the placeholder
+anyway and take a warning. With the flag off the emitted `kernel.kl` is
 byte-identical to a pre-stage-4 shake's, save for the single
 `shen.initialise` line the later D8 ordering change permutes (see
 [docs/verification-guide.md](docs/verification-guide.md) §6).
@@ -378,11 +385,14 @@ mode refuses eval-capable manifests).
 
 ## Tests
 
-`tests/{hello,fib,prolog,metaeval}.shen` are the four fixtures; expected
-outputs `hello from shaken shen`, `fib 20 = 6765`,
-`mary likes chocolate: true`, and three lines of `eval ...: 42`
-(metaeval is the eval-capable fixture: `needs-eval=true`, ~568 kernel
-defuns). `tests/parity.shen` (+ `tests/parity.expected`) is the
+`ls tests/*.shen` lists 20 fixtures at `3c499a1`, of which 19 shake
+(`init-order-bad` is refused on purpose) — 16 eval-free and 3
+eval-capable. `tests/{hello,fib,prolog,metaeval}.shen` are the four the
+cross-target sweep above uses; expected outputs `hello from shaken shen`,
+`fib 20 = 6765`, `mary likes chocolate: true`, and three lines of
+`eval ...: 42` (metaeval is an eval-capable fixture: `needs-eval=true`,
+551 kernel defuns including the synthesised `shen.initialise`).
+`tests/parity.shen` (+ `tests/parity.expected`) is the
 behavioural-parity fixture — see below.
 Every stage-1 change should be verified through at least one stage-2
 builder (the Lua one is fastest).

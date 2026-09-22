@@ -14,7 +14,7 @@ Contents:
 3. [Reachability, and why the graph is small](#3-reachability-and-why-the-graph-is-small)
 4. [Footprint attribution: `yggdrasil why`](#4-footprint-attribution-yggdrasil-why)
 5. [The analysis as a rule set: Datalog](#5-the-analysis-as-a-rule-set-datalog)
-6. [Three engines, one answer: Soufflé, Python, Shen](#6-three-engines-one-answer-soufflé-python-shen)
+6. [Two transcriptions and one independent engine: Soufflé, Python, Shen](#6-two-transcriptions-and-one-independent-engine-soufflé-python-shen)
 7. [Two checks the rules made possible](#7-two-checks-the-rules-made-possible)
 8. [Runtime tracing: aspect weaving at the KL level](#8-runtime-tracing-aspect-weaving-at-the-kl-level)
 9. [Static inclusion: SCIP and the graph extractor](#9-static-inclusion-scip-and-the-graph-extractor)
@@ -193,10 +193,30 @@ deviations D1 to D10, and the design note keeps them.
 
 Design note: [analysis-rules.md](analysis-rules.md), "Facts" and "Rules".
 
-## 6. Three engines, one answer: Soufflé, Python, Shen
+## 6. Two transcriptions and one independent engine: Soufflé, Python, Shen
 
-A rule set is only trustworthy if something independent evaluates it. Three
-things do.
+Three programs evaluate these rules, and it is worth being precise about
+what their agreement is worth, because "three independent engines"
+oversells it.
+
+`analysis/analysis.dl` was written **from the code**, not from the design
+— deviations D1 to D10 in its header are the record of the design bending
+to the shake that exists. The Shen engine beside it in `yggdrasil.shen` is
+the shake itself, running a clause-for-clause copy of that file. And
+`analysis/refeval.py` implements `reach` as the same worklist in another
+language. Two of the three readings are therefore **transcriptions** of
+the thing they check, and a transcription agreeing with its original is a
+weaker statement than an independent evaluation: what it can catch is a
+line copied wrongly, not a rule that is wrong about the shake.
+
+Soufflé is the one genuinely independent evaluator: an off-the-shelf
+engine that reads `analysis.dl` and knows nothing about Yggdrasil.
+
+The agreement check is worth having, and it is why D1 to D10 exist at all.
+But the honest description is *two transcriptions and one independent
+engine*, not three independent engines, and the claim it supports is
+"these three readings of one rule set agree", not "three parties
+independently confirmed the analysis".
 
 **[Soufflé](https://souffle-lang.github.io/)** is the reference Datalog
 engine for program analysis: it compiles Datalog to parallel C++ and is
@@ -207,7 +227,7 @@ every fixture, in both modes. CI runs this
 (`.github/workflows/analysis-oracle.yml`). Soufflé never runs in a user's
 shake; it is an oracle.
 
-**[`analysis/refeval.py`](../analysis/refeval.py)** is a 190-line
+**[`analysis/refeval.py`](../analysis/refeval.py)** is a 348-line
 semi-naive evaluator in standard-library Python, for developers without
 Soufflé. The test runs whichever is present and, when both are, diffs them
 against each other.
@@ -353,20 +373,40 @@ runs with the fixture's stdin, turns the trace into `called` and
 uncoveredCall(F) :- called(F), kernel(F), !reach(F).
 ```
 
-It must be empty. On four fixtures, on two runtimes (the Go artifact and
-shen-go's bare KL VM), it is:
+It must be empty. Taken on Yggdrasil `3c499a1`, shen-go `da55c5d`, host
+shen-cl, 2026-09-22, on four fixtures and two runtimes — the Go artifact
+and shen-go's bare KL VM (`cmd/kl`), the second of which is a special-cased
+runner rather than a `builders.json` target (section 11):
 
-| fixture | reach | called | globals read |
-|---|---|---|---|
-| fib | 53 | 34 | 3 |
-| partial | 53 | 34 | 3 |
-| stdin-sum | 54 | 38 | 4 |
-| prolog | 66 | 43 | 5 |
+| fixture | reach | called (go) | called (kl) | globals read |
+|---|---|---|---|---|
+| fib | 53 | 34 | 32 | 3 |
+| partial | 53 | 34 | 32 | 3 |
+| stdin-sum | 54 | 38 | skipped | 4 |
+| prolog | 66 | 41 | 43 | 5 |
+
+The two runtimes do **not** agree name for name, and the disagreement is
+informative rather than alarming. `go` records `<-vector` and `vector->`
+on `fib` and `partial` that `kl` does not; `kl` records `shen.pvar?` and
+`thaw` on `prolog` that `go` does not. All four are entries in shen-go's
+`native_overrides`, and the trace is a property of the *runtime*, not of
+the KL: a name whose binding is native when the program reaches it records
+no entry. shen-go's generated `main` installs its natives *after*
+`shen.initialise`, so `go` records the boot's KL bodies and misses any
+override first entered afterwards; `cmd/kl` never calls
+`InstallKernelFast` at all and lowers a different handful in its own
+compiler. `analysis-rules.md` has the per-name table. Containment holds on
+both readings, which is the check doing its job across a real runtime
+difference. `stdin-sum` on `kl` is a named skip, not a pass: shen-go's
+`cmd/kl` reads its program from stdin and cannot also be fed a fixture's
+input.
 
 The gap between reach and called is the static over-approximation made
-visible: about twenty kept functions per program are never entered on that
-path. Injected violations, an out-of-footprint call and an unwritten
-global, are both caught, and all three engines agree.
+visible: on the go artifact, sixteen to twenty-five kept functions per
+program are never entered on that path. Injected violations, an
+out-of-footprint call and an unwritten global, are both caught, and the
+Shen engine, `refeval.py` and Soufflé agree on the verdict — section 6 on
+what that agreement is and is not.
 
 This is evidence, not proof: one run exercises one path. It is narrower
 than that, even. On a port whose artifact *is* the slice, `uncoveredCall`
@@ -552,7 +592,7 @@ declare and satisfy for them to apply is a five-level ladder:
 | level | what | port obligation |
 |---|---|---|
 | 0 | builder contract | load `kernel.kl`, call `shen.initialise`, run user files in order |
-| 1 | self-description in `builders.json` | truthful `port_reads`, `port_writes`, `special_forms`, `native_overrides` (+ what they call back into), `call_style`, `dispatch`, each with a `<key>_source` saying where it was read off and a `<key>_checked_by` naming the test that fails when it drifts, or `none` |
+| 1 | self-description in `builders.json` | truthful `port_reads`, `special_forms` and `native_overrides` (the three keys that exist), each with a `<key>_source` saying where it was read off and a `<key>_checked_by` naming the test that fails when it drifts, or `none`; plus `port_writes`, `native_deps`, `call_style` and `dispatch`, which are **proposed** — the report prints a row for each, and today every target says `unknown` |
 | 2 | runtime trace | flush open streams at exit, or declare that you cannot |
 | 3 | static inclusion | an extractor producing `node`/`edge`/`body` facts from a built artifact |
 | 4 | behavioural parity | already met by every target with a golden |
@@ -560,9 +600,13 @@ declare and satisfy for them to apply is a five-level ladder:
 Two obligations at level 1 deserve a mention. A **native override**
 (shen-go's `InstallKernelFast`, shen-scheme's `overrides.scm`) replaces a
 kernel function with native code whose callees the rules cannot see; the
-port must enumerate them or be reported unsound at level 1. And
-**dispatch**: a port that links the whole kernel behind the slice is not
-running the shaken program, and every higher check is vacuous for it.
+port must enumerate them or be reported unsound at level 1 — and must say
+*when* the swap happens, because on shen-go the generated `main` calls
+`shen.initialise` before `InstallKernelFast`, so every override's KL body
+runs during the boot. And **dispatch**: a port that links the whole kernel
+behind the slice is not running the shaken program, and every higher check
+is vacuous for it. `dispatch` is a proposed key: no target declares it and
+nothing reads it, so the report prints `unknown` for every target.
 
 The output is `yggdrasil contract --target P`: one line per level-1 fact,
 marked **verified** (a `_checked_by` names a test; read the string for what
@@ -586,24 +630,42 @@ plan whose last step is taking shen-lua through the ladder.
 
 Sections 3 to 11 each establish something different, and it is easy to
 lose track of which kind of thing. This table is the whole guide in one
-place. "Checked" means a deterministic computation that runs in the test
-suite and fails loudly; "evidence" means a check that can only observe the
-runs or fixtures it was given; "assumed" means a premise that is written
-down and reported but not established by anything here.
+place.
 
-| claim | kind | established by | section |
-|---|---|---|---|
-| The footprint is the least fixpoint of the published rules | checked | Soufflé, the Python evaluator and the Shen engine agree on `reach` for every fixture in both modes | 5, 6 |
-| The rules describe the shake that ships | checked | `reach` equals the functions in `kernel.kl`; deviations D1 to D10 record where the design had to bend to the code | 5, 6 |
-| The shake's output changed under this work exactly once, in one line | checked | `kernel.kl` and both manifests byte-identical on every fixture before and after each stage, with one exception: the D8 ordering change permutes the lambda-table literal on the single synthesised `shen.initialise` line of `kernel.kl` on the eval-free fixtures. Manifests, defun sets and the behavioural goldens are unchanged by it, and byte-identity *across ports* is untouched | 6, 7, 8, 9 |
-| The footprint is minimal for the rule set | checked, and qualified below | worklist, Warshall and rules agree; nothing reachable is dropped and nothing unreachable is kept, *relative to the rules' notion of an edge* | 3, 6 |
-| No toplevel form reads a global before it is written | checked, with an over-approximated write side | the init-order rules, on the final form sequence, refusing the shake on violation; `init-order=checked-weak` marks a run where a call graph, a same-form write or a freeze-wrapped one did the discharging | 7 |
-| Every function actually entered on a run was in the footprint | evidence | the woven trace and the containment query, on four fixtures and two runtimes | 8 |
-| The backend compiled the same kept functions the same way in the full and shaken builds | evidence, and only for compositional backends | the KL-level graph recovered from the generated Go, with the two-name delta accounted for | 9 |
-| The shaken artifact computes what the full program computes | evidence | the parity gate against goldens, across targets, boots and passes | 10 |
-| No function name is computed at runtime | assumed, reported | `computed-names=` in the manifest; the shake warns when it is not `none` | 7 |
-| The port's self-description is truthful | assumed, reported | each `builders.json` fact carries a `_source` and a `_checked_by`, and `yggdrasil contract --target P` prints both; only shen-go's `port_reads` and `native_overrides` name a test today, and twelve targets declare no list of their own and inherit `_default`, whose `_checked_by` is `none` | 11 |
-| The backend compiles KL correctly | assumed | the port's own kernel test suite; the same assumption for the full and the shaken program | 2, 9 |
+The `kind` column used to carry two questions at once — what kind of
+statement a row is, and how often anything re-establishes it — so they are
+now separate columns.
+
+`kind` is:
+
+- **checked**: a deterministic computation that fails loudly, and the
+  `re-established by` column names the test or command in this repository
+  that fails when the claim is false. No named test, no `checked`.
+- **evidence**: a check that can only observe the runs or fixtures it was
+  given.
+- **assumed**: a premise written down and reported, but not established by
+  anything here.
+
+`re-established by` is one of `CI on every commit`, `go test with a host`,
+`nightly`, or `once, by hand, at <commit>`. A row whose answer is the last
+of those is a measurement, not a guard: nothing re-takes it, and it will
+drift.
+
+Taken on Yggdrasil `3c499a1`, shen-go `da55c5d`, host shen-cl, 2026-09-22.
+
+| claim | kind | established by | re-established by | section |
+|---|---|---|---|---|
+| The footprint is the least fixpoint of the published rules | checked | `TestAnalysisOracleMatchesShake` (`analysis_test.go`): Soufflé and/or `analysis/refeval.py` and the Shen engine agree on `reach` for every fixture in both modes, and are diffed against each other when both are present. Soufflé is the only one of the three that is not a transcription of the shake (section 6) | `go test with a host` for the Python leg; the Soufflé leg is `CI on every commit` via `.github/workflows/analysis-oracle.yml`, on `push` to `main` and to this branch, `nightly` at 05:41 UTC, and on a path-filtered `pull_request`, against the shen-go host pinned in `.github/shen-go.ref` | 5, 6 |
+| The rules describe the shake that ships | checked | the same test: `reach` equals the defun set of the `kernel.kl` that same shake wrote, on every fixture. Deviations D1 to D10 in `analysis/analysis.dl` record where the design had to bend to the code — which is also why the rules are a transcription and not an independent statement | `go test with a host`, and `CI on every commit` / `nightly` in `analysis-oracle.yml` | 5, 6 |
+| The shake's output is byte-identical across the eight ports for one shake; it is *not* byte-identical across versions of Yggdrasil, and the D8 ordering change is where that was given up | checked for the port half, `once, by hand` for the version half | The port half is what the tool guarantees and what `yggdrasil parity` exercises. The version half was a self-imposed constraint, and stages 1 to 3 each verified it by hand against the previous binary — until D8 (`9084812`), which deleted the duplicate depth-first traversal that existed only to keep those bytes still, and moved exactly one line of `kernel.kl` (the synthesised `shen.initialise`, whose lambda-table literal is a permutation of the same entries) on the eval-free fixtures. Nothing re-runs a cross-version byte comparison today. What *is* guarded is the property that replaced it: `TestFootprintOrderIsKernelLoadOrder` (`footprint_test.go`) fails if the footprint's order is not kernel load order, on every fixture that shakes. The manifests were never byte-identical either — stage 2 added `init-order=`, stage 3 `computed-names=`, stage 4 `pruned-init=`, and the manifest version has since been bumped to 4; the honest claim is that each stage changed them by exactly the lines it declared | `go test with a host` for the order property; `once, by hand, at 9084812` for the byte comparison | 6, 7, 8, 9 |
+| The footprint is minimal for the rule set | checked, and qualified below | `TestFootprintEnginesAgree` (`footprint_test.go`) on every fixture that shakes: the worklist, the Warshall closure and the rules agree, so nothing reachable is dropped and nothing unreachable is kept, *relative to the rules' notion of an edge*. The Warshall leg is skipped above 150 nodes and says so | `go test with a host` | 3, 6 |
+| No toplevel form reads a global before it is written | checked, with an over-approximated write side | the init-order rules, on the final form sequence, refuse the shake on violation; `initorder_test.go` (`TestInitOrderBadIsRefused`, `TestInitOrderLaterWriteStillRefused`, `TestInitOrderOKShakesAndRecords` and the `checked-weak` fixtures) fails when they stop doing so, and `TestAnalysisOracleMatchesShake` diffs `readBeforeWrite` and `weakRead` across the engines like any other relation. The weakness is on the **write** side and is deliberate: a form that *calls* a function that *might* write `V` counts as writing `V`, whether or not that call runs. A read discharged only that way — or by a same-form write, or one inside a `freeze` the form thaws — records `init-order=checked-weak` rather than `checked`, which is how the manifest says which kind of answer this was | `go test with a host`, and `CI on every commit` for the rule-level diff | 7 |
+| Every function actually entered on a run was in the footprint | evidence | the woven trace and the containment query, on four fixtures and two runtimes (`TestTraceCheckFixtures`, `trace_test.go`). Coverage, not soundness: on a port whose artifact *is* the slice the query is empty by construction, and `trace-check` prints that caveat on its own report line. What the run does establish is that it finished (an end-of-run record), that it produced the fixture's committed answer, and that the facts were not truncated | `go test with a host` | 8 |
+| The backend compiled the same kept functions the same way in the full and shaken builds | evidence, and only for compositional backends | the KL-level graph recovered from the generated Go with `go/ast` (`TestScipCheckFixtures`, `scip_test.go`), asserted **by name**: any residue at all fails. On `tests/fib.shen --target go` the accounted subtractions are the port's declared `special_forms` (`do`, `not` applied here, each cited to a line of shen-go), the user's own defuns (`fib`), and the synthesised `shen.initialise` — `footprint=53 reachable=53 accounted=2`, `full defuns=688 reachable=545`. `tests/interpreter.shen` still fails with `kl-missing-in-full fix` / `shen.fix-help`, an open finding printed by name rather than subtracted. There is no Go-level SCIP comparison any more; that path compared four generated driver functions and was deleted | `go test with a host` | 9 |
+| The shaken artifact computes what the full program computes | evidence | the parity gate against goldens, across targets, boots and passes (`.github/workflows/parity-gate.yml`) | `CI on every commit` for the targets the gate builds; `go test with a host` for the fixtures' goldens | 10 |
+| No function name is computed at runtime | assumed, reported | `computed-names=` in the manifest; the shake warns when it is not `none`. Nothing refuses a program on it — the manifest makes the hypothesis visible, and that is all. `TestComputedNameWarnsAndRecords` / `TestComputedNameNoneIsRecorded` check that the reporting works, not that the hypothesis holds | `go test with a host` for the reporting; the hypothesis itself is re-established by nobody | 7 |
+| The port's self-description is truthful | assumed, reported; `verified` only where a named test exists | each `builders.json` fact carries a `_source` and a `_checked_by`, and `yggdrasil contract --target P` prints both. Exactly two rows read `verified` anywhere today, both on `go`: `port_reads` (`TestPruneInitGoArtifactStillRuns`) and `native_overrides` (`TestNativeOverridesMatchKernelFast`, which parses `InstallKernelFast` in the sibling checkout and compares both ways). `go`'s `special_forms` reads `declared` because its `special_forms_checked_by` is `none`, which is the literal truth about the declaration — though `TestGoBuilderDeclaresSpecialForms` (`scip_test.go`) does pin the seven names and require the source to cite a line of shen-go for each, and `TestSpecialFormsAudit` covers the residue accounting. Naming one of them in `builders.json` would make the row `verified`; nobody has. `port_writes`, `native_deps`, `call_style` and `dispatch` are `unknown` on every target, which is the report saying nobody declared them, not that the port has none. Twelve targets declare no `port_reads` of their own and inherit `_default`, whose `_checked_by` is `none` | `go test with a host` for the two verified rows; the rest is re-established by nobody | 11 |
+| The backend compiles KL correctly | assumed | the port's own kernel test suite; the same assumption for the full and the shaken program | not re-established here at all | 2, 9 |
 
 The last row is the one Bruno Deferrari raised on
 [the Shen group](https://groups.google.com/g/qilang/c/duE01tE5oIU), and
@@ -614,14 +676,24 @@ of trust certified by engineer's induction. The contribution here is not
 to remove that core but to make its contents a list: the rows marked
 *assumed*.
 
+Four gaps in the table above are known and deliberately left open rather
+than quietly fixed: nothing empirically checks a **pruned** artifact
+beyond one `fib` stdout comparison on `go`, because `trace-check` shakes
+with pruning off (`analysis-rules.md`, "Against stage 4"); `native_deps`
+and `dispatch` are proposed keys with no data and no consumer
+(`port-contract.md`); `kl` is a special-cased runner counted in places as
+a runtime (`analysis-rules.md`, "Targets, and a port caveat"); and
+shen-go's natives are installed *after* `shen.initialise`, which is the
+port's to change, not Yggdrasil's (`lowering.md`, "The measurement").
+
 ### Is this the smallest possible artifact?
 
 No, and it is worth being precise about the three ways it is not, because
 they are different in kind.
 
-**Unentered functions.** The trace in section 8 shows about twenty kept
-functions per program that a given run never enters. Some of these are
-genuinely reachable on other inputs; some are reachable only through the
+**Unentered functions.** The trace in section 8 shows sixteen to
+twenty-five kept functions per program that a given run never enters. Some
+of these are genuinely reachable on other inputs; some only through the
 rules' over-approximation (a symbol mentioned as data, never applied). The
 rules could be sharpened, at the cost of a soundness argument for each
 refinement, and section 3 measured the ceiling on that: about eleven
@@ -683,7 +755,18 @@ YGGDRASIL_SHEN_GO_DIR=/path/to/shen-go \
 go test -count=1 ./...
 ```
 
-runs every check described above (about ten minutes). Individual commands:
+runs every check described above. Measured at Yggdrasil `3c499a1` on
+shen-cl with a sibling shen-go at `da55c5d`: `go test ./... -count=1`
+takes 216 s and needs `-timeout 40m` on a slower machine. Soufflé is
+optional locally — without it `analysis_test.go` uses `refeval.py` alone,
+and the two are diffed against each other only in CI.
+
+CI pins its host: `.github/shen-go.ref` carries one SHA that
+`analysis-oracle.yml`, `parity-gate.yml` and `go.yml`'s host job all read,
+so a red run is attributable. The numbers in this guide were taken against
+a local shen-go checkout at `da55c5d`, which is not that pin.
+
+Individual commands:
 
 ```
 yggdrasil why tests/fib.shen --trace pr
@@ -696,4 +779,13 @@ yggdrasil parity tests/fib.shen out/ --expect tests/fib.expected
 ```
 
 Tests that need a tool that is absent skip with a message naming it; they
-never pass vacuously.
+never pass vacuously — and since `04d213d` the pipeline enforces that at
+the job level rather than per test. `.github/workflows/go.yml` asserts an
+**exact** host-less skip count (`NO_HOST_EXPECTED_SKIPS`, 33 as of
+`3c499a1`, with the enumeration written out name by name in the file) and
+runs a second `host-test` job with a real Shen host and a sibling shen-go
+in which at most one test (`HOST_MAX_SKIPS: 1`, the parity helper
+subprocess) may skip. Before that job existed every run of the workflow
+was green without a host, which is to say the whole of the machinery in
+this guide skipped. Neither number has been observed on a real Actions
+run from this branch.
