@@ -417,51 +417,73 @@ precision is the wrong thing to optimise on a 686-node graph.
 
 ### Measured
 
-Yggdrasil `3c499a1`, shen-go `da55c5d`, stage-1 host shen-cl (an SBCL
-build of its refreshed master, on `$YGGDRASIL_HOST`), stage-2 shen-go's
-`yggdrasil-build`, 2026-09-22. `yggdrasil trace-check FIXTURE OUT --target
-T`. All `OK`; Soufflé and `analysis/refeval.py` agree with the Shen engine
-on `uncoveredCall` and `uncoveredRead` over the same fact dirs, both on
-these traces and on traces with an out-of-footprint call injected.
+Yggdrasil `3c499a1`, shen-go `30ab469` (the SHA in `.github/shen-go.ref`),
+stage-1 host shen-cl (an SBCL build of its refreshed master, on
+`$YGGDRASIL_HOST`), stage-2 shen-go's `yggdrasil-build`, re-taken
+2026-09-23. `yggdrasil trace-check FIXTURE OUT --target T`. All `OK` --
+including every `kl` row, which up to shen-go `da55c5d` was a coverage
+number over a boot that had panicked and is now a pass. Soufflé and
+`analysis/refeval.py` agree with the Shen engine on `uncoveredCall` and
+`uncoveredRead` over the same fact dirs, both on these traces and on traces
+with an out-of-footprint call injected.
 
 | fixture | mode | `reach` | `called` (go) | `called` (kl) | `readGlobal` | records (go) |
 |---|---|---|---|---|---|---|
-| `fib` | eval-free | 53 | 34 | 32 | 3 | 49,076 |
-| `partial` | eval-free | 53 | 34 | 32 | 3 | 27,174 |
-| `stdin-sum` | eval-free | 54 | 38 | skipped | 4 | 27,520 |
-| `prolog` | eval-free | 66 | 41 | 43 | 5 | 27,620 |
+| `fib` | eval-free | 53 | 11 | 33 | 3 | 22,068 |
+| `partial` | eval-free | 53 | 11 | 33 | 3 | 166 |
+| `stdin-sum` | eval-free | 54 | 15 | skipped | 4 | 375 |
+| `prolog` | eval-free | 66 | 18 | 43 | 5 | 230 |
 
-So a go run enters 62–70% of the footprint. The rest is the kernel's boot
-machinery on paths this input does not take, plus the over-approximation
-the edge rule is built on; it is what the shake keeps because it cannot
-prove otherwise, which is the correct trade.
+At shen-go `da55c5d` the `go` column read 34 / 34 / 38 / 41 and the records
+column 49,076 / 27,174 / 27,520 / 27,620. The whole of that difference is
+one change in the port: `30ab469` calls `InstallKernelFast` inside the
+kernel chunk loop rather than after `shen.initialise`, so the boot no longer
+enters the overridden functions' KL bodies. `trace-check`'s phase line says
+it directly -- `boot=29 program=9` became `boot=2 program=9` on `fib`, the
+two remaining boot names being `shen.initialise` and
+`shen.initialise-arity-table` -- and roughly 27,000 records per fixture
+disappeared with them.
+
+So a `go` run now enters **21–28%** of the footprint (it was 62–70%), and a
+`kl` run 62–65%. The rest is the kernel's boot machinery on paths this input
+does not take, plus the over-approximation the edge rule is built on, plus --
+new, and the bulk of the `go` drop -- every function the port answers
+natively. That last part is not the shake keeping too much: those defuns are
+in the slice, they are simply never entered on this port.
 
 The `kl` target does **not** agree with `go` name for name, and an earlier
-version of this table said it did. The differences, measured at the
-commits above:
+version of this table said it did. At `da55c5d` the disagreement went both
+ways (`go` recorded `<-vector` and `vector->` on `fib` and `partial` that
+`kl` did not; `kl` recorded `shen.pvar?` and `thaw` on `prolog` that `go`
+did not). At `30ab469` it is one-sided: `go`'s `called` set is a strict
+**subset** of `kl`'s on every fixture measured.
 
 | fixture | in `go` only | in `kl` only |
 |---|---|---|
-| `fib` | `<-vector`, `vector->` | -- |
-| `partial` | `<-vector`, `vector->` | -- |
-| `prolog` | -- | `shen.pvar?`, `thaw` |
+| `fib` | -- | 22 names |
+| `partial` | -- | 22 names |
+| `prolog` | -- | 25 names |
 
-All four names are entries in `go`'s `native_overrides`, and the trace is
-a property of the **runtime**, not only of the KL: a name whose binding is
-native when the program reaches it records no KL entry. The two targets --
-one builder's compiled output, one builder's interpreter, both out of the
-same shen-go checkout -- install natives differently. shen-go's generated
-`main` calls `shen.initialise` *before* `InstallKernelFast`, so a `go` artifact records
-the boot's KL bodies -- which is where `<-vector` and `vector->` come from
--- and misses any override entered afterwards. `thaw` and `shen.pvar?`
-are absent from `prolog`'s `go` trace and present in its `kl` one, which
-on that reading means the `go` run reached them only after the natives
-were installed; the trace cannot show an entry that did not happen, so
-this is the natural explanation rather than a measurement. `cmd/kl` never
-calls `InstallKernelFast` at all; what it lowers instead is a handful of
-forms
-in its own compiler (`kl/compiler.go` special-cases `<-vector` and `thaw`),
-and that is a different set.
+On `fib` those 22 are `<-vector`, `empty?`, `explode`, `fail`, `hash`,
+`hdstr`, `limit`, `map`, `put`, `reverse`, `shen.+string?`,
+`shen.change-pointer-value`, `shen.explode-h`, `shen.fillvector`,
+`shen.hashkey`, `shen.map-h`, `shen.mod`, `shen.modh`, `shen.multiples`,
+`shen.prodbutzero`, `shen.reverse-help`, `vector`, `vector->`; `prolog`
+adds `shen.pvar?` and `thaw` and drops none. Most of them are entries in
+`go`'s `native_overrides`, and the rest are functions only those bodies
+call.
+
+The trace is a property of the **runtime**, not only of the KL: a name whose
+binding is native when the program reaches it records no KL entry. The two
+targets -- one builder's compiled output, one builder's interpreter, both
+out of the same shen-go checkout -- install natives differently, and
+`30ab469` widened the difference rather than closing it. The generated `main`
+now installs every override before the initialiser runs, so a `go` artifact
+records none of their KL bodies in either phase. `cmd/kl` never calls
+`InstallKernelFast` at all; what it lowers instead is a handful of forms in
+its own compiler (`kl/compiler.go` special-cases `<-vector` and `thaw`), and
+that is a different, much smaller set -- which is why the subset now runs in
+this direction.
 
 Both readings are contained, which is the check doing its job across a
 real runtime difference rather than in spite of one. What the disagreement
@@ -661,10 +683,11 @@ a shaken artifact at all — reproducible from a bare `kl.Eval` loop over
 `kernelLoadOrder` with no Yggdrasil involvement. For a while the only
 usable commit was the prior `24b2c00`, and the first version of the table
 above was taken there. It is fixed: the numbers above are re-taken at
-`da55c5d`, where `cmd/yggdrasil-build` boots and builds. CI does not use
-either — `.github/shen-go.ref` pins its own SHA for all three workflows
-that need a host, and that pin is a separate decision from whatever a
-developer's sibling checkout happens to be. `trace_test.go` therefore establishes
+`30ab469`, where `cmd/yggdrasil-build` boots and builds, and which is also
+what `.github/shen-go.ref` pins for all three workflows that need a host --
+so for once the tables and the CI pin name the same commit. That pin is
+still a separate decision from whatever a developer's sibling checkout
+happens to be. `trace_test.go` therefore establishes
 the `go` target's usability by building an untraced fixture first and drops
 it from the run with a log line if that fails, so a broken sibling builder
 cannot read as a tracing regression — while a builder that works is checked,
@@ -1058,9 +1081,9 @@ cannot drift apart.
    loading its own `kernel/klambda/declarations.kl`), identically for the
    pruned slice, the unpruned slice and the pre-stage-4 binary, so every
    fixture with a golden reported `build failed` for a reason that was not
-   about pruning. That obstacle is gone -- at shen-go `da55c5d` the
-   builder boots and `trace-check --target go` completes on every fixture
-   tried -- but nobody has since run the pruned parity sweep, so `go`
+   about pruning. That obstacle is gone -- at shen-go `da55c5d`, and still
+   at `30ab469`, the builder boots and `trace-check --target go` completes
+   on every fixture tried -- but nobody has since run the pruned parity sweep, so `go`
    keeps `--prune-init` off by default. The single runtime data point that
    does exist is `TestPruneInitGoArtifactStillRuns`, described below.
 
@@ -1139,9 +1162,13 @@ cannot drift apart.
    inside `trap-error` and the interpreter's `trap-error` does not cover a
    tail call, so the "vector element not found" error escapes as a value
    into the property vector. `cmd/shen` never sees it (it installs the
-   native `put` via `InstallKernelFast`); the builder does not install them,
-   so it dies. Point `$YGGDRASIL_SHEN_GO_DIR` at a checkout that works
-   (`24b2c00` is the last one before the regression). Without one,
+   native `put` via `InstallKernelFast`); the builder did not install them,
+   so it died. Point `$YGGDRASIL_SHEN_GO_DIR` at a checkout that works --
+   `30ab469`, the SHA in `.github/shen-go.ref`, is the one this repository
+   is measured against, and it is also where the generated artifact's own
+   `main` finally installs the natives inside the kernel chunk loop
+   (`24b2c00` was the last commit before the original regression). Without
+   one,
    `scip-check` reports the stage-2 failure and the host-gated test skips
    rather than failing — a broken sibling is not a broken shake.
 
@@ -1219,7 +1246,8 @@ cannot drift apart.
 
    Yggdrasil `3c499a1`, shen-go `da55c5d`, host shen-cl, 2026-09-22; wall
    clock 12-32 s per fixture end to end (two shakes, two stage-2 builds).
-   Re-checked for `fib` at these commits: `scip-check` prints
+   Re-checked for `fib` at shen-go `30ab469` on 2026-09-23 and unchanged
+   (`wall=66.2s` on a cold Go build cache): `scip-check` prints
    `footprint=53 reachable=53; full defuns=688 reachable=545`,
    `special_forms=do,not called-only-from-them=none user-defuns=fib
    initialise=1`, and `OK ... accounted=2`.

@@ -30,42 +30,47 @@ import (
 
 // ---- the gate ----
 
-// The declaration on `go` today is `installed_after: "shen.initialise"`, and
-// on that declaration the pass must refuse: during boot the overridden
-// functions are still their KL bodies and the boot enters them. This test is
-// the one that will start failing -- correctly -- if someone edits
-// builders.json without moving shen-go's install, or removes the phase key.
-func TestLowerGateRefusesGoToday(t *testing.T) {
+// The declaration on `go` is `installed_after: "before-initialise"` as of the
+// shen-go pinned in .github/shen-go.ref (30ab469): the generated main calls
+// InstallKernelFast inside the kernel chunk loop, before `shen.initialise`.
+// So the gate OPENS, and this is the test that fails -- correctly -- if
+// someone edits the phase key, drops it, or drops the _checked_by that makes
+// the override list trustworthy.
+//
+// This was the other way round up to shen-go da55c5d, when the declaration
+// read "shen.initialise" and the pass had to refuse. The refusal branch is
+// still covered, by TestLowerGateRefusesAnUncheckedOverrideList,
+// TestLowerGateRefusesUndeclaredPhase and TestRefusalLastLineIsReasonSpecific,
+// on hand-built blocks rather than on whatever `go` happens to declare.
+func TestLowerGateOpensForGo(t *testing.T) {
 	g, err := lowerGateFor("go")
 	if err != nil {
 		t.Fatalf("lowerGateFor(go): %v", err)
 	}
-	if g.ok {
-		t.Fatalf("the gate permitted lowering for go, whose native_overrides_installed_after is %q; "+
-			"shen-go runs shen.initialise before InstallKernelFast, so the KL bodies run during boot "+
-			"and dropping them breaks it", g.phase)
+	if !g.ok {
+		t.Fatalf("the gate refused lowering for go (%s), whose "+
+			"native_overrides_installed_after is %q:\n%s", g.reason, g.phase, g.refusal())
 	}
-	if g.reason != "natives-installed-after-initialise" {
-		t.Errorf("gate reason = %q, want natives-installed-after-initialise", g.reason)
+	if g.phase != "before-initialise" {
+		t.Errorf("native_overrides_installed_after = %q, want before-initialise", g.phase)
 	}
-	msg := g.refusal()
-	// The message must quote the fact and its _source, not just say no: the
-	// reader's next question is "says who", and the answer is in the file.
-	for _, want := range []string{
-		"native_overrides_installed_after",
-		"shen.initialise",
-		"builders.json",
-	} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("the refusal does not mention %q:\n%s", want, msg)
+	if !lowerPhaseOK[strings.ToLower(g.phase)] {
+		t.Errorf("the declared phase %q is not one of the spellings lowerPhaseOK accepts", g.phase)
+	}
+	if len(g.names) == 0 {
+		t.Error("go declares no native_overrides; there would be nothing to lower")
+	}
+	// An open gate deletes code on the strength of the declaration, so the
+	// declaration has to carry its provenance and its check.
+	if !factChecked(g.checkedBy) {
+		t.Errorf("native_overrides_checked_by = %q: an open gate on an unchecked list "+
+			"deletes defuns on someone's recollection", g.checkedBy)
+	}
+	for _, want := range []string{"30ab469", "InstallKernelFast"} {
+		if !strings.Contains(g.phaseSource, want) {
+			t.Errorf("native_overrides_installed_after_source does not mention %q:\n%s",
+				want, g.phaseSource)
 		}
-	}
-	b, err := lowerGateFor("go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if b.phaseSource == "" || !strings.Contains(msg, b.phaseSource) {
-		t.Errorf("the refusal does not carry native_overrides_installed_after_source:\n%s", msg)
 	}
 }
 
@@ -310,14 +315,27 @@ func TestDropDefunsHandlesMultiLineForms(t *testing.T) {
 
 // A refused gate must produce no lowered/ directory at all: an empty or
 // partial one is a directory the next command would read.
+//
+// The refused gate is built here rather than read off `go`. It used to be
+// go's own: up to shen-go da55c5d that target declared its natives installed
+// after shen.initialise, so lowerGateFor("go") WAS a refusal and this test
+// got one for free. At 30ab469 the gate opens on go (see
+// TestLowerGateOpensForGo), and a test about the refused path must not depend
+// on which way a shipped target happens to be declared today.
 func TestLowerSliceRefusesAndWritesNothing(t *testing.T) {
 	dir := writeLowerFixture(t)
-	g, err := lowerGateFor("go")
-	if err != nil {
-		t.Fatal(err)
+	g := lowerGateFromBlock("after-init-port", map[string]json.RawMessage{
+		"native_overrides":                        json.RawMessage(`["vector->"]`),
+		"native_overrides_installed_after":        json.RawMessage(`"shen.initialise"`),
+		"native_overrides_source":                 json.RawMessage(`"a port whose natives land after the initialiser"`),
+		"native_overrides_checked_by":             json.RawMessage(`"TestLowerSliceRefusesAndWritesNothing"`),
+		"native_overrides_installed_after_source": json.RawMessage(`"fake port, main.go: shen.initialise is emitted before InstallKernelFast"`),
+	})
+	if g.ok || g.reason != "natives-installed-after-initialise" {
+		t.Fatalf("the fixture gate is not the refusal this test needs: ok=%v reason=%q", g.ok, g.reason)
 	}
 	if _, err := lowerSlice(dir, g); err == nil {
-		t.Fatal("lowerSlice accepted go's declaration")
+		t.Fatal("lowerSlice accepted a natives-installed-after-initialise declaration")
 	}
 	if _, err := os.Stat(filepath.Join(dir, loweredDirName)); !os.IsNotExist(err) {
 		t.Errorf("a refused lowering left %s behind", filepath.Join(dir, loweredDirName))
@@ -352,44 +370,162 @@ func buildCLI(t *testing.T) string {
 	return bin
 }
 
-// `yggdrasil lower --target go` must refuse, exit 1, and write no lowered/.
-func TestLowerCLIRefusesGo(t *testing.T) {
+// needGoLowerStage1 skips, by name, when the REAL gate path on go cannot be
+// run here: it needs a stage-1 Shen host to shake with, the go toolchain, and
+// the sibling shen-go checkout the `go` builder compiles against. Each is a
+// separate named skip so a green run that skipped says which piece was absent.
+func needGoLowerStage1(t *testing.T) {
+	t.Helper()
+	if os.Getenv("YGGDRASIL_HOST") == "" && defaultHost() == nil {
+		t.Skip("no-stage1-host: no Shen host available (build ../shen-cl or set $YGGDRASIL_HOST)")
+	}
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("no-go-toolchain: go is not on PATH; the go stage-2 builder cannot run")
+	}
+	if os.Getenv("YGGDRASIL_SHEN_GO_DIR") == "" {
+		if _, err := os.Stat(filepath.Join("..", "shen-go")); err != nil {
+			t.Skip("no-sibling-shen-go: no shen-go checkout ($YGGDRASIL_SHEN_GO_DIR unset and " +
+				"../shen-go absent); the go builder cannot run")
+		}
+	}
+}
+
+// `yggdrasil lower --target go` through the REAL gate -- no fake, no swapped
+// seam -- on the target the gate now admits. Up to shen-go da55c5d the same
+// command refused with natives-installed-after-initialise and this test
+// asserted the refusal; at 30ab469 it shakes, drops, and writes lowered/.
+//
+// The dropped count is derived, never written down: it is the size of the
+// intersection of go's declared native_overrides with the kernel defuns the
+// shake kept, which is exactly what --report-only computes. A literal here
+// would be a third copy of a number that already lives in two files.
+func TestLowerCLILowersGoForReal(t *testing.T) {
+	needGoLowerStage1(t)
 	bin := lowerCLI(t)
 	dir := filepath.Join(t.TempDir(), "out")
 	cmd := exec.Command(bin, "lower", "tests/fib.shen", dir, "--target", "go")
 	out, err := cmd.CombinedOutput()
-	if err == nil {
-		t.Fatalf("lower --target go exited 0:\n%s", out)
-	}
-	if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() != 1 {
-		t.Fatalf("lower --target go exit code = %v, want 1\n%s", err, out)
+	if err != nil {
+		t.Fatalf("lower --target go failed: %v\n%s", err, lastLines(string(out), 20))
 	}
 	s := string(out)
-	for _, want := range []string{"natives-installed-after-initialise", "shen.initialise", "builders.json"} {
-		if !strings.Contains(s, want) {
-			t.Errorf("the refusal does not mention %q:\n%s", want, s)
-		}
+	if !strings.Contains(s, "yggdrasil-lower: OK target=go") {
+		t.Fatalf("no OK sentinel:\n%s", lastLines(s, 20))
 	}
-	if _, err := os.Stat(filepath.Join(dir, loweredDirName)); !os.IsNotExist(err) {
-		t.Errorf("a refused lower wrote %s", filepath.Join(dir, loweredDirName))
+
+	// What the gate deleted, recomputed from the two files it rests on.
+	g, err := lowerGateFor("go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep, err := reportLowering(dir, g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// reportLowering counts against the CANONICAL kernel, which lower left
+	// alone, so len(rep.overridden) is the number that should have gone.
+	if len(rep.overridden) == 0 {
+		t.Fatal("the shaken fib slice kept no defun go declares a native for; " +
+			"this test would then be asserting nothing")
+	}
+	want := "dropped=" + strconv.Itoa(len(rep.overridden))
+	if !strings.Contains(s, want) {
+		t.Errorf("the sentinel does not say %q (expected from builders.json x kernel.kl):\n%s",
+			want, lastLines(s, 4))
+	}
+	t.Logf("real gate on go: %s", strings.SplitN(s[strings.Index(s, "yggdrasil-lower: OK"):], "\n", 2)[0])
+
+	// lowered/ exists, carries its report, and the canonical slice is intact.
+	lowDir := filepath.Join(dir, loweredDirName)
+	report, err := os.ReadFile(filepath.Join(lowDir, loweringReportName))
+	if err != nil {
+		t.Fatalf("no lowering report: %v", err)
+	}
+	if !strings.Contains(string(report), "installed-after=before-initialise") {
+		t.Errorf("the report does not record the phase it acted on:\n%s", report)
+	}
+	canonical, err := kernelDefunNames(filepath.Join(dir, "kernel.kl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lowered, err := kernelDefunNames(filepath.Join(lowDir, "kernel.kl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name := range canonical {
+		_, kept := lowered[name]
+		declared := false
+		for _, n := range g.names {
+			if n == name {
+				declared = true
+				break
+			}
+		}
+		if declared == kept {
+			t.Errorf("kernel defun %q: declared-native=%v, kept-in-lowered=%v; "+
+				"lowering must drop exactly the declared names", name, declared, kept)
+		}
 	}
 }
 
-// `yggdrasil lower-check --target go` prints the declared SKIP and exits 0.
-// The skip is a fact about the port, not a failure of the check, so a gate
-// script must be able to tell it from a disagreement.
-func TestLowerCheckCLISkipsOnGo(t *testing.T) {
+// `yggdrasil lower-check --target go`, for real, on the gate the port now
+// opens -- and it FAILS. This test records that failure rather than hiding it,
+// and it is two-sided: if the run starts passing it fails and says what to
+// rewrite.
+//
+// Why it fails. The install PHASE is what builders.json declares and what the
+// gate reads, and that fact is now true: shen-go 30ab469 calls
+// InstallKernelFast inside the kernel chunk loop, before shen.initialise. But
+// the phase is not the whole precondition for lowering. shen-go's overrides
+// are CONDITIONAL on the kernel having defined the name: overridePrimitive and
+// overrideNative (kl/kernelfast.go:211 and :218) both open with
+//
+//	if kernelBound(name) == nil { return }
+//
+// so deleting F's defun from kernel.kl does not leave a native bound to F --
+// it stops the native from being installed at all. On tests/fib.shen the
+// lowered artifact builds and then dies in its initialiser:
+//
+//	yggdrasil: shen.initialise failed: variable vector not bound
+//
+// because `vector` was dropped, its native was skipped, and shen.initialise's
+// `(set *property-vector* (vector 20000))` found nothing bound.
+//
+// So the lowered slice is wrong on go, the check says so, and NOTHING here
+// weakens it. docs/lowering.md carries the measurement. What would have to
+// change is shen-go's: an unconditional install, or a fact Yggdrasil can read
+// that says the install is conditional -- at which point this test's
+// expectation flips back.
+func TestLowerCheckOnGoFailsOnShenGoConditionalInstall(t *testing.T) {
+	needGoLowerStage1(t)
 	bin := lowerCLI(t)
 	dir := filepath.Join(t.TempDir(), "out")
-	cmd := exec.Command(bin, "lower-check", "tests/fib.shen", dir, "--target", "go")
+	cmd := exec.Command(bin, "lower-check", "tests/fib.shen", dir, "--target", "go", "--reference", "go")
 	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("lower-check exited non-zero: %v\n%s", err, out)
+	s := string(out)
+	if strings.Contains(s, "SKIP reason=toolchain-missing") {
+		t.Skipf("no-go-toolchain: the go toolchain is not usable here:\n%s", lastLines(s, 6))
 	}
-	want := "yggdrasil-lower-check: SKIP reason=natives-installed-after-initialise target=go"
-	if !strings.Contains(string(out), want) {
-		t.Fatalf("no %q line:\n%s", want, out)
+	if err == nil {
+		t.Fatalf("lower-check --target go now PASSES. shen-go's InstallKernelFast has stopped "+
+			"skipping names the kernel did not define (the kernelBound guard at "+
+			"kl/kernelfast.go:211/:218), or the pass has changed. Rewrite the measurement in "+
+			"docs/lowering.md and this test:\n%s", lastLines(s, 20))
 	}
+	if !strings.Contains(s, "yggdrasil-lower-check: FAIL") {
+		t.Fatalf("lower-check failed without printing a FAIL sentinel:\n%s", lastLines(s, 20))
+	}
+	// The exact shape matters: a build or run failure of the LOWERED leg,
+	// not a disagreement of outputs and not a refused gate.
+	if !strings.Contains(s, "run=lowered@go") {
+		t.Errorf("the FAIL does not name the lowered@go run; the failure has moved "+
+			"and docs/lowering.md no longer describes it:\n%s", lastLines(s, 20))
+	}
+	if !strings.Contains(s, "not bound") {
+		t.Errorf("the lowered artifact did not die on an unbound name; the cause has moved:\n%s",
+			lastLines(s, 20))
+	}
+	t.Logf("real lower-check on go (expected FAIL, recorded in docs/lowering.md):\n%s", lastLines(s, 4))
 }
 
 // ---- the measurement ----

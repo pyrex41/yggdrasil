@@ -12,7 +12,19 @@
 # last good one).  The jobs here need `cmd/shen`, which builds and boots at the
 # pin below.
 #
+# What moving the pin to `30ab469` (PR #48, "kl-fail-filler-and-native-install-
+# order") bought, measured on this branch: cmd/kl, the bare KLambda VM, no
+# longer panics during (shen.initialise) -- `yggdrasil run tests/fib.shen OUT
+# --target kl` prints `fib 20 = 6765` with no `Panic:` / `Recovered in Eval` /
+# `goroutine ` line, and `trace-check tests/fib.shen OUT --target kl` reports
+# `OK called=33` with `phase: boot=28 program=11`.  And the generated `go`
+# artifact's main now calls InstallKernelFast after EVERY kernel chunk, inside
+# the chunk loop and so before the kernel's own init pass, which is what makes
+# `native_overrides_installed_after: before-initialise` true in builders.json
+# and what opens `yggdrasil lower --target go`.
+#
 # Moving this SHA is a deliberate act, and the mover owns whatever the new host
-# changes.  Taken 2026-09-22 from
-#   git ls-remote https://github.com/pyrex41/shen-go.git refs/heads/master
-22e6beca3c151c2d0c42c71286327338b0febc71
+# changes.  Taken 2026-09-23 from
+#   git -C <shen-go checkout> rev-parse origin/master
+# (github.com/pyrex41/shen-go, refs/heads/master; the merge commit of PR #48)
+30ab4692fc5a2750ee61845cb1bdc96d60f4aca8

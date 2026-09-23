@@ -323,27 +323,49 @@ func contractFactRow(key string, block, defaults map[string]json.RawMessage, b, 
 	}
 
 	// The phase is the content of the native_overrides fact, not a footnote:
-	// shen-go installs the natives AFTER shen.initialise, so the kernel's KL
-	// bodies do run during boot. Printing the list without the phase would
-	// read as "these defuns never execute", which is false.
+	// the two readings differ on whether the kernel's KL ever runs, so a
+	// list printed without its phase reads as "these defuns never execute",
+	// which is true for some ports and false for others. The prose below is
+	// therefore chosen by the value rather than written once for whatever
+	// shen-go happened to do: it said "only after <phase>, so whatever the
+	// boot reached before that point ran as KL" for every value, which is
+	// nonsense when the value is `before-initialise` or `none`.
 	if key == "native_overrides" {
 		phase := b.NativeOverridesInstalledAfter
 		if phase == "" {
 			phase = jsonString(src["native_overrides_installed_after"])
 		}
-		if phase == "" {
+		switch {
+		case phase == "":
 			r.notes = append(r.notes, "installed_after: UNKNOWN -- the declaration does not say "+
 				"when the natives replace the KL bodies, so it does not say whether the KL runs")
-		} else {
+		default:
 			r.summary += ", installed_after=" + phase
-			r.notes = append(r.notes, "phase:      the natives replace these KL bodies only after "+
-				phase+", so whatever the boot reached before that point ran as KL")
+			r.notes = append(r.notes, "phase:      "+phasePhrase(phase))
 			if s := jsonString(src["native_overrides_installed_after_source"]); s != "" {
 				r.notes = append(r.notes, "phase src:  "+s)
 			}
 		}
 	}
 	return r
+}
+
+// phasePhrase is the one-line reading of a native_overrides_installed_after
+// value. The two early spellings (the ones lower.go's lowerPhaseOK accepts)
+// mean the KL bodies are never entered; anything else names a point the boot
+// reaches first, and what ran before it ran as KL.
+func phasePhrase(phase string) string {
+	switch strings.ToLower(strings.TrimSpace(phase)) {
+	case "none":
+		return "the natives are bound before any KL runs at all, so these KL bodies are " +
+			"never entered on this port"
+	case "before-initialise":
+		return "the natives are in place before the kernel's init pass, so these KL bodies " +
+			"are never entered -- nothing in the boot or the program runs them"
+	default:
+		return "the natives replace these KL bodies only after " + phase +
+			", so whatever the boot reached before that point ran as KL"
+	}
 }
 
 // describeFact summarises a fact value for the status line: a count for a
