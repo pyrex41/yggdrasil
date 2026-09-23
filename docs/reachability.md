@@ -100,7 +100,7 @@ down to O(V³/w) ≈ 2.2 × 10⁷ word ops. Objections, in order of importance:
    `yggdrasil.shen`) is that it is pure Shen against the certified kernel
    API — no external toolchain. (Host portability in practice is narrower
    than "any certified Shen" because the user KL inherits the host's
-   `bootstrap` compiler; see the README gotcha. The shake *logic* is
+   `bootstrap` compiler; see the per-host table in docs/targets.md. The shake *logic* is
    portable: shen-lua as host reproduces `kernel.kl` byte-for-byte.)
    Adding a Julia (or C, or anything) sidecar for graph math breaks the
    one property the tool exists to provide. There is no performance
