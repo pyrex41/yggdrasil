@@ -114,7 +114,7 @@ Each has at least one consumer in the code and appears in
 |---|---|---|---|
 | `port_reads` | globals the runtime reads natively | `liveGlobal` (dead-init) in `prune.go`, `yggdrasil.shen` and `main.go` | **verified** (5 entries, `TestPruneInitGoArtifactStillRuns`); every other target inherits `_default`'s `"unknown"` and reads **unknown** -- see above |
 | `special_forms` | KL names the port's compiler lowers without a lookup (`do` on shen-go) | level-3 delta accounting in `scip.go`: a kept defun that is never looked up | **declared** (7 entries, each cited to a line of shen-go; `special_forms_checked_by` is `none`). Unknown on every other target |
-| `native_overrides` | kernel defuns the port replaces with natives (`InstallKernelFast` on shen-go, `overrides.scm` on shen-scheme), plus `native_overrides_installed_after`: the boot phase after which the swap happens | `prune.go`, and the obligations below | **verified** (58 entries, `installed_after=shen.initialise`, `TestNativeOverridesMatchKernelFast`). Unknown on every other target |
+| `native_overrides` | kernel defuns the port replaces with natives (`InstallKernelFast` on shen-go, `overrides.scm` on shen-scheme), plus `native_overrides_installed_after`: the boot phase after which the swap happens | `prune.go`, and the obligations below | **verified** (58 entries, `installed_after=before-initialise` as of shen-go `30ab469`; it read `shen.initialise` up to `da55c5d`, `TestNativeOverridesMatchKernelFast`). Unknown on every other target |
 
 ### Level 1, proposed: four keys with a row and no data
 
@@ -178,21 +178,31 @@ of "nobody has looked". shen-go's list would be readable from
 
 **The phase is half the fact.** A list of overridden defuns says nothing
 until it says *when* the swap happens, because the two readings differ on
-whether the kernel's KL ever runs. On shen-go it runs: the generated
-`main` calls `shen.initialise` before `runHelper("InstallKernelFast",
-...)`, so every override's KL body executes during boot and is replaced
-only afterwards -- measured, not assumed. `yggdrasil trace-check
-tests/fib.shen OUT --target go` (shen-go da55c5d) reports `OK called=34
+whether the kernel's KL ever runs. On shen-go the answer changed under
+this repository, and both readings were measured rather than assumed.
+
+At shen-go `da55c5d` the generated `main` called `shen.initialise` before
+`runHelper("InstallKernelFast", ...)`, so every override's KL body
+executed during boot and was replaced only afterwards: `yggdrasil
+trace-check tests/fib.shen OUT --target go` reported `OK called=34
 reach=53`, and of the 18 native-overridden functions in that slice's kept
-kernel defuns, **11** recorded a KL entry in `called.facts`: `<-vector`,
+kernel defuns **11** recorded a KL entry in `called.facts` (`<-vector`,
 `empty?`, `fail`, `hdstr`, `limit`, `map`, `put`, `reverse`,
-`shen.+string?`, `vector`, `vector->`. Every one of those entries happened
-before `InstallKernelFast` ran. So
-`native_overrides_installed_after: "shen.initialise"` is part of the
-declaration, and the contract report prints it on the same line. An
-override list with no phase would read as "these KL bodies never run",
-which is false, and pruning on that reading would delete initialisation
-the boot depends on.
+`shen.+string?`, `vector`, `vector->`), every one of them before
+`InstallKernelFast` ran.
+
+At shen-go `30ab469` (PR #48, the SHA in `.github/shen-go.ref`)
+`InstallKernelFast` runs inside the kernel chunk loop, after every chunk
+and so before the initialiser. Re-taken on this branch 2026-09-23, host
+shen-cl, same fixture and target: `OK called=11 reach=53`, and **0** of
+the same 18 record a KL entry -- `called.facts` holds eleven names, none
+of them an override. So the declaration is now
+`native_overrides_installed_after: "before-initialise"`, and the contract
+report prints it on the same line. An override list with no phase would
+read as "these KL bodies never run", which was false at `da55c5d` and is
+true at `30ab469` only because the phase key now says so; the key is what
+carries the difference, which is why it is refused when absent rather than
+read optimistically.
 
 **Obligation D (dispatch).** A symbol applied as a function resolves
 through the artifact's own table (the trimmed lambda table and arity table
@@ -234,13 +244,16 @@ disk:
   before the port installs its natives the KL body is what runs and the
   name records itself; after, the native runs and it does not. Which half
   a given entry falls in is what `native_overrides_installed_after`
-  states, and on shen-go it is `shen.initialise`, i.e. the whole boot is
-  in the first half. Measured at Yggdrasil `3c499a1`, shen-go `da55c5d`,
-  host shen-cl, on `tests/fib.shen --target go`: of the 18
-  native-overridden functions among that slice's 54 kept kernel defuns, 11
-  appear in `called.facts` -- so the reading that a native override "never
-  records itself" is false for that port, for every entry the boot made,
-  and an absence is not evidence either way.
+  states. On shen-go it was `shen.initialise` up to `da55c5d`, i.e. the
+  whole boot was in the first half: measured at Yggdrasil `3c499a1`,
+  shen-go `da55c5d`, host shen-cl, on `tests/fib.shen --target go`, 11 of
+  the 18 native-overridden functions among that slice's 54 kept kernel
+  defuns appeared in `called.facts`. At shen-go `30ab469` it is
+  `before-initialise` and the first half is empty: re-taken on this branch
+  2026-09-23, same fixture and target, **0 of the 18** appear. Either way
+  the reading that a native override "never records itself" is a claim
+  about a phase and not about a function, and an absence is not evidence
+  on its own.
 
   The trace now carries the phase itself, so this is readable off the
   artifact rather than inferred from shen-go's source: every record's
@@ -248,23 +261,29 @@ disk:
   toplevel form runs and `p` afterwards (on a shaken artifact that point
   coincides with the end of `shen.initialise`; on a full artifact it comes
   after the port has installed the user's own defuns), and `trace-check`
-  prints `phase: boot=N program=M`. On `fib --target go` that line reads
-  `boot=29 program=9`, and **all 11** of the override entries above are
-  tagged `b`. Not one override is entered in the program phase, which is
-  exactly what `installed_after: shen.initialise` predicts. On
-  `--target kl` the same run reports `boot=27 program=11`; the earlier
-  `DEGENERATE` reading on that target came from the flip being woven into
-  the initialiser, which shen-go's `cmd/kl` boots without.
+  prints `phase: boot=N program=M`. At shen-go `da55c5d` that line read
+  `boot=29 program=9` on `fib --target go`, with **all 11** of the
+  override entries above tagged `b` and not one in the program phase --
+  exactly what `installed_after: shen.initialise` predicted. At shen-go
+  `30ab469` it reads `boot=2 program=9`: the two boot-phase names are
+  `shen.initialise` and `shen.initialise-arity-table`, and no override
+  appears in either phase, which is what `installed_after:
+  before-initialise` predicts. On `--target kl` the same run reports
+  `boot=28 program=11` (re-taken 2026-09-23 at `30ab469`; it read
+  `boot=27 program=11` at `da55c5d`). The still earlier `DEGENERATE`
+  reading on `kl` came from the flip being woven into the initialiser,
+  which shen-go's `cmd/kl` boots without.
 
   What this means for the query below: a name missing from `called` may be
   an override entered only after installation, and a name present may be
   an override entered before it. Neither is a finding on its own. The
   honest report is per-port and phase-aware, and Yggdrasil does not write
   it yet: nothing today excludes override names from `called`, and no
-  report counts them. A port whose overrides are installed *before* its
-  user program runs (the reading the old text assumed) can subtract them
-  and say how many; shen-go cannot, because for shen-go the set is neither
-  all of them nor none.
+  report counts them. At `da55c5d` shen-go was the awkward case -- the set
+  of overrides that recorded an entry was neither all of them nor none --
+  and at `30ab469` it is the easy one, none. That is a fact about one pin,
+  not about ports, and the report still has to be phase-aware to be
+  correct on the next port that installs late.
 
 The check is `uncoveredCall(F) :- called(F), kernel(F), !reach(F)` empty,
 per run, per port. It is the one piece of evidence that is identical in
@@ -351,8 +370,9 @@ commands that run things rather than declarations to read, so the report
 names them and says it did not run them, rather than printing a row that
 could only ever say `ok`:
 
-Run against a sibling shen-go at `da55c5d`, with the long `source:` and
-`checked_by:` strings elided at `...`:
+Re-run on this branch 2026-09-23 against a sibling shen-go at `30ab469`, the
+SHA in `.github/shen-go.ref`, with the long `source:` and `checked_by:`
+strings elided at `...`:
 
 ```
 yggdrasil-contract: target=go
@@ -361,17 +381,17 @@ yggdrasil-contract: target=go
   unknown = not declared, or declared as the literal "unknown" -- nobody measured it; read the source for why
 level0  builder            ok         runs on shen-go, 3 build steps, needs go
 level1  port_reads         verified   5 entries
-                                      source:     shen-go da55c5d kl/primitives.go (*stinput*, *stoutput*), ...
+                                      source:     shen-go 30ab469 kl/primitives.go:81-82 (*stinput*, *stoutput*, ...), ...
                                       checked_by: TestPruneInitGoArtifactStillRuns (prune_test.go) and the parity gate: ...
 level1  port_writes        unknown    not declared in builders.json
 level1  special_forms      declared   7 entries
-                                      source:     shen-go da55c5d, derived as a class and not from a fixture's residue. ...
+                                      source:     shen-go 30ab469 (every line number below re-read at that SHA ...), derived as a class and not from a fixture's residue. ...
                                       checked_by: none
-level1  native_overrides   verified   58 entries, installed_after=shen.initialise
-                                      source:     shen-go da55c5d kl/kernelfast.go InstallKernelFast: ...
+level1  native_overrides   verified   58 entries, installed_after=before-initialise
+                                      source:     shen-go 30ab469 kl/kernelfast.go:985 InstallKernelFast: ...
                                       checked_by: TestNativeOverridesMatchKernelFast (prune_test.go): ...
-                                      phase:      the natives replace these KL bodies only after shen.initialise, so whatever the boot reached before that point ran as KL
-                                      phase src:  shen-go da55c5d cmd/yggdrasil-build/main.go genMain: ...
+                                      phase:      the natives are in place before the kernel's init pass, so these KL bodies are never entered -- nothing in the boot or the program runs them
+                                      phase src:  shen-go 30ab469 cmd/yggdrasil-build/main.go genMain: ...
 level1  native_deps        unknown    not declared in builders.json
 level1  call_style         unknown    not declared in builders.json
 level1  dispatch           unknown    not declared in builders.json

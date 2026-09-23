@@ -267,19 +267,24 @@ func TestTraceCheckFixtures(t *testing.T) {
 					// from. See evidencePossible.
 					t.Skipf("no evidence obtainable here: %s (%v)", name, err)
 				}
-				// A target whose transcript carries its declared error
-				// markers is EXPECTED to fail today, and the expectation
-				// is written down here rather than hidden in a skip:
-				// shen-go's cmd/kl panics in (shen.initialise) on every
-				// boot, recovers, and runs the rest, so containment used
-				// to report OK over a failed boot. The assertion is
-				// two-sided -- it demands the transcript-error failure
-				// AND fails if the run starts passing, which is when
-				// these four lines and the KNOWN_GAPS entries in
-				// scripts/parity-gate.sh must come out.
+				// A target that declares transcript_error_markers must
+				// now PASS with none of them in its transcript. Up to
+				// shen-go da55c5d this branch ran the other way round:
+				// cmd/kl panicked in (shen.initialise) on every boot,
+				// recovered, ran the rest, and containment reported OK
+				// over a failed boot -- so the test DEMANDED the
+				// transcript-error FAIL. At shen-go 30ab469 the boot is
+				// clean (`trace-check tests/fib.shen --target kl` reports
+				// OK called=33, phase boot=28 program=11), so the
+				// expectation is inverted: a marker coming back is a
+				// REGRESSION in the port, named here rather than
+				// tolerated, and the SHA in .github/shen-go.ref is what
+				// would have to have moved to explain it.
 				if line := failSentinel(err); strings.Contains(line, "transcript-error") {
-					t.Logf("%s: %s -- shen-go's VM panics in the boot; expected until it does not", name, line)
-					return
+					t.Fatalf("%s: %s -- a declared transcript error marker is back. At the "+
+						"shen-go pinned in .github/shen-go.ref (30ab469) the %s boot is clean, "+
+						"so this is a regression in the port, not an expected gap: %v",
+						name, line, target, err)
 				}
 				if err != nil {
 					t.Fatalf("trace-check: %v", err)
@@ -287,11 +292,9 @@ func TestTraceCheckFixtures(t *testing.T) {
 				if res == nil {
 					t.Skipf("target %s is not runnable here", target)
 				}
-				if len(transcriptErrorMarkers(target)) > 0 && res.ok {
-					t.Errorf("%s now PASSES with no error marker in its transcript. "+
-						"The port's boot has been fixed: delete this branch, and delete the "+
-						"<fixture>:%s lines from scripts/parity-gate.sh's KNOWN_GAPS",
-						name, target)
+				if len(transcriptErrorMarkers(target)) > 0 && !res.ok {
+					t.Errorf("%s declares transcript_error_markers and did not pass: %s",
+						name, res.sentinel)
 				}
 				if !res.ok {
 					t.Fatalf("containment failed: %s", res.sentinel)
@@ -1502,17 +1505,16 @@ func TestRunOnKlTargetFeedsTheProgramOnStdin(t *testing.T) {
 	if !strings.Contains(canon(out), canon(string(want))) {
 		t.Errorf("the kl transcript does not contain %q", canon(string(want)))
 	}
-	// Containment is all this test claims, and it is a claim about the
-	// PLUMBING: the program reached the VM on stdin and ran. It is not a
-	// claim that the run was good -- the same transcript carries the boot
-	// panic below, which is why trace-check and the parity gate check the
-	// declared markers before they conclude anything from containment.
+	// Containment is what this test claims about the PLUMBING: the program
+	// reached the VM on stdin and ran. Up to shen-go da55c5d the same
+	// transcript also carried the boot panic, and that was LOGGED here
+	// rather than asserted, because this test is about stdin delivery. At
+	// shen-go 30ab469 the boot is clean, so the marker check is an
+	// assertion: a marker in this transcript is a regression in the port.
 	if m, line := transcriptError(transcriptErrorMarkers("kl"), out); m != "" {
-		t.Logf("the run reached the program, and its transcript also carries %q at %q: "+
-			"this test is about stdin delivery, not about the run being correct", m, line)
-	} else {
-		t.Logf("no error marker in the transcript: shen-go's boot panic may have been fixed, " +
-			"in which case the KNOWN_GAPS entries for kl in scripts/parity-gate.sh are stale")
+		t.Errorf("the kl transcript carries the declared error marker %q at %q. At the "+
+			"shen-go pinned in .github/shen-go.ref (30ab469) the kl boot is clean, so a "+
+			"marker here means the port regressed", m, line)
 	}
 	// And with no program file the same argv produces no such answer, which
 	// is what makes the assertion above about the plumbing rather than about
@@ -1535,6 +1537,14 @@ func TestRunOnKlTargetFeedsTheProgramOnStdin(t *testing.T) {
 // run whose initialiser had failed. The target now declares
 // transcript_error_markers, and checkGolden checks them before it concludes
 // anything from containment.
+//
+// That panic is gone at the shen-go pinned in .github/shen-go.ref (30ab469):
+// every fixture's kl transcript is clean today, and TestTraceCheckFixtures
+// asserts it. The markers stay declared and this test stays, on SYNTHETIC
+// transcripts, because what it holds is the ordering -- markers before
+// containment -- which is a property of the reader and not of whichever boot
+// the pin currently has. A live-transcript version of this test would have
+// gone green for the wrong reason.
 //
 // The markers come from builders.json, not from this file: a test that carried
 // its own copy would pass while the declaration said something else.

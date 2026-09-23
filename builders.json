@@ -159,7 +159,7 @@
       "*property-vector*",
       "shen.*lambdatable*"
     ],
-    "port_reads_source": "shen-go da55c5d kl/primitives.go (*stinput*, *stoutput*), kl/kernelfast.go nativeFn (shen.*lambdatable*) and primArityFast (*property-vector*), kl/prim.go ResolveHomePath (*home-directory*)",
+    "port_reads_source": "shen-go 30ab469 kl/primitives.go:81-82 (*stinput*, *stoutput*, set by the primitive registry at boot), kl/kernelfast.go:145 nativeFn (shen.*lambdatable*, read at call time) and :140 primArityFast -> kernelArity (*property-vector*), kl/primitives.go:485 ResolveHomePath (*home-directory*, read by open). Re-read at 30ab469: the first three citations held; the fourth said kl/prim.go, and there is no such file -- ResolveHomePath is in kl/primitives.go",
     "port_reads_checked_by": "TestPruneInitGoArtifactStillRuns (prune_test.go) and the parity gate: the pruned go slice builds and prints fib.expected. One-directional: a name added here that go does not read makes the pruned slice keep a form it should not, and a name that go DOES read but this list omits breaks the run -- but a name removed from a list that is already a superset only prunes less, and nothing fails",
     "native_overrides": [
       "<-vector",
@@ -221,10 +221,10 @@
       "vector->",
       "vector?"
     ],
-    "native_overrides_source": "shen-go da55c5d kl/kernelfast.go InstallKernelFast: every symbol rebound there (BindSymbolFunc / restoreCanonicalPrimitive / overridePrimitive / overrideNative)",
+    "native_overrides_source": "shen-go 30ab469 kl/kernelfast.go:985 InstallKernelFast: every symbol rebound there (BindSymbolFunc / restoreCanonicalPrimitive:185 / overridePrimitive:211 / overrideNative:218). Re-read at 30ab469: the function and all four rebinding helpers are still there and the list is unchanged, which TestNativeOverridesMatchKernelFast re-derives on every run",
     "native_overrides_checked_by": "TestNativeOverridesMatchKernelFast (prune_test.go): parses InstallKernelFast in the sibling checkout and compares both ways, so a name added here and a name removed from here both fail",
-    "native_overrides_installed_after": "shen.initialise",
-    "native_overrides_installed_after_source": "shen-go da55c5d cmd/yggdrasil-build/main.go genMain: run(&e, \"shen.initialise\", ...) is emitted before runHelper(\"InstallKernelFast\", ...), so the kernel's KL bodies run during boot and the natives replace them only afterwards",
+    "native_overrides_installed_after": "before-initialise",
+    "native_overrides_installed_after_source": "shen-go 30ab469 cmd/yggdrasil-build/main.go genMain: the kernel chunk loop at main.go:619-622 emits runHelper(\"InstallKernelFast\", InstallKernelFast) at main.go:621, INSIDE the loop and so after every kernel chunk, while run(&e, \"shen.initialise\", PrimFunc(MakeSymbol(\"shen.initialise\"))) is emitted later, at main.go:640-642, only when the manifest declares an init. The generated artifact shows the same order (app-go/main.go: chunk loop and InstallKernelFast, then shen.initialise). So every overridden name is a native before the initialiser runs, and the KL bodies the natives replace are never entered. Observable consequence: `yggdrasil trace-check tests/fib.shen OUT --target go` reports `phase: boot=2 program=9` with called=11, where at shen-go da55c5d -- natives installed after shen.initialise -- the same command reported boot=29 program=9, called=34: the 27 extra boot calls were the kernel KL bodies the initialiser entered before the swap",
     "special_forms": [
       "do",
       "integer?",
@@ -234,7 +234,7 @@
       "symbol?",
       "variable?"
     ],
-    "special_forms_source": "shen-go da55c5d, derived as a class and not from a fixture's residue. `do` is syntactic: src/compiler.shen:6 `Env [do X Y] -> [$do (parse Env X) (parse Env Y)]`, the only parse head that is also a kernel defun. The other six are exactly the intersection of the `shenPrimitive` table (codegen/codegen.go:919-965) with kernel.kl's 687 defun names, each emitted by emitDirectPrimitive (codegen/codegen.go:888) as a bare Go call with no PrimFunc lookup, unconditionally for kernel chunks because cmd/yggdrasil-build/main.go:428 sets `cg.Sealed = true` before compiling them: `not` codegen.go:958 -> PrimNot, `symbol?` :960 -> PrimIsSymbol, `read-file-as-bytelist` :961 -> PrimReadFileAsByteList, `read-file-as-string` :962 -> PrimReadFileAsString, `variable?` :963 -> PrimIsVariable, `integer?` :964 -> PrimIsInteger. Which of the seven a given slice actually needs subtracted is a property of the program; the declaration is the port's whole class."
+    "special_forms_source": "shen-go 30ab469 (every line number below re-read at that SHA and unchanged from the da55c5d reading), derived as a class and not from a fixture's residue. `do` is syntactic: src/compiler.shen:6 `Env [do X Y] -> [$do (parse Env X) (parse Env Y)]`, the only parse head that is also a kernel defun. The other six are exactly the intersection of the `shenPrimitive` table (codegen/codegen.go:919-965) with kernel.kl's 687 defun names, each emitted by emitDirectPrimitive (codegen/codegen.go:888) as a bare Go call with no PrimFunc lookup, unconditionally for kernel chunks because cmd/yggdrasil-build/main.go:428 sets `cg.Sealed = true` before compiling them: `not` codegen.go:958 -> PrimNot, `symbol?` :960 -> PrimIsSymbol, `read-file-as-bytelist` :961 -> PrimReadFileAsByteList, `read-file-as-string` :962 -> PrimReadFileAsString, `variable?` :963 -> PrimIsVariable, `integer?` :964 -> PrimIsInteger. Which of the seven a given slice actually needs subtracted is a property of the program; the declaration is the port's whole class."
   },
   "kl": {
     "_comment": [
@@ -300,7 +300,7 @@
       "Panic:",
       "goroutine "
     ],
-    "transcript_error_markers_source": "shen-go cmd/kl/main.go and kl/eval.go Eval.func1: the VM recovers a panic, prints `Panic: &{<n> <message>}`, then `Recovered in Eval: <the form>`, then the goroutine dump, and CARRIES ON with the next toplevel form. Observed on every kl boot today: `(shen.initialise)` panics with `Panic: &{22 implementation error in shen.change-pointer-value}` and the program still runs afterwards, so containment alone reads a failed boot as a pass",
+    "transcript_error_markers_source": "shen-go cmd/kl/main.go and kl/eval.go Eval.func1: the VM recovers a panic, prints `Panic: &{<n> <message>}`, then `Recovered in Eval: <the form>`, then the goroutine dump, and CARRIES ON with the next toplevel form. That is a property of the VM's recovery path, not of any one boot, so the markers stay declared whatever the current boot does. History and current reading: up to shen-go da55c5d every kl boot tripped them -- `(shen.initialise)` panicked with `Panic: &{22 implementation error in shen.change-pointer-value}` and the program ran on regardless, so containment alone read a failed boot as a pass. As of shen-go 30ab469 the boot no longer trips them: `yggdrasil run tests/fib.shen OUT --target kl` and the same on tests/metaeval.shen produce transcripts with zero `Panic:` / `Recovered in Eval` / `goroutine ` lines, and `trace-check tests/fib.shen --target kl` reports OK with `phase: boot=28 program=11`. A marker reappearing is now a regression, which is what TestTraceCheckFixtures asserts",
     "transcript_error_markers_checked_by": "TestTranscriptErrorMarkersFailBeforeContainment (trace_test.go) and TestTranscriptErrorMarkerFailsParity (parity_test.go): a transcript carrying a marker FAILS even when the truth is contained in it, and a clean transcript still passes"
   },
   "joy": {

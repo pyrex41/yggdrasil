@@ -13,15 +13,29 @@ package main
 // why its correctness check is one line: every name deleted must be a name the
 // target declared (`badLowering` below).
 //
-// Why it refuses on shen-go today. `native_overrides_installed_after` on the
-// `go` entry of builders.json is "shen.initialise", read off shen-go's
-// generated main: `shen.initialise` runs BEFORE `InstallKernelFast`, so during
-// boot the overridden functions are still their KL bodies and the boot enters
-// them. Deleting those defuns would break the boot. The gate therefore refuses
-// unless the declared phase is "none" or "before-initialise", and says which
-// fact it read. When shen-go moves the install ahead of `shen.initialise` --
-// the port's change, not Yggdrasil's -- the declaration changes and this code
-// lights up with no edit here.
+// What the gate is, and what it does NOT cover. The gate reads
+// `native_overrides_installed_after` and permits the pass only when it is
+// "none" or "before-initialise" -- the two phases under which no KL body the
+// pass would delete is ever entered. On the `go` entry that key read
+// "shen.initialise" up to shen-go da55c5d (the generated main ran the
+// initialiser before InstallKernelFast, so the boot entered those bodies) and
+// reads "before-initialise" at 30ab469, where InstallKernelFast is called
+// inside the kernel chunk loop. The port changed, the declaration changed,
+// and this code lit up with no edit here -- which is what the seam was for.
+//
+// It lit up onto a second precondition nobody had written down, and this
+// comment is where that is recorded rather than quietly patched. shen-go's
+// InstallKernelFast installs a native only for a name the kernel ALREADY
+// bound (`if kernelBound(name) == nil { return }`, kl/kernelfast.go:211 and
+// :218), so deleting F's defun does not leave the native in F's place -- it
+// stops the native from being installed at all. `yggdrasil lower-check
+// tests/fib.shen OUT --target go` therefore reports
+// `FAIL pair=none run=lowered@go`: the lowered artifact builds and dies in
+// its initialiser with "variable vector not bound". The FAIL stands, the gate
+// was not widened to hide it, and docs/lowering.md ("The parity, actually
+// run, and what it found") carries the output and the two ways out --
+// an unconditional install in the port, or a declared fact here saying the
+// install is conditional.
 //
 // Why the canonical slice is untouched. A lowered slice is not portable: it
 // cannot go through the cross-target byte-identity check or the parity gate,
@@ -56,9 +70,15 @@ const loweredDirName = "lowered"
 const loweringReportName = "yggdrasil.lowering.txt"
 
 // lowerPhaseOK are the declared install phases under which dropping an
-// overridden defun is safe: the natives are in place before any KL body could
-// be entered. Anything else -- shen.initialise today -- means some phase of the
+// overridden defun is safe so far as the PHASE goes: the natives are in place
+// before any KL body could be entered. Anything else -- "shen.initialise",
+// which is what `go` declared up to shen-go da55c5d -- means some phase of the
 // run executes those bodies, and the slice must keep them.
+//
+// A phase in this set is necessary and, on shen-go, not sufficient: see the
+// file comment. Nothing is added here to compensate, because a gate that
+// refused on a fact builders.json does not carry would be refusing on this
+// file's recollection.
 //
 // The two spellings are the only ones builders.json and port-contract.md use.
 // An -ize alias was here and is gone: a gate that accepts spellings no

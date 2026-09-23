@@ -479,10 +479,19 @@ func TestNativeOverridesMatchKernelFast(t *testing.T) {
 	if len(b.NativeOverrides) == 0 {
 		t.Fatal("builders.json's go entry declares no native_overrides")
 	}
-	if b.NativeOverridesInstalledAfter != "shen.initialise" {
-		t.Errorf("go's native_overrides_installed_after is %q; shen-go's generated main runs "+
-			"shen.initialise before InstallKernelFast, so the overrides are installed AFTER "+
-			"boot and the kernel's KL bodies do run", b.NativeOverridesInstalledAfter)
+	// The phase, as declared. It was "shen.initialise" up to shen-go
+	// da55c5d, where the generated main ran the initialiser before
+	// InstallKernelFast; at 30ab469 (the SHA in .github/shen-go.ref) the
+	// install is inside the kernel chunk loop and it reads
+	// "before-initialise". This assertion is on the VALUE and not on which
+	// way it happens to point, because `lower.go`'s gate opens on it: a
+	// silent edit here would let the pass delete boot code.
+	if b.NativeOverridesInstalledAfter != "before-initialise" {
+		t.Errorf("go's native_overrides_installed_after is %q, want before-initialise: at the "+
+			"shen-go pinned in .github/shen-go.ref (30ab469) cmd/yggdrasil-build emits "+
+			"runHelper(\"InstallKernelFast\", ...) inside the kernel chunk loop, before "+
+			"shen.initialise. If the pin moved back, move this with it and re-read "+
+			"docs/lowering.md", b.NativeOverridesInstalledAfter)
 	}
 
 	path := filepath.Join(siblingDir("go", b), "kl", "kernelfast.go")
@@ -557,8 +566,11 @@ func kernelFastRebindings(t *testing.T, src string) map[string]bool {
 
 // The contract report is the consumer native_overrides did not have. It must
 // print the phase: an override list with no "installed after what" reads as
-// "these KL bodies never run", and on shen-go they do run -- shen.initialise
-// executes before InstallKernelFast.
+// "these KL bodies never run", which is a claim the declaration has to make
+// or not make for itself. On shen-go it was false up to da55c5d (the
+// initialiser ran before InstallKernelFast) and is true at 30ab469; either
+// way the report has to carry the phase rather than leave the reader to
+// assume one.
 func TestContractReportNamesSourceAndPhase(t *testing.T) {
 	builders, defaults, err := parseBuilders()
 	if err != nil {
@@ -593,8 +605,32 @@ func TestContractReportNamesSourceAndPhase(t *testing.T) {
 			t.Errorf("go's %s row prints no checked_by", key)
 		}
 	}
-	if nov := goRows["native_overrides"]; !strings.Contains(nov.summary, "installed_after=shen.initialise") {
-		t.Errorf("go's native_overrides row does not say when the natives are installed: %q", nov.summary)
+	nov := goRows["native_overrides"]
+	if !strings.Contains(nov.summary, "installed_after="+builders["go"].NativeOverridesInstalledAfter) {
+		t.Errorf("go's native_overrides row does not say when the natives are installed: %q "+
+			"(builders.json declares %q)", nov.summary, builders["go"].NativeOverridesInstalledAfter)
+	}
+	// And the prose line has to match the value. It used to be written once,
+	// for shen-go's then-current "after shen.initialise", and printed for
+	// every value -- so when the declaration moved to before-initialise the
+	// report read "the natives replace these KL bodies only after
+	// before-initialise", which is not a sentence about anything.
+	phaseNote := ""
+	for _, n := range nov.notes {
+		if strings.HasPrefix(n, "phase:") {
+			phaseNote = n
+		}
+	}
+	if phaseNote == "" {
+		t.Fatalf("go's native_overrides row prints no phase note:\n%v", nov.notes)
+	}
+	if strings.Contains(phaseNote, "only after before-initialise") ||
+		strings.Contains(phaseNote, "only after none") {
+		t.Errorf("the phase note reads the declared value back as a point in time: %q", phaseNote)
+	}
+	if !strings.Contains(phaseNote, "never entered") {
+		t.Errorf("go declares before-initialise; the phase note should say the KL bodies are "+
+			"never entered, got %q", phaseNote)
 	}
 
 	// A fact nobody declared must read as unknown, not as a silent absence
