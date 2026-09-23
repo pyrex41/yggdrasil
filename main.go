@@ -138,6 +138,50 @@ func embeddedHash() (string, error) {
 	return hex.EncodeToString(h.Sum(nil))[:12], nil
 }
 
+// ---- scratch directories ----
+
+// keepTmp reports whether the scratch directories this binary creates should
+// be left on disk after a run. Nothing on the CLI surface asks for that, so
+// the knob is an environment variable rather than a flag: set
+// YGGDRASIL_KEEP_TMP=1 to keep a failed host invocation's driver file or a
+// half-finished build's scratch tree for inspection.
+func keepTmp() bool { return os.Getenv("YGGDRASIL_KEEP_TMP") != "" }
+
+// cleanupTmp removes a directory this binary created with os.MkdirTemp,
+// unless YGGDRASIL_KEEP_TMP says to keep it. Errors are ignored on purpose:
+// a scratch dir that cannot be removed is not a reason to fail a run that
+// otherwise produced its artifacts.
+func cleanupTmp(dir string) {
+	if dir == "" || keepTmp() {
+		return
+	}
+	os.RemoveAll(dir)
+}
+
+// driverFile writes the --eval-style=positional driver -- (load
+// "yggdrasil.shen") followed by the expression -- into a scratch directory
+// of its own, and returns the path plus the cleanup that removes it.
+//
+// The driver used to be written into the artifact or facts directory, where
+// it stayed behind among the outputs and was picked up by anything that
+// walks that tree. It can live anywhere: every caller runs the host with
+// cwd=yggRoot(), which is what the (load ...) resolves against.
+//
+// A directory or a write that fails is returned as an error; the caller
+// reports it before the host is ever started.
+func driverFile(name, expr string) (string, func(), error) {
+	dir, err := os.MkdirTemp("", "yggdrasil_driver_")
+	if err != nil {
+		return "", func() {}, fmt.Errorf("writing the host driver: %w", err)
+	}
+	drv := filepath.Join(dir, name)
+	if err := os.WriteFile(drv, []byte("(load \"yggdrasil.shen\")\n"+expr+"\n"), 0o644); err != nil {
+		cleanupTmp(dir)
+		return "", func() {}, fmt.Errorf("writing the host driver: %w", err)
+	}
+	return drv, func() { cleanupTmp(dir) }, nil
+}
+
 // ---- materialised root ----
 
 // yggRoot extracts the embedded tree to a versioned cache dir (once) and returns
@@ -304,8 +348,11 @@ func shakeMode(prog, outdir string, host []string, evalStyle string, quiet bool,
 
 	var argv []string
 	if evalStyle == "positional" {
-		drv := filepath.Join(outdir, "_shake_driver.shen")
-		os.WriteFile(drv, []byte("(load \"yggdrasil.shen\")\n"+expr+"\n"), 0o644)
+		drv, done, err := driverFile("_shake_driver.shen", expr)
+		if err != nil {
+			return "", err
+		}
+		defer done()
 		argv = append(append([]string{}, host...), drv)
 	} else {
 		argv = append(append([]string{}, host...), "eval", "-q", "-l", "yggdrasil.shen", "-e", expr)
@@ -413,9 +460,11 @@ func runCheck(prog string, host []string, evalStyle string) (out, ver string, ok
 
 	var argv []string
 	if evalStyle == "positional" {
-		tmp, _ := os.MkdirTemp("", "yggdrasil_check_")
-		drv := filepath.Join(tmp, "_check_driver.shen")
-		os.WriteFile(drv, []byte("(load \"yggdrasil.shen\")\n"+expr+"\n"), 0o644)
+		drv, done, err := driverFile("_check_driver.shen", expr)
+		if err != nil {
+			return "", "", false, err
+		}
+		defer done()
 		argv = append(append([]string{}, host...), drv)
 	} else {
 		argv = append(append([]string{}, host...), "eval", "-q", "-l", "yggdrasil.shen", "-e", expr)
@@ -746,7 +795,18 @@ func build(target, outdir string, web bool) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	// {tmp} is a BUILD-time scratch dir -- the go target compiles its
+	// yggdrasil-build helper into it -- so it goes when this function
+	// returns. The one exception is a builder whose RUN argv names it: that
+	// command outlives this call, and deleting the tree would pull the
+	// binary out from under it. Nothing in builders.json does today.
 	tmp, _ := os.MkdirTemp("", "yggdrasil_build_")
+	tmpLive := false
+	defer func() {
+		if !tmpLive {
+			cleanupTmp(tmp)
+		}
+	}()
 	subs := map[string]string{
 		"{yggroot}": root, "{outdir}": outdir, "{tmp}": tmp,
 		"{shen_joy_bin}": joyBinary(b),
@@ -811,6 +871,9 @@ func build(target, outdir string, web bool) ([]string, error) {
 	runArgv := make([]string, len(b.Run))
 	for i, a := range b.Run {
 		runArgv[i] = subst(a, subs)
+		if tmp != "" && strings.Contains(runArgv[i], tmp) {
+			tmpLive = true
+		}
 	}
 	// Native-exe run path (e.g. {outdir}/app-go-bin) is app-go-bin.exe on Windows.
 	if len(runArgv) > 0 && strings.ContainsAny(runArgv[0], `/\`) {
@@ -1070,9 +1133,11 @@ func runWhy(prog string, target string, host []string, evalStyle string) (string
 
 	var argv []string
 	if evalStyle == "positional" {
-		tmp, _ := os.MkdirTemp("", "yggdrasil_why_")
-		drv := filepath.Join(tmp, "_why_driver.shen")
-		os.WriteFile(drv, []byte("(load \"yggdrasil.shen\")\n"+expr+"\n"), 0o644)
+		drv, done, err := driverFile("_why_driver.shen", expr)
+		if err != nil {
+			return "", err
+		}
+		defer done()
 		argv = append(append([]string{}, host...), drv)
 	} else {
 		argv = append(append([]string{}, host...), "eval", "-q", "-l", "yggdrasil.shen", "-e", expr)
@@ -1175,8 +1240,11 @@ func facts(prog, outdir string, host []string, evalStyle string, quiet bool, opt
 
 	var argv []string
 	if evalStyle == "positional" {
-		drv := filepath.Join(outdir, "_facts_driver.shen")
-		os.WriteFile(drv, []byte("(load \"yggdrasil.shen\")\n"+expr+"\n"), 0o644)
+		drv, done, err := driverFile("_facts_driver.shen", expr)
+		if err != nil {
+			return "", err
+		}
+		defer done()
 		argv = append(append([]string{}, host...), drv)
 	} else {
 		argv = append(append([]string{}, host...), "eval", "-q", "-l", "yggdrasil.shen", "-e", expr)

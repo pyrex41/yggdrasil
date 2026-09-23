@@ -308,8 +308,11 @@ func traceCheckHost(prog, factsDir string, host []string, evalStyle string) (str
 	expr := fmt.Sprintf(`(yggdrasil.trace-check ["%s"] "%s")`, prog, factsDir)
 	var argv []string
 	if evalStyle == "positional" {
-		drv := filepath.Join(factsDir, "_tracecheck_driver.shen")
-		os.WriteFile(drv, []byte("(load \"yggdrasil.shen\")\n"+expr+"\n"), 0o644)
+		drv, done, err := driverFile("_tracecheck_driver.shen", expr)
+		if err != nil {
+			return "", err
+		}
+		defer done()
 		argv = append(append([]string{}, host...), drv)
 	} else {
 		argv = append(append([]string{}, host...), "eval", "-q", "-l", "yggdrasil.shen", "-e", expr)

@@ -108,24 +108,84 @@
                   Close (close Sink)
                   To))
 
+\\ ========================= the shared prelude ===========================
+\\ Four entry points - the shake itself and the footprints, facts and
+\\ trace-check reports - all open with the SAME analysis: read the kernel
+\\ and the user's files, decide the eval mode from the user's own symbols,
+\\ run the shake rules, and read the footprint back out of the database.
+\\ They differ only in what they do with it afterwards, so that prelude is
+\\ computed once, here, and handed over as one record.
+\\
+\\ The record is an association list of [Key Value] rows - the same shape
+\\ this file already uses for facts rows - read back through ygg.pl and the
+\\ named accessors below.  Evaluation order inside the `let` is the order
+\\ the four preludes had, and that order is load-bearing twice over:
+\\ `bootstrap` compiles the user's .shen files, and ygg.shake-rules-run
+\\ leaves the Datalog database standing for ygg.computed-names, ygg.dl-col1
+\\ and trace-check's own ygg.dl-add to read.
+\\
+\\ *maximum-print-sequence-size* is part of the prelude too: each caller
+\\ lifted it first and put it back last, so ygg.pipeline lifts it and keeps
+\\ the old value in the record for ygg.pl-restore.
+\\
+\\ Two entry points are deliberately NOT callers.  yggdrasil.shake-full
+\\ builds no call graph, runs no rule set and keeps the user KL unstripped,
+\\ and ygg.why-h derives its two footprints from the worklist rather than
+\\ from the rules; giving either this prelude would make it run a rule set
+\\ it does not read.
+
+(define ygg.pipeline
+  Files -> (let MaxPrint (value *maximum-print-sequence-size*)
+                Unlimit  (set *maximum-print-sequence-size* 1000000000)
+                Kernel   (kernel-code)
+                Graph    (call-graph Kernel)
+                KLFiles  (map (fn bootstrap) Files)
+                RawKL    (map (fn read-file) KLFiles)
+                RawFs    (function-calls RawKL)
+                EvalFree (eval-free? RawFs)
+                KL       (strip-user-declares RawKL EvalFree)
+                AllTops  (toplevel-forms Kernel)
+                Tops     (prepare-tops AllTops EvalFree)
+                Seeds    (append (mapcan (fn called-fns) Tops) (function-calls KL))
+                Run      (ygg.shake-rules-run Kernel Graph AllTops KL RawFs)
+                Foot     (ygg.rule-footprint Seeds Graph)
+                [[maxprint MaxPrint] [kernel Kernel] [graph Graph]
+                 [klfiles KLFiles] [rawfs RawFs] [evalfree EvalFree]
+                 [kl KL] [alltops AllTops] [tops Tops] [seeds Seeds]
+                 [foot Foot]]))
+
+\\ One field of a pipeline record.  A key that is not in it matches no
+\\ clause, so a mistyped accessor is a loud error rather than a silent [].
+(define ygg.pl
+  K [[Key V] | _] -> V  where (= K Key)
+  K [_ | P] -> (ygg.pl K P))
+
+(define ygg.pl-kernel   P -> (ygg.pl kernel P))
+(define ygg.pl-graph    P -> (ygg.pl graph P))
+(define ygg.pl-klfiles  P -> (ygg.pl klfiles P))
+(define ygg.pl-rawfs    P -> (ygg.pl rawfs P))
+(define ygg.pl-evalfree P -> (ygg.pl evalfree P))
+(define ygg.pl-kl       P -> (ygg.pl kl P))
+(define ygg.pl-alltops  P -> (ygg.pl alltops P))
+(define ygg.pl-tops     P -> (ygg.pl tops P))
+(define ygg.pl-seeds    P -> (ygg.pl seeds P))
+(define ygg.pl-foot     P -> (ygg.pl foot P))
+
+\\ Put *maximum-print-sequence-size* back to what ygg.pipeline found.
+(define ygg.pl-restore
+  P -> (set *maximum-print-sequence-size* (ygg.pl maxprint P)))
+
 \\ ============================ stage 1: shake ============================
 
 (define yggdrasil.shake
-  Files Dir -> (let MaxPrint   (value *maximum-print-sequence-size*)
-                    Unlimit    (set *maximum-print-sequence-size* 1000000000)
-                    Kernel     (kernel-code)
-                    Graph      (call-graph Kernel)
-                    KLFiles    (map (fn bootstrap) Files)
-                    RawKL      (map (fn read-file) KLFiles)
-                    RawFs      (function-calls RawKL)
-                    EvalFree   (eval-free? RawFs)
-                    KL         (strip-user-declares RawKL EvalFree)
-                    UserFs     (function-calls KL)
-                    AllTops    (toplevel-forms Kernel)
-                    Tops       (prepare-tops AllTops EvalFree)
-                    Seeds      (append (mapcan (fn called-fns) Tops) UserFs)
-                    Rules      (ygg.shake-rules-run Kernel Graph AllTops KL RawFs)
-                    Foot       (ygg.rule-footprint Seeds Graph)
+  Files Dir -> (let P          (ygg.pipeline Files)
+                    Kernel     (ygg.pl-kernel P)
+                    KLFiles    (ygg.pl-klfiles P)
+                    RawFs      (ygg.pl-rawfs P)
+                    EvalFree   (ygg.pl-evalfree P)
+                    KL         (ygg.pl-kl P)
+                    Tops       (ygg.pl-tops P)
+                    Foot       (ygg.pl-foot P)
                     CNames     (ygg.computed-names)
                     Warn       (ygg.cn-warn CNames)
                     FootCode   (map (/. D (rewrite-f-error D EvalFree))
@@ -155,7 +215,7 @@
                     UserOut    (write-user-files KLFiles UserKL Dir)
                     WriteM     (write-manifest Dir UserOut UserKL Prims CNames
                                                NPruned InitOrder2)
-                    Restore    (set *maximum-print-sequence-size* MaxPrint)
+                    Restore    (ygg.pl-restore P)
                     done))
 
 \\ The kernel's non-defun toplevel forms, in boot order.  These ARE the
@@ -1148,21 +1208,12 @@
 (set ygg.*warshall-limit* 150)
 
 (define yggdrasil.footprints
-  Files -> (let MaxPrint (value *maximum-print-sequence-size*)
-                Unlimit  (set *maximum-print-sequence-size* 1000000000)
-                Kernel   (kernel-code)
-                Graph    (call-graph Kernel)
-                KLFiles  (map (fn bootstrap) Files)
-                RawKL    (map (fn read-file) KLFiles)
-                RawFs    (function-calls RawKL)
-                EvalFree (eval-free? RawFs)
-                KL       (strip-user-declares RawKL EvalFree)
-                AllTops  (toplevel-forms Kernel)
-                Tops     (prepare-tops AllTops EvalFree)
+  Files -> (let P        (ygg.pipeline Files)
+                Graph    (ygg.pl-graph P)
+                EvalFree (ygg.pl-evalfree P)
+                Seeds    (ygg.pl-seeds P)
+                Rules    (ygg.pl-foot P)
                 Graph2   (if EvalFree (strip-f-error-row Graph) Graph)
-                Seeds    (append (mapcan (fn called-fns) Tops) (function-calls KL))
-                Run      (ygg.shake-rules-run Kernel Graph AllTops KL RawFs)
-                Rules    (ygg.rule-footprint Seeds Graph)
                 Work     (reach Seeds [] Graph2)
                 Wars     (ygg.warshall-leg Seeds Graph2 Rules)
                 Report   (pr (make-string
@@ -1181,7 +1232,7 @@
                 Load     (pr (make-string "yggdrasil-kernel-order: ~A~%"
                                           (ygg.fp-join (map (fn row-head) Graph)))
                              (stoutput))
-                Restore  (set *maximum-print-sequence-size* MaxPrint)
+                Restore  (ygg.pl-restore P)
                 done))
 
 \\ The two order lines are for footprint_test.go: it checks, outside this
@@ -2301,20 +2352,15 @@
 
 (define yggdrasil.facts
   Files Dir
-   -> (let MaxPrint (value *maximum-print-sequence-size*)
-           Unlimit  (set *maximum-print-sequence-size* 1000000000)
-           Kernel   (kernel-code)
-           Graph    (call-graph Kernel)
-           KLFiles  (map (fn bootstrap) Files)
-           RawKL    (map (fn read-file) KLFiles)
-           RawFs    (function-calls RawKL)
-           EvalFree (eval-free? RawFs)
-           KL       (strip-user-declares RawKL EvalFree)
-           AllTops  (toplevel-forms Kernel)
-           Tops     (prepare-tops AllTops EvalFree)
-           Seeds    (append (mapcan (fn called-fns) Tops) (function-calls KL))
-           Rules    (ygg.shake-rules-run Kernel Graph AllTops KL RawFs)
-           Foot     (ygg.rule-footprint Seeds Graph)
+   -> (let P        (ygg.pipeline Files)
+           Kernel   (ygg.pl-kernel P)
+           Graph    (ygg.pl-graph P)
+           RawFs    (ygg.pl-rawfs P)
+           EvalFree (ygg.pl-evalfree P)
+           KL       (ygg.pl-kl P)
+           AllTops  (ygg.pl-alltops P)
+           Tops     (ygg.pl-tops P)
+           Foot     (ygg.pl-foot P)
            Arities  (arity-literal Tops)
            TopsOut  (map (/. T (trim-top T Foot EvalFree Arities)) Tops)
            Cls      (ygg.cls-defuns Kernel)
@@ -2357,7 +2403,7 @@
                                 (map (/. V [V]) (ygg.trace-defunwrites Foot Kernel KL)))
            W23 (ygg.facts-file Dir "called" [])
            W24 (ygg.facts-file Dir "readglobal" [])
-           Restore (set *maximum-print-sequence-size* MaxPrint)
+           Restore (ygg.pl-restore P)
            Report  (pr (make-string "yggdrasil-facts: mode=~A dir=~A kernel=~A~%"
                                     (if EvalFree "eval-free" "eval-capable")
                                     Dir (ygg.len Graph))
@@ -2776,20 +2822,12 @@
 \\ cannot reach.
 (define yggdrasil.trace-check
   Files FactsDir
-   -> (let MaxPrint (value *maximum-print-sequence-size*)
-           Unlimit  (set *maximum-print-sequence-size* 1000000000)
-           Kernel   (kernel-code)
-           Graph    (call-graph Kernel)
-           KLFiles  (map (fn bootstrap) Files)
-           RawKL    (map (fn read-file) KLFiles)
-           RawFs    (function-calls RawKL)
-           EvalFree (eval-free? RawFs)
-           KL       (strip-user-declares RawKL EvalFree)
-           AllTops  (toplevel-forms Kernel)
-           Tops     (prepare-tops AllTops EvalFree)
-           Seeds    (append (mapcan (fn called-fns) Tops) (function-calls KL))
-           Rules    (ygg.shake-rules-run Kernel Graph AllTops KL RawFs)
-           Foot     (ygg.rule-footprint Seeds Graph)
+   -> (let P        (ygg.pipeline Files)
+           Kernel   (ygg.pl-kernel P)
+           EvalFree (ygg.pl-evalfree P)
+           KL       (ygg.pl-kl P)
+           Tops     (ygg.pl-tops P)
+           Foot     (ygg.pl-foot P)
            Arities  (arity-literal Tops)
            TopsOut  (map (/. T (trim-top T Foot EvalFree Arities)) Tops)
            Called   (ygg.trace-read (@s FactsDir "/called.facts"))
@@ -2812,7 +2850,7 @@
                                     portGlobal reach kernel]
                                    (value *trace-rules*))
            Bad      (append (ygg.dl-col1 uncoveredCall) (ygg.dl-col1 uncoveredRead))
-           Restore  (set *maximum-print-sequence-size* MaxPrint)
+           Restore  (ygg.pl-restore P)
            Report   (ygg.trace-report (ygg.trace-provenance Meta Called) Bad
                                       (ygg.len Called)
                                       (ygg.len (ygg.dl-col1 reach)))
