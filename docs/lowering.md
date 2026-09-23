@@ -75,13 +75,24 @@ at all, so every other target refuses for the other reason —
 `no-native-overrides`, which the message is careful to call an undeclared key
 rather than a claim that the port overrides nothing.
 
-The gate has three refusals and they are different facts:
+The gate has four refusals and they are different facts. Each says what to do
+about itself, and only the first one is about moving an install:
 
 | reason | what it means |
 |---|---|
 | `natives-installed-after-initialise` | the phase is declared and is not early enough; `go` today |
 | `native-install-phase-undeclared` | a list with no phase. Refused rather than read optimistically, because the optimistic reading is the one that deletes boot code |
+| `native-overrides-unchecked` | `native_overrides_checked_by` is `none`. The list is declared and nothing re-derives it from the port's source |
 | `no-native-overrides` | the target declares no list. Nobody measured it; that is not "there are none" |
+
+The third is there because of what happened to `go`'s own list. It went four
+symbols short of what `InstallKernelFast` rebinds — `<-vector`, `==`, `@p`,
+`shen.hds=?` — while carrying a `native_overrides_verified: true` that nothing
+read and so nothing could contradict. A list nothing checks is a list that can
+drift without being told, and lowering deletes code on its say-so. The two
+accepted phase spellings are the two that appear in `builders.json` and
+`port-contract.md`, and no others: a gate that accepts a spelling no
+declaration uses accepts a typo as a permission.
 
 When shen-go moves `InstallKernelFast` ahead of `shen.initialise` — issue #46
 in that repository, and the port's change, not Yggdrasil's — `builders.json`'s
@@ -204,10 +215,27 @@ yggdrasil-lower-check: SKIP reason=natives-installed-after-initialise target=go
 ```
 
 and exits **0**. The skip is a declared fact about the port, not an error, and
-a gate script has to be able to tell it from a disagreement. That is the state
-of every target today, so the three-way parity has never actually been run on
-a real lowering — which is the honest status of this mechanism and is why the
-header says "implemented behind a gate that refuses" rather than "verified".
+a gate script has to be able to tell it from a disagreement.
+
+That is the state of every target today, so the three-way parity has never run
+on a lowering any port actually declares — which is the honest status of this
+mechanism and is why the header says "implemented behind a gate that refuses"
+rather than "verified". What it has run on is a **faked** declaration:
+`TestLowerCheckThreeWayParityPassesAndFails` swaps the gate for one that says
+`before-initialise`, lowers `tests/fib.shen` for `go` under a table naming no
+defun the slice contains (so the lowered artifact is a byte copy), and drives
+the real subcommand to an `OK`; then it redefines `shen.app` in the lowered
+`kernel.kl` — an artifact that still builds and boots and answers differently,
+which is the shape a wrong `equiv` row has — and requires the verdict
+
+```
+yggdrasil-lower-check: FAIL pair=canonical-target-vs-lowered-target target=go dropped=0
+  canonical@go: "fib 20 = 6765"
+  lowered@go: "fib 20 = WRONG-LOWERING"
+```
+
+So the comparison is known to pass and known to fail. What is untested is a
+lowering that drops anything, because no port permits one.
 
 The per-row differential tests are still worth writing, and the next section
 says what they are. Their role is **localisation**: when parity fails, a row

@@ -34,6 +34,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -58,10 +59,13 @@ const loweringReportName = "yggdrasil.lowering.txt"
 // overridden defun is safe: the natives are in place before any KL body could
 // be entered. Anything else -- shen.initialise today -- means some phase of the
 // run executes those bodies, and the slice must keep them.
+//
+// The two spellings are the only ones builders.json and port-contract.md use.
+// An -ize alias was here and is gone: a gate that accepts spellings no
+// declaration uses is a gate that accepts a typo as a permission.
 var lowerPhaseOK = map[string]bool{
 	"none":              true,
 	"before-initialise": true,
-	"before-initialize": true,
 }
 
 // lowerGate is the decision, plus everything needed to explain it. It is a
@@ -109,11 +113,34 @@ func lowerGateFromBlock(target string, block map[string]json.RawMessage) lowerGa
 		g.reason = "native-install-phase-undeclared"
 	case !lowerPhaseOK[strings.ToLower(g.phase)]:
 		g.reason = "natives-installed-after-initialise"
+	case !factChecked(g.checkedBy):
+		// The phase decides whether lowering is safe at all; this decides
+		// whether the LIST can be trusted, and it is reported second for
+		// that reason -- a bad phase cannot be fixed by writing a test.
+		//
+		// The rationale is on the record in docs/lowering.md: go's
+		// hand-kept native_overrides went four symbols short of what
+		// InstallKernelFast rebinds (`<-vector`, `==`, `@p`,
+		// `shen.hds=?`) while carrying `native_overrides_verified: true`,
+		// because nothing read the key and so nothing could contradict
+		// it. A declared-but-unchecked list is a list that has drifted
+		// and not been told. Deleting defuns on one is deleting on
+		// someone's recollection.
+		g.reason = "native-overrides-unchecked"
 	default:
 		g.ok = true
 	}
 	return g
 }
+
+// lowerGateForTarget is the seam the two subcommands read the gate through.
+// It exists because everything after the gate -- the shake, the lowering, the
+// three builds and the comparison -- is unreachable on every target that
+// ships, so without it that path could only ever be exercised by a target
+// nobody has. A test swaps in a gate for a port whose natives are installed
+// before initialisation and drives the real command. It is never reassigned
+// outside tests, and the production value is the line below.
+var lowerGateForTarget = lowerGateFor
 
 // lowerGateFor reads the embedded builders.json.
 func lowerGateFor(target string) (lowerGate, error) {
@@ -149,6 +176,13 @@ func (g lowerGate) refusal() string {
 			"  says when the swap happens, because the two readings differ on whether the kernel's\n"+
 			"  KL ever runs. Dropping the bodies on the optimistic reading would delete boot code.\n",
 			len(g.names), g.target)
+	case "native-overrides-unchecked":
+		fmt.Fprintf(&b, "  builders.json's native_overrides_checked_by for %s is %q: the list of %d\n"+
+			"  overridden defuns is declared and nothing re-derives it from the port's source.\n"+
+			"  A list nothing checks is a list that can drift without being told -- go's went four\n"+
+			"  symbols short of what InstallKernelFast rebinds while carrying a _verified flag --\n"+
+			"  and lowering deletes code on its say-so. Name a test in native_overrides_checked_by.\n",
+			g.target, orNone(g.checkedBy), len(g.names))
 	default:
 		fmt.Fprintf(&b, "  builders.json says native_overrides_installed_after = %q for %s.\n"+
 			"  The natives replace these %d KL bodies only after that point, so the bodies DO run\n"+
@@ -165,8 +199,21 @@ func (g lowerGate) refusal() string {
 	if g.checkedBy != "" {
 		fmt.Fprintf(&b, "  native_overrides_checked_by: %s\n", g.checkedBy)
 	}
-	fmt.Fprintf(&b, "  Moving the install ahead of shen.initialise is the port's change, not\n"+
-		"  Yggdrasil's; when %s declares it, this command works with no edit here.\n", g.target)
+	// The way out differs by reason, so the last line has to. It used to
+	// name shen.initialise whatever the refusal was, which told a reader
+	// with an undeclared phase or an unchecked list to go and fix something
+	// else.
+	switch g.reason {
+	case "natives-installed-after-initialise":
+		fmt.Fprintf(&b, "  Moving the install ahead of shen.initialise is the port's change, not\n"+
+			"  Yggdrasil's; when %s declares it, this command works with no edit here.\n", g.target)
+	case "native-install-phase-undeclared":
+		fmt.Fprintf(&b, "  Read the phase off %s's boot and add native_overrides_installed_after\n"+
+			"  (with its _source) to builders.json; nothing here can infer it.\n", g.target)
+	case "native-overrides-unchecked":
+		fmt.Fprintf(&b, "  Write the test that re-derives %s's list from the port's source and name it\n"+
+			"  in native_overrides_checked_by; TestNativeOverridesMatchKernelFast is the pattern.\n", g.target)
+	}
 	return b.String()
 }
 
@@ -262,8 +309,12 @@ func dropDefuns(src string, drop map[string]bool) (string, []string, error) {
 			hi++
 		}
 		// A final form has no following separator; drop the blank line
-		// before it instead, for the same reason.
-		if hi == len(src) && lo >= 2 && src[lo-2] == '\n' && src[lo-1] == '\n' {
+		// before it instead, for the same reason. `lo > copied` is the
+		// guard that matters: when the PREVIOUS form was also dropped,
+		// `copied` already sits past that blank line, and stepping `lo`
+		// back over it would hand src[copied:lo] a reversed range. That
+		// case -- the last two forms of a file both dropped -- panicked.
+		if hi == len(src) && lo > copied && lo >= 2 && src[lo-2] == '\n' && src[lo-1] == '\n' {
 			lo--
 		}
 		out.WriteString(src[copied:lo])
@@ -301,10 +352,16 @@ func badLowering(lowered []string, equiv map[string]bool) []string {
 
 // lowerResult is what one lowering did, for the caller to print.
 type lowerResult struct {
-	dir      string   // OUTDIR/lowered
-	dropped  []string // in kernel.kl order
-	kept     int      // kernel defuns remaining
-	original int      // kernel defuns before
+	dir     string   // OUTDIR/lowered
+	dropped []string // in kernel.kl order
+	kept    int      // kernel defuns remaining
+	// skippedDirs are the subdirectories of OUTDIR the copy did not
+	// descend into -- a stage-2 build tree left behind by an earlier
+	// `yggdrasil build` into the same OUTDIR, typically. The lowered slice
+	// is deliberately source-only, but "the copy is missing app-go/" has
+	// to be something the caller said rather than something the user
+	// discovers when the next build behaves differently.
+	skippedDirs []string
 }
 
 // lowerSlice copies the canonical slice in outdir to outdir/lowered and
@@ -359,8 +416,13 @@ func lowerSlice(outdir string, g lowerGate) (*lowerResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	var skipped []string
 	for _, e := range entries {
-		if e.IsDir() || e.Name() == loweredDirName {
+		if e.Name() == loweredDirName {
+			continue
+		}
+		if e.IsDir() {
+			skipped = append(skipped, e.Name())
 			continue
 		}
 		if e.Name() == "kernel.kl" {
@@ -376,7 +438,8 @@ func lowerSlice(outdir string, g lowerGate) (*lowerResult, error) {
 	if err := writeLoweringReport(filepath.Join(lowDir, loweringReportName), g, dropped); err != nil {
 		return nil, err
 	}
-	return &lowerResult{dir: lowDir, dropped: dropped, kept: originalDefuns - len(dropped), original: originalDefuns}, nil
+	sort.Strings(skipped)
+	return &lowerResult{dir: lowDir, dropped: dropped, kept: originalDefuns - len(dropped), skippedDirs: skipped}, nil
 }
 
 func copyFileBytes(src, dst string) error {
@@ -477,7 +540,7 @@ func cmdLower(rest []string) int {
 	prog, outdir := fs.Arg(0), fs.Arg(1)
 	host := hostFields(*hostFlag)
 
-	g, err := lowerGateFor(*target)
+	g, err := lowerGateForTarget(*target)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "yggdrasil lower:", err)
 		return 2
@@ -521,6 +584,14 @@ func cmdLower(rest []string) int {
 	fmt.Printf("  canonical (artifact of record, untouched): %s\n", out)
 	fmt.Printf("  lowered:                                   %s\n", res.dir)
 	fmt.Printf("  report:                                    %s\n", filepath.Join(res.dir, loweringReportName))
+	// A lowered slice is source only. Saying which subdirectories were left
+	// behind beats letting the user find out from a build that behaves
+	// differently -- the usual one is an app-<target>/ tree an earlier
+	// `yggdrasil build` dropped into the same OUTDIR.
+	if len(res.skippedDirs) > 0 {
+		fmt.Printf("  subdirectories not copied (the lowered slice is source only): %s\n",
+			strings.Join(res.skippedDirs, ", "))
+	}
 	return 0
 }
 
@@ -531,6 +602,11 @@ func gateWord(g lowerGate) string {
 	return "refused(" + g.reason + ")"
 }
 
+// hostFields is the --host flag's decoding: split the launcher line, then
+// resolve argv[0] on PATH. main.go repeats this inline five times (cmdStage,
+// cmdCheck, cmdWhy, cmdFacts, cmdParity) and scip.go and trace.go once each,
+// with no shared helper to call; this is the extraction those seven should
+// become, not an eighth copy.
 func hostFields(flagVal string) []string {
 	if flagVal == "" {
 		return nil
@@ -586,7 +662,7 @@ func cmdLowerCheck(rest []string) int {
 		in = defaultStdin(prog)
 	}
 
-	g, err := lowerGateFor(*target)
+	g, err := lowerGateForTarget(*target)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "yggdrasil lower-check:", err)
 		return 2
@@ -612,73 +688,135 @@ func cmdLowerCheck(rest []string) int {
 		return 1
 	}
 
+	pairs, labels, goldenWord, cerr := lowerCheckRuns(prog, *reference, *target, out, res.dir, in)
+	if cerr != nil {
+		var skip *lowerCheckSkip
+		if errors.As(cerr, &skip) {
+			fmt.Printf("yggdrasil-lower-check: SKIP reason=%s target=%s run=%s\n", skip.reason, *target, skip.run)
+			fmt.Fprintln(os.Stderr, "yggdrasil lower-check:", cerr)
+			return 3
+		}
+		var rf *lowerCheckRunErr
+		if errors.As(cerr, &rf) {
+			fmt.Println(rf.sentinel)
+		}
+		fmt.Fprintln(os.Stderr, "yggdrasil lower-check:", cerr)
+		return 1
+	}
+	lines, ok := lowerCheckVerdict(pairs, *target, *reference, goldenWord, len(res.dropped), labels)
+	for _, ln := range lines {
+		fmt.Println(ln)
+	}
+	if !ok {
+		return 1
+	}
+	fmt.Printf("  dropped: %s\n", joinOrNone(res.dropped))
+	return 0
+}
+
+// lowerCheckSkip is a named reason the three-way parity could not be run at
+// all -- a toolchain that is not here. It is not a disagreement and must not
+// be reported as one.
+type lowerCheckSkip struct{ reason, run string }
+
+func (e *lowerCheckSkip) Error() string {
+	return fmt.Sprintf("cannot run the %s leg: %s", e.run, e.reason)
+}
+
+// lowerCheckRunErr is a build or a run that failed. That IS a verdict on the
+// arrangement, so it carries the sentinel line the consumers look for.
+type lowerCheckRunErr struct {
+	sentinel string
+	err      error
+}
+
+func (e *lowerCheckRunErr) Error() string { return e.err.Error() }
+func (e *lowerCheckRunErr) Unwrap() error { return e.err }
+
+// lowerCheckRuns builds and runs the three configurations and returns the
+// comparisons, the run labels, and the golden's basename ("none" when the
+// fixture ships none).
+//
+// It takes the two directories rather than doing the shake and the lowering
+// itself so that a test can hand it a canonical slice and a deliberately wrong
+// "lowered" one and watch the comparison fail. Without that split the only way
+// to reach this code would be a port that declares its natives installed
+// before initialisation, and none does.
+func lowerCheckRuns(prog, reference, target, canonicalDir, loweredDir, stdinFile string) ([]lowerCheckPair, []string, string, error) {
 	type run struct {
 		label string
 		dir   string
 		tgt   string
 	}
 	runs := []run{
-		{"canonical@" + *reference, out, *reference},
-		{"canonical@" + *target, out, *target},
-		{"lowered@" + *target, res.dir, *target},
+		{"canonical@" + reference, canonicalDir, reference},
+		{"canonical@" + target, canonicalDir, target},
+		{"lowered@" + target, loweredDir, target},
 	}
+	labels := make([]string, len(runs))
 	outs := make([]string, len(runs))
 	for i, r := range runs {
+		labels[i] = r.label
 		argv, berr := build(r.tgt, r.dir, false)
 		if berr != nil {
-			fmt.Printf("yggdrasil-lower-check: FAIL pair=none build=%s\n", r.label)
-			fmt.Fprintln(os.Stderr, "yggdrasil lower-check:", berr)
-			return 1
+			return nil, labels, "", &lowerCheckRunErr{
+				sentinel: "yggdrasil-lower-check: FAIL pair=none build=" + r.label,
+				err:      berr}
 		}
 		if argv == nil {
-			fmt.Printf("yggdrasil-lower-check: SKIP reason=toolchain-missing target=%s run=%s\n", *target, r.label)
-			return 3
+			return nil, labels, "", &lowerCheckSkip{reason: "toolchain-missing", run: r.label}
 		}
-		s, _, rerr := runCapture(argv, in)
+		out, _, rerr := runCapture(argv, stdinFile)
 		if rerr != nil {
-			fmt.Printf("yggdrasil-lower-check: FAIL pair=none run=%s\n", r.label)
-			fmt.Fprintln(os.Stderr, "yggdrasil lower-check:", rerr)
-			return 1
+			return nil, labels, "", &lowerCheckRunErr{
+				sentinel: "yggdrasil-lower-check: FAIL pair=none run=" + r.label,
+				err:      rerr}
 		}
-		outs[i] = canon(s)
+		outs[i] = canon(out)
 	}
 
 	// The golden, when the fixture ships one. Its absence weakens the first
 	// comparison to "the three agree", which is said rather than implied.
 	goldenPath := strings.TrimSuffix(prog, ".shen") + ".expected"
 	golden, gerr := os.ReadFile(goldenPath)
+	goldenWord := "none"
 	var pairs []lowerCheckPair
 	if gerr == nil {
+		goldenWord = filepath.Base(goldenPath)
 		pairs = append(pairs, lowerCheckPair{
 			name: "golden-vs-canonical-reference",
-			aLbl: filepath.Base(goldenPath), a: canon(string(golden)),
-			bLbl: runs[0].label, b: outs[0]})
+			aLbl: goldenWord, a: canon(string(golden)),
+			bLbl: labels[0], b: outs[0]})
 	}
 	pairs = append(pairs,
 		lowerCheckPair{
 			name: "canonical-reference-vs-canonical-target",
-			aLbl: runs[0].label, a: outs[0],
-			bLbl: runs[1].label, b: outs[1]},
+			aLbl: labels[0], a: outs[0],
+			bLbl: labels[1], b: outs[1]},
 		lowerCheckPair{
 			name: "canonical-target-vs-lowered-target",
-			aLbl: runs[1].label, a: outs[1],
-			bLbl: runs[2].label, b: outs[2]})
+			aLbl: labels[1], a: outs[1],
+			bLbl: labels[2], b: outs[2]})
+	return pairs, labels, goldenWord, nil
+}
 
+// lowerCheckVerdict turns the comparisons into the lines the command prints.
+// The FIRST disagreeing pair is the verdict: the pairs are ordered upstream to
+// downstream, and reporting a later disagreement would say "the lowering
+// differs" about a slice that was already wrong before it was lowered.
+func lowerCheckVerdict(pairs []lowerCheckPair, target, reference, goldenWord string, dropped int, labels []string) ([]string, bool) {
 	for _, p := range pairs {
 		if p.a != p.b {
-			fmt.Printf("yggdrasil-lower-check: FAIL pair=%s target=%s dropped=%d\n", p.name, *target, len(res.dropped))
-			fmt.Printf("  %s: %q\n  %s: %q\n", p.aLbl, p.a, p.bLbl, p.b)
-			return 1
+			return []string{
+				fmt.Sprintf("yggdrasil-lower-check: FAIL pair=%s target=%s dropped=%d", p.name, target, dropped),
+				fmt.Sprintf("  %s: %q", p.aLbl, p.a),
+				fmt.Sprintf("  %s: %q", p.bLbl, p.b),
+			}, false
 		}
 	}
-	goldenWord := "none"
-	if gerr == nil {
-		goldenWord = filepath.Base(goldenPath)
-	}
-	fmt.Printf("yggdrasil-lower-check: OK target=%s reference=%s dropped=%d golden=%s\n",
-		*target, *reference, len(res.dropped), goldenWord)
-	fmt.Printf("  pairs checked: %d (three runs: %s, %s, %s)\n",
-		len(pairs), runs[0].label, runs[1].label, runs[2].label)
-	fmt.Printf("  dropped: %s\n", joinOrNone(res.dropped))
-	return 0
+	return []string{
+		fmt.Sprintf("yggdrasil-lower-check: OK target=%s reference=%s dropped=%d golden=%s",
+			target, reference, dropped, goldenWord),
+		fmt.Sprintf("  pairs checked: %d (three runs: %s)", len(pairs), strings.Join(labels, ", ")),
+	}, true
 }

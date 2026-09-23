@@ -17,6 +17,8 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -509,4 +511,305 @@ func TestLowerLeavesTheCanonicalSliceAlone(t *testing.T) {
 		}
 		return m
 	}())
+}
+
+// ---- adjacent and terminal drops (the case that panicked) ----
+
+// dropDefuns stepped `lo` back over the blank line before a FINAL form so the
+// file would not end in one. When the previous form had also been dropped,
+// `copied` was already past that blank line and src[copied:lo] was a reversed
+// range: "slice bounds out of range [17:16]". Two adjacent drops at the end of
+// a file is not an exotic input -- it is what lowering a slice whose last two
+// kernel defuns are both natively overridden does.
+func TestDropDefunsAdjacentAndTerminal(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		src  string
+		drop []string
+		want string
+	}{
+		{
+			name: "the last two forms, both dropped",
+			src:  "(defun a (V) V)\n\n(defun b (V) V)\n",
+			drop: []string{"a", "b"},
+			want: "",
+		},
+		{
+			name: "the first two of three",
+			src:  "(defun a (V) V)\n\n(defun b (V) V)\n\n(defun c (V) V)\n",
+			drop: []string{"a", "b"},
+			want: "(defun c (V) V)\n",
+		},
+		{
+			name: "two adjacent in the middle",
+			src:  "(defun a (V) V)\n\n(defun b (V) V)\n\n(defun c (V) V)\n\n(defun d (V) V)\n",
+			drop: []string{"b", "c"},
+			want: "(defun a (V) V)\n\n(defun d (V) V)\n",
+		},
+		{
+			name: "every form dropped",
+			src:  "(defun a (V) V)\n\n(defun b (V) V)\n\n(defun c (V) V)\n",
+			drop: []string{"a", "b", "c"},
+			want: "",
+		},
+		{
+			name: "the only form dropped",
+			src:  "(defun a (V) V)\n",
+			drop: []string{"a"},
+			want: "",
+		},
+		{
+			name: "a final form dropped after a kept one",
+			src:  "(defun a (V) V)\n\n(defun b (V) V)\n",
+			drop: []string{"b"},
+			want: "(defun a (V) V)\n",
+		},
+		{
+			name: "a non-defun toplevel between two drops is kept",
+			src:  "(defun a (V) V)\n\n(set x 0)\n\n(defun b (V) V)\n",
+			drop: []string{"a", "b"},
+			want: "(set x 0)\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			drop := map[string]bool{}
+			for _, n := range tc.drop {
+				drop[n] = true
+			}
+			got, dropped, err := dropDefuns(tc.src, drop)
+			if err != nil {
+				t.Fatalf("dropDefuns: %v", err)
+			}
+			if len(dropped) != len(tc.drop) {
+				t.Errorf("dropped %v, want %d names", dropped, len(tc.drop))
+			}
+			if got != tc.want {
+				t.Errorf("dropDefuns =\n%q\nwant\n%q", got, tc.want)
+			}
+			assertDeletionOnly(t, tc.src, got, drop)
+		})
+	}
+}
+
+// ---- the fourth gate condition ----
+
+// A native_overrides list nothing re-derives from the port's source is a list
+// that can drift without being told, and lowering deletes code on its say-so.
+// go's own list is the cautionary case and is on the record in lowering.md: it
+// went four symbols short of what InstallKernelFast rebinds while carrying a
+// `_verified: true` nothing read.
+func TestLowerGateRefusesAnUncheckedOverrideList(t *testing.T) {
+	g := lowerGateFromBlock("fake", map[string]json.RawMessage{
+		"native_overrides":                        json.RawMessage(`["reverse"]`),
+		"native_overrides_installed_after":        json.RawMessage(`"before-initialise"`),
+		"native_overrides_checked_by":             json.RawMessage(`"none"`),
+		"native_overrides_installed_after_source": json.RawMessage(`"fake port"`),
+	})
+	if g.ok || g.reason != "native-overrides-unchecked" {
+		t.Fatalf("ok=%v reason=%q, want native-overrides-unchecked", g.ok, g.reason)
+	}
+	msg := g.refusal()
+	if !strings.Contains(msg, "native_overrides_checked_by") {
+		t.Errorf("the refusal does not name the key that is empty:\n%s", msg)
+	}
+	// A missing key reads the same as an explicit "none": both mean nothing
+	// checks the list.
+	absent := lowerGateFromBlock("fake", map[string]json.RawMessage{
+		"native_overrides":                 json.RawMessage(`["reverse"]`),
+		"native_overrides_installed_after": json.RawMessage(`"before-initialise"`),
+	})
+	if absent.ok || absent.reason != "native-overrides-unchecked" {
+		t.Fatalf("an absent checked_by: ok=%v reason=%q, want native-overrides-unchecked", absent.ok, absent.reason)
+	}
+}
+
+// The -ize alias is gone: a gate that accepts a spelling no declaration uses
+// accepts a typo as a permission.
+func TestLowerGateRejectsUnknownPhaseSpellings(t *testing.T) {
+	for _, phase := range []string{"before-initialize", "before initialise", "preinit", "shen.initialize"} {
+		g := lowerGateFromBlock("fake", map[string]json.RawMessage{
+			"native_overrides":                 json.RawMessage(`["reverse"]`),
+			"native_overrides_installed_after": json.RawMessage(`"` + phase + `"`),
+			"native_overrides_checked_by":      json.RawMessage(`"SomeTest"`),
+		})
+		if g.ok {
+			t.Errorf("the gate accepted the phase spelling %q, which no declaration uses", phase)
+		}
+	}
+	// And the two that are accepted, in both cases.
+	for _, phase := range []string{"none", "before-initialise", "Before-Initialise"} {
+		g := lowerGateFromBlock("fake", map[string]json.RawMessage{
+			"native_overrides":                 json.RawMessage(`["reverse"]`),
+			"native_overrides_installed_after": json.RawMessage(`"` + phase + `"`),
+			"native_overrides_checked_by":      json.RawMessage(`"SomeTest"`),
+		})
+		if !g.ok {
+			t.Errorf("the gate refused the declared phase %q: %s", phase, g.reason)
+		}
+	}
+}
+
+// The way out of a refusal differs by reason, so the last line has to. It used
+// to tell a reader with an undeclared phase or an unchecked list to go and
+// move shen-go's InstallKernelFast, which is not their problem.
+func TestRefusalLastLineIsReasonSpecific(t *testing.T) {
+	block := func(kv map[string]string) map[string]json.RawMessage {
+		out := map[string]json.RawMessage{"native_overrides": json.RawMessage(`["reverse"]`)}
+		for k, v := range kv {
+			out[k] = json.RawMessage(`"` + v + `"`)
+		}
+		return out
+	}
+	phaseBad := lowerGateFromBlock("fake", block(map[string]string{
+		"native_overrides_installed_after": "shen.initialise",
+		"native_overrides_checked_by":      "SomeTest",
+	}))
+	unchecked := lowerGateFromBlock("fake", block(map[string]string{
+		"native_overrides_installed_after": "before-initialise",
+		"native_overrides_checked_by":      "none",
+	}))
+	undeclared := lowerGateFromBlock("fake", block(nil))
+
+	if !strings.Contains(phaseBad.refusal(), "Moving the install ahead of shen.initialise") {
+		t.Errorf("the phase refusal does not say to move the install:\n%s", phaseBad.refusal())
+	}
+	if strings.Contains(unchecked.refusal(), "Moving the install ahead") {
+		t.Errorf("the unchecked-list refusal tells the reader to move the install, which is not the problem:\n%s",
+			unchecked.refusal())
+	}
+	if !strings.Contains(unchecked.refusal(), "native_overrides_checked_by") {
+		t.Errorf("the unchecked-list refusal does not say what to write:\n%s", unchecked.refusal())
+	}
+	if strings.Contains(undeclared.refusal(), "Moving the install ahead") {
+		t.Errorf("the undeclared-phase refusal tells the reader to move the install:\n%s", undeclared.refusal())
+	}
+	if !strings.Contains(undeclared.refusal(), "native_overrides_installed_after") {
+		t.Errorf("the undeclared-phase refusal does not say what to declare:\n%s", undeclared.refusal())
+	}
+}
+
+// ---- the three-way parity, actually run ----
+
+// captureStdout runs fn with os.Stdout redirected and returns what it wrote.
+// cmdLowerCheck prints its verdict with fmt.Println, which is how every
+// consumer finds it, so the test has to read the same channel.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	done := make(chan string, 1)
+	go func() {
+		b, _ := io.ReadAll(r)
+		done <- string(b)
+	}()
+	fn()
+	w.Close()
+	os.Stdout = old
+	return <-done
+}
+
+// withFakeGate swaps the gate seam for the duration of a test. No shipped
+// target declares its natives installed before initialisation, so without this
+// the whole path below `if !g.ok` is unreachable.
+func withFakeGate(t *testing.T, g lowerGate) {
+	t.Helper()
+	prev := lowerGateForTarget
+	lowerGateForTarget = func(string) (lowerGate, error) { return g, nil }
+	t.Cleanup(func() { lowerGateForTarget = prev })
+}
+
+// The three-way parity, run for real on go under a faked before-initialise
+// declaration, in both directions: it must print OK when the lowered slice
+// agrees with the canonical one, and FAIL naming the third pair when it does
+// not. Until a port moves its native install this is the only way this code
+// runs at all.
+//
+// The lowering drops nothing (the fake table names a defun no slice contains),
+// so the lowered artifact is byte-identical to the canonical one and the OK is
+// a real agreement rather than a coincidence. `--reference go` keeps the test
+// to one toolchain; the consequence is that the middle pair
+// (canonical-reference vs canonical-target) compares a run with itself, which
+// is why the assertions below are about the golden pair and the third pair.
+// The reference leg proper is the existing parity gate's job (parity_test.go).
+func TestLowerCheckThreeWayParityPassesAndFails(t *testing.T) {
+	if os.Getenv("YGGDRASIL_HOST") == "" && defaultHost() == nil {
+		t.Skip("no Shen host available (build ../shen-cl or set $YGGDRASIL_HOST)")
+	}
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go is not on PATH; the go stage-2 builder cannot run")
+	}
+	if os.Getenv("YGGDRASIL_SHEN_GO_DIR") == "" {
+		t.Skip("no sibling shen-go checkout ($YGGDRASIL_SHEN_GO_DIR); the go builder cannot run")
+	}
+	// A table naming a defun no slice contains: the gate opens, and the
+	// pass drops nothing, so the lowered slice is a byte copy.
+	withFakeGate(t, fakeBeforeInitialiseGate("shen.no-such-kernel-defun"))
+
+	outdir := filepath.Join(t.TempDir(), "out")
+
+	// --- the positive half, through the real subcommand ---
+	var code int
+	stdout := captureStdout(t, func() {
+		code = cmdLowerCheck([]string{"tests/fib.shen", outdir, "--target", "go", "--reference", "go"})
+	})
+	if strings.Contains(stdout, "SKIP reason=toolchain-missing") {
+		t.Skipf("the go toolchain is not usable here:\n%s", lastLines(stdout, 6))
+	}
+	if code != 0 {
+		t.Fatalf("lower-check exited %d on an agreeing lowering:\n%s", code, lastLines(stdout, 20))
+	}
+	if !strings.Contains(stdout, "yggdrasil-lower-check: OK target=go reference=go dropped=0 golden=fib.expected") {
+		t.Fatalf("no OK sentinel naming the golden:\n%s", stdout)
+	}
+
+	loweredDir := filepath.Join(outdir, loweredDirName)
+	// The premise of the OK: the lowered kernel really is the canonical one.
+	a, err := os.ReadFile(filepath.Join(outdir, "kernel.kl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(loweredDir, "kernel.kl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(a) != string(b) {
+		t.Fatal("the fake table dropped something; the OK above was not a byte-identical comparison")
+	}
+
+	// --- the negative half ---
+	// Redefine a kernel function the program's output goes through, by
+	// appending to the lowered kernel: a later defun rebinds the name, so
+	// the artifact still builds and boots and answers differently. That is
+	// the shape a wrong equiv row has -- a different answer, not a crash --
+	// and it is what the third comparison exists to catch.
+	corrupt := string(b) + "\n(defun shen.app (V1 V2 V3) (cn \"WRONG-LOWERING\" V2))\n"
+	if err := os.WriteFile(filepath.Join(loweredDir, "kernel.kl"), []byte(corrupt), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pairs, labels, goldenWord, cerr := lowerCheckRuns("tests/fib.shen", "go", "go", outdir, loweredDir, "")
+	if cerr != nil {
+		var skip *lowerCheckSkip
+		if errors.As(cerr, &skip) {
+			t.Skipf("the go toolchain is not usable here: %v", cerr)
+		}
+		t.Fatalf("the corrupted lowered slice did not build and run; this test needs it to run and "+
+			"answer differently, not to crash: %v", cerr)
+	}
+	lines, ok := lowerCheckVerdict(pairs, "go", "go", goldenWord, 0, labels)
+	if ok {
+		t.Fatalf("lower-check reported OK on a lowered slice that redefines shen.app:\n%s",
+			strings.Join(lines, "\n"))
+	}
+	want := "yggdrasil-lower-check: FAIL pair=canonical-target-vs-lowered-target target=go dropped=0"
+	if lines[0] != want {
+		t.Fatalf("sentinel = %q\nwant      %q\n(all lines:\n%s\n)", lines[0], want, strings.Join(lines, "\n"))
+	}
+	if !strings.Contains(strings.Join(lines, "\n"), "WRONG-LOWERING") {
+		t.Errorf("the FAIL does not show the two outputs:\n%s", strings.Join(lines, "\n"))
+	}
+	t.Logf("three-way parity verdict on a corrupted lowering:\n%s", strings.Join(lines, "\n"))
 }
