@@ -1232,7 +1232,7 @@ func TestPhaseBoundaryIsTheFirstProgramForm(t *testing.T) {
 		t.Errorf("the flip is woven %d times, so the boundary is not a boundary", n)
 	}
 	// Before it: definitions only. After it: the program.
-	if j := strings.Index(body, "(defun "); j > i {
+	if j := strings.LastIndex(body, "(defun "); j > i {
 		t.Error("a defun is emitted after the phase flip, so its installation would be tagged program")
 	}
 	if !strings.Contains(body[i:], "(pr ") {

@@ -1019,8 +1019,8 @@ func prunedReadViolations(reads, pruned, portReads []string) []string {
 // woven -- and checks the program phase of THAT run against the reach of the
 // SLICE the same source would have been shaken to. Now the name resolves,
 // the call is recorded, and a program that reaches outside the slice is
-// caught instead of dying. tests/computed-call.shen reaches shen.abs through
-// (intern "shen.abs"), which no syntactic analysis can see, and
+// caught instead of dying. tests/computed-call.shen reaches shen.printF through
+// (intern "shen.printF"), which no syntactic analysis can see, and
 // TestTraceCheckFullUncovered is the test that fails when the claim is false.
 //
 // The boot phase is reported and never failed. A full artifact's boot IS the
