@@ -125,7 +125,9 @@ only in gensym numbering), so a stale sibling build is a correctness
 no-op. Rebuild shen-cl from master to refresh the host. Override with
 `--host "<launcher>"` (e.g. `--host "node /path/shen.js" --eval-style
 sub`, or `--eval-style positional` for shen-lua), or set `$YGGDRASIL_HOST`
-or `$BIFROST_SHEN_CL`. Stage-2
+or `$BIFROST_SHEN_CL`. Scratch directories (host driver files, stage-2 build
+temp trees) are removed after each run; set `$YGGDRASIL_KEEP_TMP=1` to keep
+them for inspection. Stage-2
 builders live in the sibling port repos (`../shen-lua`, `../shen-go`, …),
 overridable per target via `$YGGDRASIL_SHEN_*_DIR`; the build/run recipes are
 data in [`builders.json`](builders.json), which [Bifrost](../bifrost)'s
