@@ -17,8 +17,14 @@
 //	                               also available as --typecheck on shake/build/run,
 //	                               which gates the shake and records typechecked=
 //	                               in the manifest
+//	trace-check PROG OUTDIR --target T
+//	                               shake with --trace, run on T, and check that
+//	                               every kernel defun the run entered is in reach
 //	parity PROG OUTDIR             behavioural parity gate: run the shaken slice on
 //	                               every target and diff outputs against a reference
+//	scip-check PROG OUTDIR         stage-5 level-2 oracle: build the shaken and the
+//	                               full program with one builder and compare their
+//	                               indexes node for node (see scip.go)
 //	targets                        list available stage-2 targets
 package main
 
@@ -31,6 +37,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -132,6 +139,50 @@ func embeddedHash() (string, error) {
 	return hex.EncodeToString(h.Sum(nil))[:12], nil
 }
 
+// ---- scratch directories ----
+
+// keepTmp reports whether the scratch directories this binary creates should
+// be left on disk after a run. Nothing on the CLI surface asks for that, so
+// the knob is an environment variable rather than a flag: set
+// YGGDRASIL_KEEP_TMP=1 to keep a failed host invocation's driver file or a
+// half-finished build's scratch tree for inspection.
+func keepTmp() bool { return os.Getenv("YGGDRASIL_KEEP_TMP") != "" }
+
+// cleanupTmp removes a directory this binary created with os.MkdirTemp,
+// unless YGGDRASIL_KEEP_TMP says to keep it. Errors are ignored on purpose:
+// a scratch dir that cannot be removed is not a reason to fail a run that
+// otherwise produced its artifacts.
+func cleanupTmp(dir string) {
+	if dir == "" || keepTmp() {
+		return
+	}
+	os.RemoveAll(dir)
+}
+
+// driverFile writes the --eval-style=positional driver -- (load
+// "yggdrasil.shen") followed by the expression -- into a scratch directory
+// of its own, and returns the path plus the cleanup that removes it.
+//
+// The driver used to be written into the artifact or facts directory, where
+// it stayed behind among the outputs and was picked up by anything that
+// walks that tree. It can live anywhere: every caller runs the host with
+// cwd=yggRoot(), which is what the (load ...) resolves against.
+//
+// A directory or a write that fails is returned as an error; the caller
+// reports it before the host is ever started.
+func driverFile(name, expr string) (string, func(), error) {
+	dir, err := os.MkdirTemp("", "yggdrasil_driver_")
+	if err != nil {
+		return "", func() {}, fmt.Errorf("writing the host driver: %w", err)
+	}
+	drv := filepath.Join(dir, name)
+	if err := os.WriteFile(drv, []byte("(load \"yggdrasil.shen\")\n"+expr+"\n"), 0o644); err != nil {
+		cleanupTmp(dir)
+		return "", func() {}, fmt.Errorf("writing the host driver: %w", err)
+	}
+	return drv, func() { cleanupTmp(dir) }, nil
+}
+
 // ---- materialised root ----
 
 // yggRoot extracts the embedded tree to a versioned cache dir (once) and returns
@@ -213,8 +264,65 @@ func defaultHost() []string {
 	return nil
 }
 
+// shakeOpts is everything the command line can say about WHICH shake to run:
+// which Shen entry point (trace.go's shakeExpr) and which stage-4 globals to
+// set first (prune.go's wrapShakeExpr). One value, passed down the call chain,
+// rather than the package-level flags this used to be -- a mode that is a
+// global has to be saved and restored by every caller that sets it, is left
+// on by any panic in between, and cannot be read off a call site.
+//
+// The zero value is the default shake, and the default shake's host
+// expression is byte-for-byte the one yggdrasil has always sent.
+type shakeOpts struct {
+	full      bool   // --no-shake: emit the full program A, not the slice
+	trace     bool   // --trace: weave the runtime call trace
+	pruneInit bool   // --prune-init: stage-4 dead-initialisation pruning
+	target    string // "" = no target: the union over all builders
+	// traceFull is `trace-check --full`: the full program A, woven. It is
+	// its own field rather than (full && trace) because shakeExpr still
+	// REFUSES that pair -- see the note there -- and a mode nobody can
+	// reach by setting two booleans that were never meant to compose is a
+	// mode whose one caller is visible at the call site.
+	traceFull bool
+	// --prune-init-unverified: proceed even where --prune-init is refused --
+	// a target whose port_reads in builders.json is unknown or declared
+	// with nothing checking it, and a target-agnostic shake, whose union is
+	// over the declared lists and so covers only the ports in it. See
+	// wrapShakeExpr.
+	allowUnverifiedPortReads bool
+}
+
+// only collapses a variadic shakeOpts to the single value it is allowed to
+// carry. The variadic is a default argument, not a list: shake(...) and
+// facts(...) keep their old five-argument form for the many callers that want
+// the default, and take one shakeOpts when a caller wants something else.
+func only(opts []shakeOpts) (shakeOpts, error) {
+	switch len(opts) {
+	case 0:
+		return shakeOpts{}, nil
+	case 1:
+		return opts[0], nil
+	default:
+		return shakeOpts{}, fmt.Errorf("internal error: %d shakeOpts passed where at most one is meaningful", len(opts))
+	}
+}
+
 // shake runs stage 1: shake prog into outdir. Returns outdir.
-func shake(prog, outdir string, host []string, evalStyle string, quiet bool) (string, error) {
+func shake(prog, outdir string, host []string, evalStyle string, quiet bool, opts ...shakeOpts) (string, error) {
+	o, err := only(opts)
+	if err != nil {
+		return "", err
+	}
+	return shakeMode(prog, outdir, host, evalStyle, quiet, o)
+}
+
+// shakeMode is shake with the mode spelled out. With o.full set it calls
+// (yggdrasil.shake-full ...) instead of (yggdrasil.shake ...): every kernel
+// defun and the eval-capable initialiser, so the same stage-2 builder can
+// build the full program A alongside the shaken A*. Everything else -- the
+// host launcher, the driver file, the failure contract -- is shared, so the
+// two artifacts differ by the shake and by nothing else.
+func shakeMode(prog, outdir string, host []string, evalStyle string, quiet bool, o shakeOpts) (string, error) {
 	if host == nil {
 		host = defaultHost()
 	}
@@ -233,12 +341,27 @@ func shake(prog, outdir string, host []string, evalStyle string, quiet bool) (st
 	if err != nil {
 		return "", fmt.Errorf("materialising shaker: %w", err)
 	}
-	expr := fmt.Sprintf(`(yggdrasil.shake ["%s"] "%s")`, prog, outdir)
+	// shakeExpr (trace.go) chooses the Shen entry point from the two modes
+	// that pick one -- yggdrasil.shake, .shake-full (--no-shake) or
+	// .shake-traced (--trace) -- and wrapShakeExpr (prune.go) then wraps
+	// whichever it chose with --prune-init's globals. The default path is
+	// byte-for-byte the expression this function has always sent.
+	expr, err := shakeExpr(prog, outdir, o)
+	if err != nil {
+		return "", err
+	}
+	expr, err = wrapShakeExpr(expr, o)
+	if err != nil {
+		return "", err
+	}
 
 	var argv []string
 	if evalStyle == "positional" {
-		drv := filepath.Join(outdir, "_shake_driver.shen")
-		os.WriteFile(drv, []byte("(load \"yggdrasil.shen\")\n"+expr+"\n"), 0o644)
+		drv, done, err := driverFile("_shake_driver.shen", expr)
+		if err != nil {
+			return "", err
+		}
+		defer done()
 		argv = append(append([]string{}, host...), drv)
 	} else {
 		argv = append(append([]string{}, host...), "eval", "-q", "-l", "yggdrasil.shen", "-e", expr)
@@ -247,6 +370,10 @@ func shake(prog, outdir string, host []string, evalStyle string, quiet bool) (st
 	out, _ := runAt(wrapExecutable(argv), root)
 	kernel := filepath.Join(outdir, "kernel.kl")
 	if fi, err := os.Stat(kernel); err != nil || fi.Size() == 0 {
+		if sentinel, ok := shakeFailReport(out); ok {
+			os.Stderr.WriteString(out)
+			return "", fmt.Errorf("%s\n  %s", sentinel, shakeFailHint(sentinel))
+		}
 		os.Stderr.WriteString(out)
 		return "", fmt.Errorf("shake produced no kernel.kl (host=%s)\n  did the program load cleanly on the host?", strings.Join(host, " "))
 	}
@@ -254,6 +381,33 @@ func shake(prog, outdir string, host []string, evalStyle string, quiet bool) (st
 		os.Stderr.WriteString(out)
 	}
 	return outdir, nil
+}
+
+// shakeFailReport picks the shake's own FAIL sentinel out of the host
+// output, the way failReport does for the typecheck gate. The shaker
+// prints "yggdrasil-shake: FAIL <what> ..." and then aborts before writing
+// kernel.kl, so a refused shake reads as a named analysis failure rather
+// than as "the program did not load".
+func shakeFailReport(out string) (string, bool) {
+	i := strings.Index(out, "yggdrasil-shake: FAIL")
+	if i < 0 {
+		return "", false
+	}
+	line := out[i:]
+	if j := strings.IndexByte(line, '\n'); j >= 0 {
+		line = line[:j]
+	}
+	return strings.TrimRight(line, "\r"), true
+}
+
+// shakeFailHint explains a sentinel in one line; unknown checks get a
+// generic line, so a new check in the shaker needs no Go change to be
+// reported usefully.
+func shakeFailHint(sentinel string) string {
+	if strings.Contains(sentinel, "init-order") {
+		return "a toplevel form reads a global before any earlier form sets it; reorder the program (see docs/analysis-rules.md)"
+	}
+	return "the shaker refused this program; no artifacts were written"
 }
 
 // check runs the build-time typecheck gate: a separate host process loads
@@ -315,9 +469,11 @@ func runCheck(prog string, host []string, evalStyle string) (out, ver string, ok
 
 	var argv []string
 	if evalStyle == "positional" {
-		tmp, _ := os.MkdirTemp("", "yggdrasil_check_")
-		drv := filepath.Join(tmp, "_check_driver.shen")
-		os.WriteFile(drv, []byte("(load \"yggdrasil.shen\")\n"+expr+"\n"), 0o644)
+		drv, done, err := driverFile("_check_driver.shen", expr)
+		if err != nil {
+			return "", "", false, err
+		}
+		defer done()
 		argv = append(append([]string{}, host...), drv)
 	} else {
 		argv = append(append([]string{}, host...), "eval", "-q", "-l", "yggdrasil.shen", "-e", expr)
@@ -410,20 +566,214 @@ type builder struct {
 	Needs   []string `json:"needs"`
 	Build   []step   `json:"build"`
 	Run     []string `json:"run"`
+	// DirDefault is the sibling checkout this target lives in when its
+	// DirEnv is unset, e.g. "shen-go". It is here rather than in
+	// siblingDir's table because a target whose name is not its checkout's
+	// name would otherwise need a line of Go naming the target -- which is
+	// the thing `kl` was promoted out of. An empty value falls back to the
+	// table, which every older target is still in.
+	DirDefault string `json:"dir_default"`
+	// ProgramFile, when set, is the file the run's stdin must carry before
+	// anything else: a runtime that reads its PROGRAM from stdin (shen-go's
+	// cmd/kl) instead of from its build output. Substituted into the build
+	// steps as {program_file} so one string names it. Declaring it without
+	// the `stdin` fact below would hide the consequence, which is that the
+	// caller's stdin is appended to the program rather than delivered to it.
+	ProgramFile string `json:"program_file"`
+	// Stdin and Stdout are facts about the RUN, in the same three-key shape
+	// as the port facts below, and are consulted by trace-check's
+	// evidencePossible/checkGolden and by the parity gate instead of any
+	// target name. `_default` declares the ordinary contract, so every
+	// target states these (by inheritance) rather than being silent:
+	//
+	//	stdin  "delivered"             the artifact receives the caller's bytes
+	//	stdin  "appended-to-program"   the runtime reads its program from stdin,
+	//	                               so the caller's bytes land after it
+	//	stdout "program"               stdout is the program's output
+	//	stdout "repl-transcript"       the program's output is embedded in the
+	//	                               runtime's own transcript
+	Stdin           string `json:"stdin"`
+	StdinSource     string `json:"stdin_source"`
+	StdinCheckedBy  string `json:"stdin_checked_by"`
+	Stdout          string `json:"stdout"`
+	StdoutSource    string `json:"stdout_source"`
+	StdoutCheckedBy string `json:"stdout_checked_by"`
+	// TranscriptErrorMarkers is the other half of stdout=repl-transcript,
+	// and without it that fact is a licence to pass. Containment says the
+	// program's output is in the transcript somewhere -- which a run whose
+	// boot PANICKED and carried on also satisfies, and shen-go's cmd/kl
+	// does exactly that today. These are the substrings that, appearing
+	// anywhere in the transcript, mean the run went wrong; both readers
+	// (checkGolden in trace.go, compareParity here) check them BEFORE
+	// comparing anything, and fail naming the marker and the first line it
+	// matched.
+	TranscriptErrorMarkers          []string `json:"transcript_error_markers"`
+	TranscriptErrorMarkersSource    string   `json:"transcript_error_markers_source"`
+	TranscriptErrorMarkersCheckedBy string   `json:"transcript_error_markers_checked_by"`
+	// Level-1 self-description (docs/port-contract.md): facts about the
+	// PORT that the Datalog rules and the conformance report consume. Each
+	// fact is three flat keys -- the value, `_source` (where it was read
+	// off, or "none"), and `_checked_by` (the test that fails when it
+	// drifts, or "none"). There is deliberately no `_verified` boolean:
+	// one word meant two different predicates on the two facts below, so
+	// the word now lives in `yggdrasil contract`'s output and means
+	// exactly "_checked_by names a test". See contract.go and prune.go.
+	//
+	// PortReads: the globals this port's runtime reads natively, with no
+	// Shen code mentioning them. Empty means "not declared here"; the
+	// `_default` block's value is the literal string "unknown", so a target
+	// that declares none resolves to UNKNOWN rather than to a guess. Read it
+	// through portReadsFor/effectivePortReads, never directly.
+	PortReads          portReadsList `json:"port_reads"`
+	PortReadsSource    string        `json:"port_reads_source"`
+	PortReadsCheckedBy string        `json:"port_reads_checked_by"`
+	// NativeOverrides: the kernel defuns this port rebinds to natives.
+	// InstalledAfter records the PHASE, which is the whole content of the
+	// fact: on shen-go the generated main runs shen.initialise BEFORE
+	// InstallKernelFast, so the kernel's KL bodies do run during boot and
+	// the natives replace them only afterwards. An override list with no
+	// phase would read as "these KL bodies never run", which is false.
+	NativeOverrides               []string `json:"native_overrides"`
+	NativeOverridesSource         string   `json:"native_overrides_source"`
+	NativeOverridesCheckedBy      string   `json:"native_overrides_checked_by"`
+	NativeOverridesInstalledAfter string   `json:"native_overrides_installed_after"`
+	// Stage 5 (docs/analysis-rules.md): the KL names this port lowers
+	// syntactically, with no symbol lookup, so the generated code never
+	// names them and the graph recovered from its output has no edge to
+	// them. scip-check subtracts these and whatever only they reach from
+	// the shake's footprint, audits the declaration itself, and fails on
+	// any other residue. See scip.go. A port that declares none subtracts
+	// none.
+	SpecialForms       []string `json:"special_forms"`
+	SpecialFormsSource string   `json:"special_forms_source"`
 }
 
 type capabilityError struct{ message string }
 
 func (e capabilityError) Error() string { return e.message }
 
-func loadBuilders() (map[string]builder, error) {
-	b, err := embedded.ReadFile("builders.json")
+// portReadsUnknown is the only string builders.json's port_reads may hold. It
+// is a VALUE, not a missing key, because "nobody has measured this port's
+// native reads" is a claim the file has to be able to make out loud -- see
+// prune.go, and the `_default` block's own comment.
+const portReadsUnknown = "unknown"
+
+// portReadsList is a port_reads value: a declared list of globals, or the
+// literal "unknown", which unmarshals to the empty list. Any other string is
+// an error rather than a quiet unknown, so that a typo ("unkown") cannot turn
+// a declaration into a silence -- which is the precise failure mode the
+// unknown value exists to make visible.
+type portReadsList []string
+
+func (p *portReadsList) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
+		if !strings.EqualFold(strings.TrimSpace(s), portReadsUnknown) {
+			return fmt.Errorf("port_reads: the only string value is %q, got %q", portReadsUnknown, s)
+		}
+		*p = nil
+		return nil
+	}
+	var list []string
+	if err := json.Unmarshal(b, &list); err != nil {
+		return fmt.Errorf("port_reads must be a list of globals or the string %q: %w", portReadsUnknown, err)
+	}
+	*p = list
+	return nil
+}
+
+// ---- build steps that are logic, not a command line ----
+
+// yggdrasilStep is the argv[0] a build step uses to call one of yggdrasil's
+// own helpers instead of a subprocess. It exists for the steps that cannot
+// honestly be a shell recipe -- concatenating a KL program in manifest order
+// -- so that a target needing one is still an ENTRY in builders.json rather
+// than a runner hard-coded in Go and reachable from one subcommand.
+const yggdrasilStep = "{yggdrasil}"
+
+// internalSteps are those helpers, by the name a recipe calls them by. Each is
+// also reachable as `yggdrasil <name> ARGS...` (see run()), which is how a
+// recipe step can be reproduced by hand when it misbehaves.
+var internalSteps = map[string]func(args []string) error{
+	"program-file": programFileStep,
+}
+
+// programFileStep writes OUTDIR's shaken slice as ONE KL stream: the kernel,
+// the initialiser call, then the user files in manifest order. That is the
+// stage-2 builder contract executed rather than compiled, and it is what a
+// runtime that reads its program from stdin has to be handed.
+//
+// Manifest ORDER is the whole of the difficulty and the reason this is Go: the
+// user files must be fed in the order the manifest lists them, and
+// (shen.initialise) must come between the kernel and the first of them.
+func programFileStep(args []string) error {
+	if len(args) != 2 {
+		return fmt.Errorf("usage: yggdrasil program-file OUTDIR OUTFILE")
+	}
+	outdir, out := args[0], args[1]
+	var body bytes.Buffer
+	kern, err := os.ReadFile(filepath.Join(outdir, "kernel.kl"))
+	if err != nil {
+		return err
+	}
+	body.Write(kern)
+	body.WriteString("\n(shen.initialise)\n")
+	users, err := manifestUserFiles(outdir)
+	if err != nil {
+		return err
+	}
+	for _, u := range users {
+		src, err := os.ReadFile(filepath.Join(outdir, u))
+		if err != nil {
+			return err
+		}
+		body.Write(src)
+		body.WriteString("\n")
+	}
+	return os.WriteFile(out, body.Bytes(), 0o644)
+}
+
+// manifestUserFiles reads the user= lines of the txt manifest, in order.
+func manifestUserFiles(outdir string) ([]string, error) {
+	b, err := os.ReadFile(filepath.Join(outdir, "yggdrasil.manifest.txt"))
 	if err != nil {
 		return nil, err
 	}
+	var out []string
+	for _, line := range strings.Split(string(b), "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimRight(line, "\r"), "user="); ok && v != "" {
+			out = append(out, v)
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no user= line in %s/yggdrasil.manifest.txt", outdir)
+	}
+	return out, nil
+}
+
+// builderDefaultsKey is the builders.json block holding the facts a target
+// inherits when it states none of its own. It is `_`-prefixed so that every
+// loop over the targets skips it; the code that wants it asks by name.
+const builderDefaultsKey = "_default"
+
+// parseBuilders returns the per-target blocks and, separately, the `_default`
+// block. Splitting them is what lets a fact be absent from a target and still
+// resolve: absence is then visible as absence (an empty field) rather than as
+// a copy of the default pasted into every entry.
+func parseBuilders() (map[string]builder, builder, error) {
+	var defaults builder
+	b, err := embedded.ReadFile("builders.json")
+	if err != nil {
+		return nil, defaults, err
+	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(b, &raw); err != nil {
-		return nil, err
+		return nil, defaults, err
+	}
+	if v, ok := raw[builderDefaultsKey]; ok {
+		if err := json.Unmarshal(v, &defaults); err != nil {
+			return nil, defaults, fmt.Errorf("builder %s: %w", builderDefaultsKey, err)
+		}
 	}
 	out := map[string]builder{}
 	for k, v := range raw {
@@ -432,11 +782,16 @@ func loadBuilders() (map[string]builder, error) {
 		}
 		var bd builder
 		if err := json.Unmarshal(v, &bd); err != nil {
-			return nil, fmt.Errorf("builder %s: %w", k, err)
+			return nil, defaults, fmt.Errorf("builder %s: %w", k, err)
 		}
 		out[k] = bd
 	}
-	return out, nil
+	return out, defaults, nil
+}
+
+func loadBuilders() (map[string]builder, error) {
+	builders, _, err := parseBuilders()
+	return builders, err
 }
 
 // evalEntryPoints mirrors *eval-entry-points* in yggdrasil.shen: the calls that
@@ -531,6 +886,11 @@ func siblingDir(target string, b builder) string {
 			return abs
 		}
 	}
+	if b.DirDefault != "" {
+		cwd, _ := os.Getwd()
+		abs, _ := filepath.Abs(filepath.Join(cwd, "..", b.DirDefault))
+		return abs
+	}
 	name := map[string]string{
 		"lua": "shen-lua", "go": "shen-go", "rust": "shen-rust",
 		"joy": "shen-joy",
@@ -594,7 +954,18 @@ func build(target, outdir string, web bool) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	// {tmp} is a BUILD-time scratch dir -- the go target compiles its
+	// yggdrasil-build helper into it -- so it goes when this function
+	// returns. The one exception is a builder whose RUN argv names it: that
+	// command outlives this call, and deleting the tree would pull the
+	// binary out from under it. Nothing in builders.json does today.
 	tmp, _ := os.MkdirTemp("", "yggdrasil_build_")
+	tmpLive := false
+	defer func() {
+		if !tmpLive {
+			cleanupTmp(tmp)
+		}
+	}()
 	subs := map[string]string{
 		"{yggroot}": root, "{outdir}": outdir, "{tmp}": tmp,
 		"{shen_joy_bin}": joyBinary(b),
@@ -608,6 +979,9 @@ func build(target, outdir string, web bool) ([]string, error) {
 		"{shen_c}":       siblingDir("c", b),
 		"{shen_forth}":   siblingDir("forth", b),
 	}
+	// {program_file} is resolved BEFORE it joins the table, so that the step
+	// which writes it and the run that feeds it name one path once.
+	subs["{program_file}"] = subst(b.ProgramFile, subs)
 	// Steps can be gated on the manifest (see step.When).  Read it once: if a
 	// builder has any conditional step and the manifest is unreadable, that is
 	// a hard error rather than a silent "run nothing" -- a stage that quietly
@@ -627,6 +1001,22 @@ func build(target, outdir string, web bool) ([]string, error) {
 		argv := make([]string, len(st.Argv))
 		for i, a := range st.Argv {
 			argv[i] = subst(a, subs)
+		}
+		// A step that names one of yggdrasil's own helpers runs here, in
+		// process: there is no binary to find and nothing to re-exec, so a
+		// recipe step works the same from the CLI, from a test, and from
+		// Bifrost.
+		if len(st.Argv) > 1 && st.Argv[0] == yggdrasilStep {
+			fn, ok := internalSteps[st.Argv[1]]
+			if !ok {
+				return nil, fmt.Errorf("target %s: build step names no such yggdrasil helper: %q",
+					target, st.Argv[1])
+			}
+			if err := fn(argv[2:]); err != nil {
+				return nil, fmt.Errorf("build step failed for target %s: %s %s: %w",
+					target, st.Argv[1], strings.Join(argv[2:], " "), err)
+			}
+			continue
 		}
 		// --web is a pass-through to ShenScript's stage-2 builder: emit a
 		// browser-safe ES module instead of the default Node artifact.
@@ -659,6 +1049,9 @@ func build(target, outdir string, web bool) ([]string, error) {
 	runArgv := make([]string, len(b.Run))
 	for i, a := range b.Run {
 		runArgv[i] = subst(a, subs)
+		if tmp != "" && strings.Contains(runArgv[i], tmp) {
+			tmpLive = true
+		}
 	}
 	// Native-exe run path (e.g. {outdir}/app-go-bin) is app-go-bin.exe on Windows.
 	if len(runArgv) > 0 && strings.ContainsAny(runArgv[0], `/\`) {
@@ -675,7 +1068,7 @@ func main() { os.Exit(run(os.Args[1:])) }
 
 func run(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: yggdrasil <shake|build|run|check|parity|targets> ...")
+		fmt.Fprintln(os.Stderr, "usage: yggdrasil <shake|build|run|check|why|facts|trace-check|parity|lower|lower-check|scip-check|contract|targets> ...")
 		return 2
 	}
 	cmd, rest := args[0], args[1:]
@@ -700,9 +1093,34 @@ func run(args []string) int {
 		return cmdStage(cmd, rest)
 	case "check":
 		return cmdCheck(rest)
+	case "why":
+		return cmdWhy(rest)
+	case "facts":
+		return cmdFacts(rest)
+	case "trace-check":
+		return cmdTraceCheck(rest)
 	case "parity":
 		return cmdParity(rest)
+	case "lower":
+		return cmdLower(rest)
+	case "lower-check":
+		return cmdLowerCheck(rest)
+	case "scip-check":
+		return cmdScipCheck(rest)
+	case "contract":
+		return cmdContract(rest)
 	default:
+		// The build helpers a builders.json recipe invokes as
+		// {yggdrasil} <name>. Reachable here so that a step which
+		// misbehaved can be re-run by hand on the same outdir; the
+		// builders run them in process, never through this path.
+		if fn, ok := internalSteps[cmd]; ok {
+			if err := fn(rest); err != nil {
+				fmt.Fprintln(os.Stderr, "yggdrasil:", err)
+				return 1
+			}
+			return 0
+		}
 		fmt.Fprintf(os.Stderr, "yggdrasil: unknown subcommand %q\n", cmd)
 		return 2
 	}
@@ -713,13 +1131,36 @@ func cmdStage(cmd string, rest []string) int {
 	fs.SetOutput(os.Stderr)
 	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: shen-cl`)
 	evalStyle := fs.String("eval-style", "sub", "how the host evaluates the shake expr (sub | positional)")
-	target := fs.String("target", "", "stage-2 target (lisp/lua/go/joy/rust/js/julia/scheme/swift/erlang/truffle/truffle-native/c)")
+	target := fs.String("target", "", "stage-2 target: one of the entries in builders.json, which `yggdrasil targets` lists (naming them here too is a second copy that goes stale, and did)")
 	web := fs.Bool("web", false, "with --target js: emit a browser-safe ES module (passes --web to ShenScript's builder)")
 	typecheck := fs.Bool("typecheck", false, "typecheck PROG under (tc +) on the host before shaking; failure aborts with no artifacts, success is recorded as typechecked= in the manifest")
+	trace := fs.Bool("trace", false, "weave runtime call tracing into the emitted KL: every defun records its entry and every (value V) its read, to ./"+traceFileName+" at run time (see yggdrasil trace-check)")
+	pruneFlag := fs.Bool("prune-init", false, "stage 4: drop toplevel (set V Lit) forms whose global nothing reads, using --target's port_reads from builders.json; refused unless that target's list is checked, and refused with no --target too while any target's reads are unknown (see --prune-init-unverified); recorded as pruned-init= in the manifest")
+	pruneUnverified := fs.Bool("prune-init-unverified", false, "allow --prune-init where it is refused -- a target whose builders.json port_reads is unknown (nobody measured that runtime) or declared with no test naming it, or no --target at all; prints a WARN and prunes against the union over the targets that have declared a list")
+	noShake := fs.Bool("no-shake", false, "emit the FULL program (every kernel defun, the eval-capable initialiser, no trimming) instead of the shaken slice; the manifest records shaken=false. The reference build for scip-check")
 	// Allow flags after the PROG/OUTDIR positionals (Go's flag stops at the
 	// first non-flag token otherwise).
 	if err := fs.Parse(reorderArgs(rest, "host", "eval-style", "target")); err != nil {
 		return 2
+	}
+	// The whole mode of this stage-1 run, decided once, here, and passed to
+	// shakeMode as a value. --trace changes only what shake() asks the host
+	// for; every other stage is unaware, because a woven artifact is
+	// ordinary KL.
+	//
+	// The target is carried only when --prune-init asks for it: a shake has
+	// no target, so it must use the union of every port's reads; a
+	// build/run knows which backend the slice is for and may use just that
+	// one. Without --prune-init the list is not consulted at all, and
+	// naming it would change the host expression for every plain build.
+	opts := shakeOpts{
+		full:                     *noShake,
+		trace:                    *trace,
+		pruneInit:                *pruneFlag,
+		allowUnverifiedPortReads: *pruneUnverified,
+	}
+	if *pruneFlag {
+		opts.target = *target
 	}
 	if fs.NArg() < 2 {
 		fmt.Fprintf(os.Stderr, "usage: yggdrasil %s PROG OUTDIR%s\n", cmd, map[string]string{"shake": ""}[cmd]+ifTarget(cmd))
@@ -733,7 +1174,6 @@ func cmdStage(cmd string, rest []string) int {
 			host[0] = hit
 		}
 	}
-
 	// --typecheck gates the shake: check first in its own host process, so a
 	// type failure aborts before any artifact is written.
 	var checkedKernel string
@@ -747,7 +1187,7 @@ func cmdStage(cmd string, rest []string) int {
 	}
 
 	if cmd == "shake" {
-		out, err := shake(prog, outdir, host, *evalStyle, false)
+		out, err := shakeMode(prog, outdir, host, *evalStyle, false, opts)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "yggdrasil:", err)
 			return 1
@@ -775,7 +1215,7 @@ func cmdStage(cmd string, rest []string) int {
 		fmt.Fprintf(os.Stderr, "yggdrasil %s: --web only applies to --target js\n", cmd)
 		return 2
 	}
-	if _, err := shake(prog, outdir, host, *evalStyle, true); err != nil {
+	if _, err := shakeMode(prog, outdir, host, *evalStyle, true, opts); err != nil {
 		fmt.Fprintln(os.Stderr, "yggdrasil:", err)
 		return 1
 	}
@@ -813,7 +1253,22 @@ func cmdStage(cmd string, rest []string) int {
 	// run
 	argv := wrapExecutable(runArgv)
 	c := exec.Command(argv[0], argv[1:]...)
-	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
+	// A target whose runtime reads its program from stdin gets that program
+	// first and the user's own stdin after it -- which is the declared
+	// `stdin: appended-to-program` fact, and is why what the user types
+	// reaches the runtime as further toplevel forms rather than the program.
+	progFile, err := programFileFor(*target, outdir)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "yggdrasil:", err)
+		return 1
+	}
+	in, closeIn, err := openRunStdin(progFile, "", os.Stdin)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "yggdrasil:", err)
+		return 1
+	}
+	defer closeIn()
+	c.Stdin, c.Stdout, c.Stderr = in, os.Stdout, os.Stderr
 	if err := c.Run(); err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
 			return ee.ExitCode()
@@ -855,6 +1310,215 @@ func cmdCheck(rest []string) int {
 		ver = "?"
 	}
 	fmt.Printf("typechecked %s (kernel %s)\n", prog, ver)
+	return 0
+}
+
+// ---- footprint attribution (why) ----
+
+// runWhy drives the host through (yggdrasil.why ["prog"]) - or why-trace
+// when target is non-empty - and returns the report: host output from the
+// first sentinel line on. Like check it runs in its own host process, and
+// like check the sentinel, not the exit code, decides whether it worked.
+func runWhy(prog string, target string, host []string, evalStyle string) (string, error) {
+	if host == nil {
+		host = defaultHost()
+	}
+	if host == nil {
+		return "", fmt.Errorf("no Shen host launcher found. Set $YGGDRASIL_HOST (or $BIFROST_SHEN_CL) to a Shen launcher, e.g.\n  YGGDRASIL_HOST=/path/to/shen-cl/bin/sbcl/shen yggdrasil why ...")
+	}
+	prog, _ = filepath.Abs(prog)
+	if _, statErr := os.Stat(prog); statErr != nil {
+		return "", fmt.Errorf("program not found: %s", prog)
+	}
+	root, err := yggRoot()
+	if err != nil {
+		return "", fmt.Errorf("materialising shaker: %w", err)
+	}
+	expr := fmt.Sprintf(`(yggdrasil.why ["%s"])`, prog)
+	if target != "" {
+		expr = fmt.Sprintf(`(yggdrasil.why-trace ["%s"] %s)`, prog, target)
+	}
+
+	var argv []string
+	if evalStyle == "positional" {
+		drv, done, err := driverFile("_why_driver.shen", expr)
+		if err != nil {
+			return "", err
+		}
+		defer done()
+		argv = append(append([]string{}, host...), drv)
+	} else {
+		argv = append(append([]string{}, host...), "eval", "-q", "-l", "yggdrasil.shen", "-e", expr)
+	}
+
+	out, _ := runAt(wrapExecutable(argv), root)
+	report, ok := whyReport(out)
+	if !ok {
+		os.Stderr.WriteString(out)
+		return "", fmt.Errorf("why produced no report (host=%s)\n  did the program load cleanly on the host?", strings.Join(host, " "))
+	}
+	return report, nil
+}
+
+// whyReport cuts host output down to the report: the sentinel line and
+// every line after it, minus the host's trailing "done" echo.
+func whyReport(out string) (string, bool) {
+	i := strings.Index(out, "yggdrasil-why:")
+	if i < 0 {
+		return "", false
+	}
+	lines := strings.Split(strings.TrimRight(out[i:], "\n"), "\n")
+	if n := len(lines); n > 0 && strings.TrimSpace(lines[n-1]) == "done" {
+		lines = lines[:n-1]
+	}
+	return strings.Join(lines, "\n") + "\n", true
+}
+
+func cmdWhy(rest []string) int {
+	fs := flag.NewFlagSet("yggdrasil why", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: shen-cl`)
+	evalStyle := fs.String("eval-style", "sub", "how the host evaluates the why expr (sub | positional)")
+	trace := fs.String("trace", "", "also print the shortest call chain from the program to this kernel function")
+	if err := fs.Parse(reorderArgs(rest, "host", "eval-style", "trace")); err != nil {
+		return 2
+	}
+	if fs.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "usage: yggdrasil why PROG [--trace FN] [--host ...] [--eval-style ...]")
+		return 2
+	}
+	prog := fs.Arg(0)
+	var host []string
+	if *hostFlag != "" {
+		host = strings.Fields(*hostFlag)
+		if hit := findExecutablePath(host[0]); hit != "" {
+			host[0] = hit
+		}
+	}
+	report, err := runWhy(prog, *trace, host, *evalStyle)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "yggdrasil:", err)
+		return 1
+	}
+	os.Stdout.WriteString(report)
+	return 0
+}
+
+// ---- facts: the Datalog oracle's input ----
+//
+// `yggdrasil facts PROG OUTDIR` runs (yggdrasil.facts ...) on the host,
+// which writes one TSV file per relation in analysis/analysis.dl. Nothing
+// about the shake changes: the fact dump is a sibling entry point that
+// reuses the same pipeline and writes no artifact. The relations are the
+// input to Souffle (`souffle -F OUTDIR -D out analysis/analysis.dl`) in CI
+// and to analysis/refeval.py locally; both must compute a `reach` set equal
+// to kernel.kl's defun list minus the synthesised shen.initialise. See
+// docs/analysis-rules.md.
+//
+// Same trust model as shake and why: success is the sentinel line plus the
+// fact files existing on disk, never the host's exit code.
+func facts(prog, outdir string, host []string, evalStyle string, quiet bool, opts ...shakeOpts) (string, error) {
+	o, oerr := only(opts)
+	if oerr != nil {
+		return "", oerr
+	}
+	if host == nil {
+		host = defaultHost()
+	}
+	if host == nil {
+		return "", fmt.Errorf("no Shen host launcher found. Set $YGGDRASIL_HOST (or $BIFROST_SHEN_CL) to a Shen launcher, e.g.\n  YGGDRASIL_HOST=/path/to/shen-cl/bin/sbcl/shen yggdrasil facts ...")
+	}
+	prog, _ = filepath.Abs(prog)
+	outdir, _ = filepath.Abs(outdir)
+	if _, err := os.Stat(prog); err != nil {
+		return "", fmt.Errorf("program not found: %s", prog)
+	}
+	if err := os.MkdirAll(outdir, 0o755); err != nil {
+		return "", err
+	}
+	root, err := yggRoot()
+	if err != nil {
+		return "", fmt.Errorf("materialising shaker: %w", err)
+	}
+	expr := fmt.Sprintf(`(yggdrasil.facts ["%s"] "%s")`, prog, outdir)
+	expr, err = wrapShakeExpr(expr, o)
+	if err != nil {
+		return "", err
+	}
+
+	var argv []string
+	if evalStyle == "positional" {
+		drv, done, err := driverFile("_facts_driver.shen", expr)
+		if err != nil {
+			return "", err
+		}
+		defer done()
+		argv = append(append([]string{}, host...), drv)
+	} else {
+		argv = append(append([]string{}, host...), "eval", "-q", "-l", "yggdrasil.shen", "-e", expr)
+	}
+
+	out, _ := runAt(wrapExecutable(argv), root)
+	if !strings.Contains(out, "yggdrasil-facts:") {
+		os.Stderr.WriteString(out)
+		return "", fmt.Errorf("facts produced no dump (host=%s)\n  did the program load cleanly on the host?", strings.Join(host, " "))
+	}
+	// Every relation analysis.dl declares .input for must exist, even when
+	// empty: Souffle errors on a missing fact file, and a silently absent
+	// relation would quietly shrink reach.
+	for _, rel := range factRelations {
+		if _, err := os.Stat(filepath.Join(outdir, rel+".facts")); err != nil {
+			os.Stderr.WriteString(out)
+			return "", fmt.Errorf("facts dump is missing %s.facts", rel)
+		}
+	}
+	if !quiet {
+		os.Stderr.WriteString(out)
+	}
+	return outdir, nil
+}
+
+// factRelations is the .input set of analysis/analysis.dl, in declaration
+// order. Keep the two in step.
+var factRelations = []string{
+	"kernel", "callpos", "argpos", "datasym", "mentionsprim",
+	"top", "formmentions", "formmentionsef",
+	"rawsym", "usersym", "entry", "prim", "cap", "portGlobal", "initprim",
+	"userintern", "userglobal",
+	"readsIn", "reads", "writes", "portReads",
+	"defwrite", "fcall", "formcalls", "formwrite", "succ",
+	"defunwrite", "called", "readglobal",
+}
+
+func cmdFacts(rest []string) int {
+	fs := flag.NewFlagSet("yggdrasil facts", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: shen-cl`)
+	evalStyle := fs.String("eval-style", "sub", "how the host evaluates the facts expr (sub | positional)")
+	tgt := fs.String("target", "", "dump portReads for this target's runtime instead of the shaker's conservative default")
+	if err := fs.Parse(reorderArgs(rest, "host", "eval-style", "target")); err != nil {
+		return 2
+	}
+	// --target chooses which port_reads list lands in portReads.facts and
+	// asks for nothing else: pruneInit stays false, and yggdrasil.facts
+	// never prunes anyway.
+	opts := shakeOpts{target: *tgt}
+	if fs.NArg() < 2 {
+		fmt.Fprintln(os.Stderr, "usage: yggdrasil facts PROG OUTDIR [--host ...] [--eval-style ...] [--target T]")
+		return 2
+	}
+	prog, outdir := fs.Arg(0), fs.Arg(1)
+	var host []string
+	if *hostFlag != "" {
+		host = strings.Fields(*hostFlag)
+		if hit := findExecutablePath(host[0]); hit != "" {
+			host[0] = hit
+		}
+	}
+	if _, err := facts(prog, outdir, host, *evalStyle, false, opts); err != nil {
+		fmt.Fprintln(os.Stderr, "yggdrasil:", err)
+		return 1
+	}
 	return 0
 }
 
@@ -926,31 +1590,271 @@ func firstDiff(x, y string) (line int, xs, ys string) {
 // point) keeps needs-eval=false, and tests/stdin-sum.shen exercises exactly
 // that.  Both boots get identical bytes, so two-boot and two-pass stay
 // meaningful.
-func runCapture(argv []string, stdinFile string) (string, int64, error) {
+// ---- the declared run facts (builders.json: stdin, stdout, program_file) ----
+
+// The two values each run fact may take. They are constants because three
+// files consult them and a typo in one of them would silently restore the
+// behaviour the fact exists to describe.
+const (
+	stdinDelivered         = "delivered"           // the artifact gets the caller's bytes
+	stdinAppendedToProgram = "appended-to-program" // the runtime reads its program from stdin
+	stdoutProgram          = "program"             // stdout is the program's output
+	stdoutTranscript       = "repl-transcript"     // the program's output is embedded in one
+)
+
+// transcriptErrorMarkers resolves a target's declared error markers, the
+// target's own else `_default`'s. Empty for every target that does not declare
+// stdout=repl-transcript, where the comparison is equality and a marker would
+// have nothing to add.
+func transcriptErrorMarkers(target string) []string {
+	builders, defaults, err := parseBuilders()
+	if err != nil {
+		return nil
+	}
+	if b := builders[target]; len(b.TranscriptErrorMarkers) > 0 {
+		return b.TranscriptErrorMarkers
+	}
+	return defaults.TranscriptErrorMarkers
+}
+
+// transcriptError is the first marker a transcript carries and the first line
+// carrying it, or ("", ""). It is what a transcript target's comparison must
+// consult before it concludes anything from containment.
+//
+// Why this exists at all: `kl` passed `parity` and `trace-check` on every
+// fixture while every boot printed
+//
+//	Panic: &{22 implementation error in shen.change-pointer-value}
+//	Recovered in Eval: (shen.initialise)
+//
+// and a goroutine dump. The VM recovers and runs the next toplevel form, so
+// the program's output is in the transcript and containment was satisfied by a
+// run whose initialiser had failed. Containment is the strongest comparison
+// available on a transcript; it is not, on its own, a verdict.
+func transcriptError(markers []string, transcript string) (marker, line string) {
+	for _, ln := range strings.Split(transcript, "\n") {
+		for _, m := range markers {
+			if m != "" && strings.Contains(ln, m) {
+				return m, strings.TrimRight(ln, "\r")
+			}
+		}
+	}
+	return "", ""
+}
+
+// runFacts resolves a target's stdin/stdout facts, inheriting `_default`'s
+// values the way the port facts inherit. An unknown target yields the defaults
+// and no error: naming a target that does not exist is build()'s failure to
+// report, with the list of targets that do, and duplicating that refusal in
+// every caller of this function is how two spellings of "unknown target" get
+// into one tool.
+func runFacts(target string) (stdin, stdout string) {
+	stdin, stdout = stdinDelivered, stdoutProgram
+	builders, defaults, err := parseBuilders()
+	if err != nil {
+		return
+	}
+	pick := func(own, def string) string {
+		if own != "" {
+			return own
+		}
+		if def != "" {
+			return def
+		}
+		return ""
+	}
+	b := builders[target]
+	if v := pick(b.Stdin, defaults.Stdin); v != "" {
+		stdin = v
+	}
+	if v := pick(b.Stdout, defaults.Stdout); v != "" {
+		stdout = v
+	}
+	return
+}
+
+// programFileFor is the path a target's run must feed to stdin before anything
+// else, or "" for every target whose artifact carries its own program. The
+// only placeholder a program_file may use is {outdir}: it names a file in the
+// shake output, and a step that wrote it somewhere else would be a file the
+// run could not find.
+func programFileFor(target, outdir string) (string, error) {
+	builders, err := loadBuilders()
+	if err != nil {
+		return "", err
+	}
+	b, ok := builders[target]
+	if !ok || b.ProgramFile == "" {
+		return "", nil
+	}
+	abs, _ := filepath.Abs(outdir)
+	path := subst(b.ProgramFile, map[string]string{"{outdir}": abs})
+	if strings.ContainsAny(path, "{}") {
+		return "", fmt.Errorf("target %s: program_file %q uses a placeholder other than {outdir}",
+			target, b.ProgramFile)
+	}
+	return path, nil
+}
+
+// openRunStdin builds the stdin a run receives: the target's program file
+// first when it has one, then the caller's bytes (a --stdin file, or `rest`
+// for an interactive `yggdrasil run`). The concatenation IS the
+// "appended-to-program" fact: on such a runtime the caller's bytes are read as
+// further toplevel forms, not by the program, which is why trace-check refuses
+// to call such a run evidence for a fixture that ships stdin.
+//
+// Returns a nil reader when there is nothing to feed, which exec reads as
+// /dev/null -- the same as before either file existed.
+func openRunStdin(programFile, stdinFile string, rest io.Reader) (io.Reader, func(), error) {
+	var readers []io.Reader
+	var files []*os.File
+	closeAll := func() {
+		for _, f := range files {
+			f.Close()
+		}
+	}
+	open := func(path, what string) error {
+		f, err := os.Open(path)
+		if err != nil {
+			closeAll()
+			return fmt.Errorf("cannot read %s file: %w", what, err)
+		}
+		files = append(files, f)
+		readers = append(readers, f)
+		return nil
+	}
+	if programFile != "" {
+		if err := open(programFile, "program_file"); err != nil {
+			return nil, func() {}, err
+		}
+	}
+	if stdinFile != "" {
+		if err := open(stdinFile, "--stdin"); err != nil {
+			return nil, func() {}, err
+		}
+	}
+	if rest != nil {
+		readers = append(readers, rest)
+	}
+	switch len(readers) {
+	case 0:
+		return nil, closeAll, nil
+	case 1:
+		return readers[0], closeAll, nil
+	default:
+		return io.MultiReader(readers...), closeAll, nil
+	}
+}
+
+func runCapture(argv []string, programFile, stdinFile string) (string, int64, error) {
 	a := wrapExecutable(argv)
 	cmd := exec.Command(a[0], a[1:]...)
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, os.Stderr
-	if stdinFile != "" {
-		f, err := os.Open(stdinFile)
-		if err != nil {
-			return "", 0, fmt.Errorf("cannot read --stdin file: %w", err)
-		}
-		defer f.Close()
-		cmd.Stdin = f
+	in, closeIn, err := openRunStdin(programFile, stdinFile, nil)
+	if err != nil {
+		return "", 0, err
 	}
+	defer closeIn()
+	cmd.Stdin = in
 	start := time.Now()
-	err := cmd.Run()
+	err = cmd.Run()
 	return out.String(), time.Since(start).Milliseconds(), err
 }
 
 type parityResult struct {
 	target string
-	status string // ok | skip | builderr | runerr
+	status string // ok | skip | skipfact | builderr | runerr
 	outA   string
 	outB   string
 	runMs  int64
 	err    error
+	// skip is the NAME of a declared fact that made this target
+	// unrunnable on this fixture (builders.json's `stdin`), so the gate
+	// line says which fact rather than "SKIP".
+	skip string
+	// transcript records the `stdout: repl-transcript` fact: this target's
+	// stdout carries the runtime's own prompts and echoes around the
+	// program's output, so the golden is checked by CONTAINMENT. The
+	// two-boot and two-pass comparisons are unaffected -- a transcript is
+	// still required to be identical to itself.
+	transcript bool
+}
+
+// parityVerdict is the three comparisons the gate makes on one target's two
+// boots, extracted from the report loop so that the softenings a declared
+// `stdout: repl-transcript` buys can be tested without a toolchain. They were
+// inline, which meant the only way to check them was to build shen-go's VM.
+type parityVerdict struct {
+	vsTruth   bool
+	twoBoot   bool
+	twoPass   bool
+	hasPasses bool
+	pass1     string
+	pass2     string
+	// why is the reason every leg failed at once, when the failure is
+	// about the comparison rather than about one leg: an error marker in a
+	// transcript, or a golden with nothing in it. Empty when the legs above
+	// are the whole verdict.
+	why string
+}
+
+// compareParity decides those three, for an ordinary target by EQUALITY and
+// for one that declares `stdout: repl-transcript` by CONTAINMENT of the truth.
+//
+// Why containment on every leg there, rather than equality on the legs that
+// compare a transcript with itself: shen-go's cmd/kl prints its own prompts
+// and echoes, and ends a program by recovering a panic and printing the dump,
+// goroutine addresses included. Two boots of an identical program are
+// therefore never byte-identical, and the two halves of a two-pass fixture are
+// not comparable with each other either -- the runtime's lines are interleaved
+// with the program's and differ between the halves even when the program
+// printed the same thing twice. Demanding equality makes such a target
+// permanently red, which teaches a reader to ignore the column. What the
+// fixture actually promises is that each boot, and each pass, printed the
+// truth, and that still fails loudly when one of them does not.
+func compareParity(r *parityResult, truth string) parityVerdict {
+	a, b := canon(r.outA), canon(r.outB)
+	p1, p2, hasPasses := splitPasses(r.outA)
+	v := parityVerdict{
+		vsTruth:   a == truth,
+		twoBoot:   a == b,
+		twoPass:   !hasPasses || p1 == p2,
+		hasPasses: hasPasses,
+		pass1:     p1,
+		pass2:     p2,
+	}
+	if !r.transcript {
+		return v
+	}
+	// Two ways containment concludes nothing, checked BEFORE it runs. Both
+	// fail every leg, because neither is a statement about one boot.
+	if truth == "" {
+		v.vsTruth, v.twoBoot, v.twoPass = false, false, false
+		v.why = "golden-empty: the truth output is empty, so containment holds " +
+			"against any transcript whatsoever and this target was not checked at all"
+		return v
+	}
+	markers := transcriptErrorMarkers(r.target)
+	for i, out := range []string{a, b} {
+		if m, line := transcriptError(markers, out); m != "" {
+			v.vsTruth, v.twoBoot, v.twoPass = false, false, false
+			v.why = fmt.Sprintf("transcript-error: boot%s carries the declared error marker %q "+
+				"(builders.json transcript_error_markers) at\n      %s\n"+
+				"    The truth may still appear later in the transcript -- this runtime recovers and "+
+				"runs the next form -- which is exactly why containment is not a verdict on its own",
+				[2]string{"A", "B"}[i], m, line)
+			return v
+		}
+	}
+	v.vsTruth = strings.Contains(a, truth)
+	v.twoBoot = strings.Contains(b, truth)
+	if hasPasses {
+		t1, t2, truthHasPasses := splitPasses(truth)
+		v.hasPasses = truthHasPasses
+		v.twoPass = truthHasPasses && strings.Contains(p1, t1) && strings.Contains(p2, t2)
+	}
+	return v
 }
 
 func cmdParity(rest []string) int {
@@ -963,8 +1867,17 @@ func cmdParity(rest []string) int {
 	expect := fs.String("expect", "", "golden stdout file; when given it is the authoritative truth")
 	timeFlag := fs.Bool("time", false, "report per-target wall-clock (advisory; never fails the gate)")
 	stdinFile := fs.String("stdin", "", "file fed to each artifact's stdin (both boots get the same bytes)")
+	pruneFlag := fs.Bool("prune-init", false, "stage 4: shake with dead-initialisation pruning on (the union over the ports that have DECLARED a port_reads list), then gate the pruned slice on every target")
+	pruneUnverified := fs.Bool("prune-init-unverified", false, "allow --prune-init where it is refused -- a single target whose builders.json port_reads is unknown or unchecked, or no single --target at all; prints a WARN and prunes against the union over the targets that have declared a list")
 	if err := fs.Parse(reorderArgs(rest, "host", "eval-style", "target", "reference", "expect", "stdin")); err != nil {
 		return 2
+	}
+	// One named target means the slice is only ever built for that backend,
+	// so its own port_reads is the honest list; several (or none) means the
+	// union, the only list sound for all of them.
+	opts := shakeOpts{pruneInit: *pruneFlag, allowUnverifiedPortReads: *pruneUnverified}
+	if *pruneFlag && *targetFlag != "" && !strings.Contains(*targetFlag, ",") {
+		opts.target = strings.TrimSpace(*targetFlag)
 	}
 	if fs.NArg() < 2 {
 		fmt.Fprintln(os.Stderr, "usage: yggdrasil parity PROG OUTDIR [--target a,b] [--reference R] [--expect FILE]")
@@ -1015,7 +1928,7 @@ func cmdParity(rest []string) int {
 	}
 
 	// Stage 1, once.
-	if _, err := shake(prog, outdir, host, *evalStyle, true); err != nil {
+	if _, err := shake(prog, outdir, host, *evalStyle, true, opts); err != nil {
 		fmt.Fprintln(os.Stderr, "yggdrasil:", err)
 		return 1
 	}
@@ -1026,6 +1939,17 @@ func cmdParity(rest []string) int {
 	for _, t := range targets {
 		r := &parityResult{target: t}
 		results[t] = r
+		// The declared run facts, not the target's name: a runtime that
+		// reads its program from stdin cannot also be handed the fixture's
+		// stdin, so it is skipped BY NAME rather than run against bytes it
+		// will parse as toplevel forms. trace-check refuses the same pair
+		// for the same reason (trace.go's evidencePossible).
+		stdinFact, stdoutFact := runFacts(t)
+		if stdinFact == stdinAppendedToProgram && *stdinFile != "" {
+			r.status, r.skip = "skipfact", stdinAppendedToProgram
+			continue
+		}
+		r.transcript = stdoutFact == stdoutTranscript
 		runArgv, berr := build(t, outdir, false)
 		if berr != nil {
 			r.status, r.err = "builderr", berr
@@ -1035,8 +1959,13 @@ func cmdParity(rest []string) int {
 			r.status = "skip"
 			continue
 		}
-		outA, ms, ea := runCapture(runArgv, *stdinFile)
-		outB, _, eb := runCapture(runArgv, *stdinFile)
+		progFile, perr := programFileFor(t, outdir)
+		if perr != nil {
+			r.status, r.err = "builderr", perr
+			continue
+		}
+		outA, ms, ea := runCapture(runArgv, progFile, *stdinFile)
+		outB, _, eb := runCapture(runArgv, progFile, *stdinFile)
 		r.outA, r.outB, r.runMs = outA, outB, ms
 		if ea != nil || eb != nil {
 			r.status = "runerr"
@@ -1081,6 +2010,11 @@ func cmdParity(rest []string) int {
 		case "skip":
 			fmt.Printf("%-8s %-6s %s\n", t, "SKIP", "(toolchain not on PATH)")
 			continue
+		case "skipfact":
+			fmt.Printf("%-8s %-6s %s\n", t, "SKIP", "(builders.json declares stdin="+r.skip+
+				": this runtime reads its program from stdin, so the fixture's stdin bytes "+
+				"would be read as toplevel forms and the program would see EOF)")
+			continue
 		case "builderr":
 			fmt.Printf("%-8s %-6s build failed: %v\n", t, "FAIL", r.err)
 			fail = true
@@ -1092,10 +2026,9 @@ func cmdParity(rest []string) int {
 		}
 		checked++
 		a := canon(r.outA)
-		vsTruth := a == truth
-		twoBoot := a == canon(r.outB)
-		p1, p2, hasPasses := splitPasses(r.outA)
-		twoPass := !hasPasses || p1 == p2
+		v := compareParity(r, truth)
+		vsTruth, twoBoot, twoPass, hasPasses := v.vsTruth, v.twoBoot, v.twoPass, v.hasPasses
+		p1, p2 := v.pass1, v.pass2
 		tp := "N/A"
 		if hasPasses {
 			if twoPass {
@@ -1114,16 +2047,38 @@ func cmdParity(rest []string) int {
 		if *timeFlag {
 			extra = fmt.Sprintf("  %dms", r.runMs)
 		}
+		if r.transcript {
+			extra += "  (every leg by containment of the truth in the transcript: " +
+				"builders.json declares stdout=" + stdoutTranscript + ", which carries the " +
+				"runtime's own lines and is not byte-stable)"
+		}
 		fmt.Printf("%-8s %-6s %-9s %-9s %-8s%s\n", t, "ok", mark(vsTruth), mark(twoBoot), tp, extra)
-		if !vsTruth {
+		if v.why != "" {
+			fmt.Printf("    %s\n", v.why)
+		} else if !vsTruth && r.transcript {
+			fmt.Printf("    vs-truth: the transcript does not contain the truth output\n"+
+				"      want (somewhere in it): %q\n      got the whole transcript:  %q\n", truth, a)
+		} else if !vsTruth {
 			ln, xs, ys := firstDiff(a, truth)
 			fmt.Printf("    vs-truth first diff @ line %d:\n      got:  %q\n      want: %q\n", ln, xs, ys)
 		}
-		if !twoBoot {
+		if v.why != "" {
+			// Already said once; the legs are all false for the one reason.
+		} else if !twoBoot && r.transcript {
+			fmt.Printf("    two-boot: the second boot's transcript does not contain the truth output\n"+
+				"      want (somewhere in it): %q\n      got the whole transcript:  %q\n", truth, canon(r.outB))
+		} else if !twoBoot {
 			ln, xs, ys := firstDiff(a, canon(r.outB))
 			fmt.Printf("    two-boot first diff @ line %d:\n      bootA: %q\n      bootB: %q\n", ln, xs, ys)
 		}
-		if hasPasses && !twoPass {
+		if v.why != "" {
+			// As above.
+		} else if hasPasses && !twoPass && r.transcript {
+			t1, t2, _ := splitPasses(truth)
+			fmt.Printf("    two-pass: a half of the transcript does not contain the truth's\n"+
+				"      pass1 wants: %q\n      pass1 got:   %q\n"+
+				"      pass2 wants: %q\n      pass2 got:   %q\n", t1, p1, t2, p2)
+		} else if hasPasses && !twoPass {
 			ln, xs, ys := firstDiff(p1, p2)
 			fmt.Printf("    two-pass first diff @ line %d:\n      pass1: %q\n      pass2: %q\n", ln, xs, ys)
 		}

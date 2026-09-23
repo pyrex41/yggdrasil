@@ -55,6 +55,42 @@ For each built target the artifact is run **twice as two separate processes**
 
 On any mismatch the gate prints the first differing line for that check.
 
+### Two exceptions, both read off `builders.json`
+
+Neither is keyed on a target's name; both are declared facts on the
+target's entry, so a second target with the same property gets the same
+treatment the day its entry says so.
+
+* **`stdin: appended-to-program`.** The runtime reads its PROGRAM from
+  stdin (shen-go's `cmd/kl`), so a fixture's `--stdin` bytes would arrive
+  after the program text and be read as further toplevel forms. Such a
+  target is **skipped by name** on a fixture with stdin -- never run and
+  never counted -- exactly as `trace-check` skips it.
+* **`stdout: repl-transcript`.** The program's output is embedded in the
+  runtime's own prompts, echoes and diagnostics, and (for `cmd/kl`, which
+  ends a program by recovering a panic and printing the dump, goroutine
+  addresses included) is not byte-stable across two boots of the same
+  program. Every leg above is then **containment of the truth** rather
+  than equality: `bootA` contains the truth, `bootB` contains the truth,
+  and each half of a two-pass transcript contains the corresponding half
+  of the truth. The report line says so. Demanding equality would make
+  such a target permanently red on a property it cannot have, which
+  teaches a reader to ignore the column.
+
+  Containment on its own, though, is satisfied by a transcript whose boot
+  **failed** and whose runtime recovered and carried on — which is exactly
+  what `kl` did on every fixture up to shen-go `da55c5d` — so a target
+  declaring `repl-transcript` must also declare
+  **`transcript_error_markers`**, and those are checked first. At shen-go
+  `30ab469` the `kl` boot is clean and no fixture trips a marker; the
+  markers stay declared because the VM's recover-and-carry-on path is still
+  there, so what they now catch is a regression rather than the present. A
+  transcript carrying one fails every leg, with the marker and the first
+  line that matched. So is an empty truth (`golden-empty`): containment
+  holds against every transcript there is, so an empty
+  `tests/<fixture>.expected` would report a target as checked that was
+  never checked.
+
 ## The two-pass fixture convention
 
 The `two-pass` check is target-agnostic — no runtime hooks — because it relies on
@@ -139,11 +175,88 @@ run rather than quietly shrinking the gate. If a probed gap starts passing the
 gate **fails**, naming the line to delete — an exclusion that outlives its
 cause is exactly where the next real failure would hide.
 
-The list is empty today. Its one entry, `metaeval:js`, was deleted when #23
-fixed the underlying gap — and it was this check that demanded the deletion:
-the probe started passing and the gate failed with *"stale KNOWN_GAPS entries:
-metaeval:js"* until the line was removed. `metaeval` is now gated on go, lua,
-rust and js like every other fixture.
+The list holds **one** entry, `metaeval:kl`, and it held five until the
+shen-go pin moved to `30ab469`.
+
+`kl` joined the gate when it became a `builders.json` entry rather than a
+runner special-cased in `trace.go` (hickey-13): it runs the shaken KL on
+shen-go's bare KLambda VM with no stage-2 compiler in between, and up to
+shen-go `da55c5d` that VM panicked while evaluating `(shen.initialise)` on
+every boot of every fixture —
+
+```
+54 #> Panic: &{22 implementation error in shen.change-pointer-value}
+Recovered in Eval: (shen.initialise)
+```
+
+— then recovered and ran the next form, so the fixture's own output still
+appeared further down. For a while the gate called that a pass, because
+`kl`'s stdout is compared by containment; it stopped once the target
+declared `transcript_error_markers` (see the two exceptions above), and
+every fixture on `kl` became a known gap with the mechanism written out.
+
+At shen-go `30ab469` that panic is gone. Measured on this branch 2026-09-23,
+`bash scripts/parity-gate.sh --targets kl`: `fib`, `hello`, `parity` and
+`prolog` all report `ok / ok` on build and vs-truth with no marker anywhere
+in the transcript, so their four lines came out. `stdin-sum` needs no entry
+either way — `kl` declares `stdin: appended-to-program`, so the gate skips it
+there by fact.
+
+`metaeval:kl` stays, with a **different reason from the one it had**. The
+old one ("none of its three lines print") is dead: at `30ab469` the
+eval-capable slice prints all three, in order, with no panic. What it fails
+now is containment, and that is a property of `repl-transcript` rather than
+of the run. The VM echoes each toplevel form's value, so the three answers
+arrive interleaved:
+
+```
+553 #> eval list: 42
+"eval list: 42
+"
+554 #> #vector
+555 #> eval define: 42
+"eval define: 42
+"
+556 #> eval string: 42
+"eval string: 42
+"
+```
+
+while `tests/metaeval.expected` is the three lines **contiguous**, so
+`canon(golden)` is not a substring of `canon(transcript)` and both the
+vs-truth and two-boot legs report `DIFFER`. The other four fixtures have
+one-line goldens and are unaffected. Deciding what containment should mean
+for a multi-line golden on a transcript target is the open question; it is
+not a shen-go bug, and nothing in the gate papers over it. CI is unaffected
+either way, since `parity-gate.yml` passes `--targets go,js,lua`.
+
+The previous entry, `metaeval:js`, was deleted when #23 fixed the underlying
+gap — and it was this check that demanded the deletion: the probe started
+passing and the gate failed with *"stale KNOWN_GAPS entries: metaeval:js"*
+until the line was removed. `metaeval` is gated on go, lua, rust and js like
+every other fixture.
+
+### Dead-initialisation pruning (stage 4)
+
+`yggdrasil parity ... --prune-init` shakes with `docs/analysis-rules.md`'s
+stage-4 pruning on and gates the pruned slice. That is the gate's other job:
+pruning is off by default precisely because *this* gate, per target, is what
+says it is safe to turn on. A target whose `builders.json` `port_reads` list
+is missing an entry produces an artifact with a global left unbound, which
+shows up here as a run failure or a `vs-truth DIFFER`, and nowhere earlier.
+With one `--target T` the shake uses `T`'s own `port_reads`, and is **refused**
+unless that list names a test (`--target go` is the only one today). With
+several targets, or none, the shake has no single list and would fall back to
+the union over the targets that have declared one -- which is sound for those
+and for no others -- so it is refused too, and `--prune-init-unverified` is
+what proceeds, with a `WARN` naming the targets the union is over and the
+targets it says nothing about. That is deliberate: this gate is what decides
+whether pruning is safe on a port, so it must not quietly prune against a list
+nobody read off that port.
+
+No target defaults it on yet. Only `go`'s `port_reads` has been verified
+against a runtime, and the `go` builder did not boot on the machine stage 4
+was written on, so the gate has not returned a verdict for it.
 
 ### CI
 

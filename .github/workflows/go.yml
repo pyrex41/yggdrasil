@@ -1,16 +1,124 @@
 name: go
 
-# Builds and tests the Go yggdrasil CLI on Linux, macOS and Windows. Unit tests
-# exercise the cross-platform helpers + the embedded builders.json on every OS.
-# (A full shake needs a Shen host + the kernel callgraph cache, which regenerates
-# at runtime; that path is covered by the integration demo, not this matrix.)
+# Builds and tests the Go yggdrasil CLI.
+#
+# Two jobs, because "go test ./..." means two different things depending on
+# whether a Shen stage-1 host is on the machine:
+#
+#   build-test  three OSes, NO host.  Portability of the cross-platform
+#               helpers and the embedded builders.json.  Every host-gated
+#               test calls checkHost(t) and skips here; that is correct and
+#               intended, and the job asserts HOW MANY skip so the pipeline
+#               cannot quietly become 100% skips.
+#   host-test   ubuntu only, WITH a shen-go stage-1 host built the way
+#               parity-gate.yml builds it.  This is the job that actually runs
+#               the shake, the typecheck gate, the footprint/trace/scip checks
+#               and the analysis engines.  (It used to install scip-go too; the
+#               scip check needs only go/ast now -- see the note in the job.)
+#
+# Before this file grew host-test, every run of this workflow was green with
+# twenty SKIPs and zero shakes: per test nothing passed vacuously, per
+# pipeline everything did.  The skip assertions below are what make that
+# visible, and both counts are measured, never guessed.
 
 on:
   push:
   pull_request:
   workflow_dispatch:
 
+env:
+  # Tests that legitimately skip when no Shen host is present.  Measured on
+  # this branch with
+  #   unset YGGDRASIL_HOST; go test ./... -count=1 -v 2>&1 | grep -c '^--- SKIP'
+  # in a checkout with no sibling shen-go, which is what this job has -> 45,
+  # re-measured 2026-09-23 against a `git archive HEAD` with YGGDRASIL_HOST,
+  # BIFROST_SHEN_CL and YGGDRASIL_SHEN_GO_DIR unset and no sibling shen-cl or
+  # shen-go beside it.  (It was 21 before the eight fix branches merged, 33
+  # after, and 43 at ac551d7; this prose said 39 while the constant said 43,
+  # which is the drift an enumeration is meant to prevent and did not.  Each
+  # new entry below is marked with the branch that brought it.)  The
+  # forty-five are:
+  #   analysis_test.go  TestAnalysisOracleMatchesShake TestFactsDoesNotChangeTheShake
+  #   check_test.go     TestCheckTypedOK TestCheckTypedBadFailsButShakes
+  #                     TestCheckUnsignedDefineFails
+  #   dlengine_test.go  TestDLEngineSelfTest (T8)
+  #   footprint_test.go TestFootprintEnginesAgree TestComputedNameWarnsAndRecords
+  #                     TestComputedNameNoneIsRecorded TestComputedNameWarnSentinel
+  #                     TestFootprintOrderIsKernelLoadOrder (T5)
+  #   initorder_test.go TestInitOrderBadIsRefused TestInitOrderOKShakesAndRecords
+  #                     TestInitOrderSetterShakes (T1) TestInitOrderLetVarIsNotAGlobal (T1)
+  #                     TestInitOrderCallOrderStillDecides (T1) TestInitOrderRuleInRefeval (T1)
+  #                     TestInitOrderSameFormAndFreezeShake (T1)
+  #                     TestInitOrderLaterWriteStillRefused (T1)
+  #   manifest_test.go  TestManifestKeySetsMatch
+  #   parity_test.go    TestRunCaptureHelper (helper subprocess, defined at
+  #                     parity_test.go:78 and skipping at :80; it skips WITH a
+  #                     host too -- it is re-executed by its parent test)
+  #   prune_test.go     TestPruneInitDefaultIsInert TestPruneInitDropsOnlyWholeSets
+  #                     TestPruneInitGoArtifactStillRuns
+  #                     TestNativeOverridesMatchKernelFast (T4) -- the one entry
+  #                     here that is NOT host-gated: it needs a sibling shen-go
+  #                     checkout to read kl/kernelfast.go from, which this job
+  #                     does not make and host-test does.  It is in the count
+  #                     because the count is a raw grep, not a claim about why.
+  #   lower_test.go     TestLowerReportOnlyCountsAgainstBuildersJSON (lowering)
+  #                     TestLowerLeavesTheCanonicalSliceAlone (lowering)
+  #                     TestLowerCheckThreeWayParityPassesAndFails (lowering)
+  #                     TestLowerCLILowersGoForReal (repin-30ab469)
+  #                     TestLowerCheckOnGoFailsOnShenGoConditionalInstall
+  #                     (repin-30ab469) -- the two that moved the count from
+  #                     43 to 45.  They replaced TestLowerCLIRefusesGo and
+  #                     TestLowerCheckCLISkipsOnGo, which asserted that
+  #                     `lower --target go` refuses and needed neither a host
+  #                     nor a sibling checkout to do it.  At shen-go 30ab469
+  #                     the gate opens on `go`, so the same two commands
+  #                     shake, build and run instead of printing a refusal,
+  #                     and they are host- and toolchain-gated like every
+  #                     other test that does.  Nothing else moved: the skip
+  #                     set is otherwise identical to ac551d7's, name for
+  #                     name.
+  #   scip_test.go      TestScipCheckFixtures
+  #   trace_test.go     TestTraceIsOptional TestTraceCheckRules TestTraceCheckFixtures
+  #                     TestTraceCheckComplete (T2) TestTraceCheckTruncated (T2)
+  #                     TestTraceCheckPrefix (T2)
+  #                     TestTraceCheckPrunedFixtures (trace-full)
+  #                     TestTraceCheckPrunedReadFails (trace-full)
+  #                     TestTraceCheckFullContains (trace-full)
+  #                     TestTraceCheckFullUncovered (trace-full)
+  #                     TestTraceCheckSliceCannotSeeIt (trace-full)
+  #                     TestPhaseBoundaryIsTheFirstProgramForm (trace-full)
+  #                     TestRunOnKlTargetFeedsTheProgramOnStdin (kl-target)
+  #                     -- the six added by fix/trace-full: `trace-check
+  #                     --prune-init` and `trace-check --full`, their negative
+  #                     cases and its control, and the woven phase boundary.
+  #                     All six boot a stage-1 host; the first five also need
+  #                     the `go` stage-2 builder, which host-test makes and
+  #                     this job does not.
+  #   why_test.go       TestWhyPartialFixtures
+  # This is an EXACT count on ubuntu-latest, not a ceiling: a ceiling only
+  # catches a test that becomes host-gated, and lets a test that stops being
+  # host-gated -- or that stops existing -- slide under it unnoticed.  Moving
+  # this number in either direction is a deliberate act, and the commit that
+  # moves it should say which test moved and why.  (Merging two branches that
+  # each add a host-gated test therefore needs the count re-measured and the
+  # enumeration above re-written; that is the intended cost, and it is what
+  # this integration paid.)
+  NO_HOST_EXPECTED_SKIPS: "45"
+  # macos-latest and windows-latest may skip MORE than that, for reasons that
+  # have nothing to do with a host: portable_test.go:138 skips without python3
+  # and portable_test.go:382 skips without node.  Both are present on the
+  # ubuntu image, which is why the exact count is asserted there and a named
+  # slack of two is allowed on the other two runners.  The 21 was measured on
+  # macOS with both tools installed; it has never been measured on Windows.
+  NO_HOST_ENV_SLACK: "2"
+  # With a host and a sibling shen-go checkout -- both of which host-test
+  # makes -- only the helper subprocess above may skip.
+  HOST_MAX_SKIPS: "1"
+
 jobs:
+  # Job id and check name deliberately unchanged: this is the check that
+  # already exists on this repo, and renaming it would silently detach any
+  # branch protection that requires it.
   build-test:
     strategy:
       fail-fast: false
@@ -24,7 +132,119 @@ jobs:
           go-version: "1.27.x"
       - run: go build -o yggdrasil_bin ./...
       - run: go vet ./...
-      - run: go test ./...
+      - name: go test, and assert the skip count
+        shell: bash
+        env:
+          RUNNER_OS_NAME: ${{ matrix.os }}
+        run: |
+          set -euo pipefail
+          go test ./... -count=1 -v 2>&1 | tee out.txt
+          # grep -c exits 1 on zero matches, which is a pass, not an error.
+          # '^--- SKIP' is anchored on purpose: a SUBtest skip is indented, and
+          # subtests skip for per-target reasons this count is not about.
+          skips=$(grep -c '^--- SKIP' out.txt || true)
+          grep '^--- SKIP' out.txt || true
+          lo="$NO_HOST_EXPECTED_SKIPS"
+          hi="$NO_HOST_EXPECTED_SKIPS"
+          if [ "$RUNNER_OS_NAME" != "ubuntu-latest" ]; then
+            hi=$((NO_HOST_EXPECTED_SKIPS + NO_HOST_ENV_SLACK))
+          fi
+          echo "host-less skips on $RUNNER_OS_NAME: $skips (expected $lo..$hi)"
+          if [ "$skips" -gt "$hi" ]; then
+            echo "::error::$skips tests skipped without a host, expected at most $hi."
+            echo "::error::A pipeline that skips more than it runs is not a pass. Either the"
+            echo "::error::new test should not be host-gated, or raise NO_HOST_EXPECTED_SKIPS"
+            echo "::error::in this file and say in the commit message which test moved and why."
+            echo "::error::If the extra skip is an environment one (python3, node), it belongs"
+            echo "::error::in NO_HOST_ENV_SLACK with the tool named, not in the host count."
+            exit 1
+          fi
+          if [ "$skips" -lt "$lo" ]; then
+            echo "::error::only $skips tests skipped without a host, expected $lo."
+            echo "::error::Fewer skips is not automatically good news: a host-gated test that"
+            echo "::error::stopped being host-gated, or that was deleted, lands here too. Check"
+            echo "::error::the enumeration in this file against the suite, then lower"
+            echo "::error::NO_HOST_EXPECTED_SKIPS in the same commit that explains it."
+            exit 1
+          fi
       - name: targets smoke (no host needed)
         shell: bash
         run: ./yggdrasil_bin targets
+
+  host-test:
+    name: with a Shen stage-1 host
+    runs-on: ubuntu-latest
+    # Generous on purpose. The hosted suite is ~9 minutes on an idle M-series
+    # laptop and 1483s (24.7 min) on the same laptop with two other builds
+    # running; a 2-vCPU ubuntu runner is closer to the second number than the
+    # first. See the -timeout below -- the job timeout alone does not save us,
+    # because the test binary aborts itself at Go's default 10m first.
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.x"
+
+      # One pin, one file, read by all three workflows that need a host.
+      - name: read the pinned shen-go SHA
+        run: |
+          set -euo pipefail
+          ref="$(grep -Eom1 '^[0-9a-f]{40}$' .github/shen-go.ref)"
+          echo "SHEN_GO_REF=$ref" >> "$GITHUB_ENV"
+          echo "shen-go pinned at $ref (.github/shen-go.ref)"
+
+      # Pinned checkout, then checkout by SHA -- not `--depth 1 -b master`.
+      # Full clone because a shallow one has no object to check out by SHA.
+      - name: check out the shen-go stage-1 host (pinned)
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/.."
+          git clone -q https://github.com/pyrex41/shen-go.git
+          cd shen-go
+          git checkout -q "$SHEN_GO_REF"
+          echo "shen-go at $(git rev-parse HEAD)"
+
+      - name: build the shen-go stage-1 host
+        run: go build -o "$GITHUB_WORKSPACE/../shen-go-host" ./cmd/shen
+        working-directory: ${{ github.workspace }}/../shen-go
+
+      # No scip-go step, deliberately.  T6 installed scip-go at a pinned
+      # v0.2.7 and asserted it on PATH, because scip_test.go then gated
+      # TestScipCheckFixtures on `exec.LookPath("scip-go")` and the ubuntu
+      # image does not ship it, so the scip check would have skipped here
+      # silently.  T3 deleted the Go-level SCIP machinery in the same
+      # integration: scip-check now recovers the KL-level graph with `go/ast`
+      # alone, nothing in this repo execs scip-go, and TestScipCheckFixtures
+      # gates on a Shen host and `go` only.  Installing a tool no test looks
+      # for would add a network fetch that can redden this job for a reason
+      # unrelated to anything it checks.
+
+      - name: go test with a host, and assert the skip count
+        env:
+          YGGDRASIL_HOST: ${{ github.workspace }}/../shen-go-host
+          YGGDRASIL_SHEN_GO_DIR: ${{ github.workspace }}/../shen-go
+        run: |
+          set -euo pipefail
+          # -timeout is NOT optional here. Go's default is 10 minutes per test
+          # BINARY and the hosted suite does not fit in it: measured 1483s on
+          # an M-series laptop, where TestTraceCheckFixtures alone runs four
+          # fixtures on every usable stage-2 runtime. Without this flag the
+          # binary panics with "test timed out after 10m0s" mid-test and the
+          # job goes red having found nothing -- which is exactly what the
+          # first version of this job did.
+          go test ./... -count=1 -v -timeout 60m 2>&1 | tee host-out.txt
+          skips=$(grep -c '^--- SKIP' host-out.txt || true)
+          echo "hosted skips: $skips (max $HOST_MAX_SKIPS)"
+          grep '^--- SKIP' host-out.txt || true
+          if [ "$skips" -gt "$HOST_MAX_SKIPS" ]; then
+            echo "::error::$skips tests skipped WITH a host, max is $HOST_MAX_SKIPS."
+            echo "::error::A host-gated test that still skips here is a test that never runs"
+            echo "::error::anywhere. The skipped names are printed above; the usual causes are"
+            echo "::error::(a) a tool this job does not install -- python3, node --"
+            echo "::error::in which case install it here rather than raising this number, and"
+            echo "::error::(b) the pinned shen-go failing to build a stage-2 artifact, which is"
+            echo "::error::a real regression at the pin and not a reason to relax the gate."
+            exit 1
+          fi

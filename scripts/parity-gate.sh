@@ -61,10 +61,74 @@ done
 #   * if a probed gap starts PASSING the gate FAILS, demanding the line be
 #     deleted.  An exclusion that outlives its cause is the bug this whole
 #     script exists to catch.
-# Currently empty: the one entry that lived here, metaeval:js, was removed when
-# #23 fixed it -- and it was this script's own stale-gap check that demanded the
-# removal, which is the mechanism working as intended rather than a formality.
-KNOWN_GAPS=''
+# Two entries that lived here are gone, and both got out the same way: the
+# gate's own stale-gap check started failing and demanded the deletion, which
+# is the mechanism working as intended rather than a formality.
+#
+#   * metaeval:js went when #23 fixed it.
+#   * four `kl` entries (fib, hello, parity, prolog) went when the shen-go pin
+#     moved to 30ab469 (PR #48).  They had one cause.  `kl` joined the gate
+#     when it stopped being a runner special-cased in trace.go and became a
+#     builders.json entry (hickey-13): it runs the shaken KL on shen-go's bare
+#     KLambda VM, with no stage-2 compiler in between, and up to shen-go
+#     da55c5d that VM panicked while evaluating `(shen.initialise)` -- on
+#     EVERY boot, of every fixture:
+#
+#       53 #> shen.initialise
+#       54 #> Panic: &{22 implementation error in shen.change-pointer-value}
+#       Recovered in Eval: (shen.initialise)
+#       Error(goroutine 1 [running]: ...
+#
+#     then recovered and ran the next toplevel form, so the fixture's output
+#     still appeared further down the transcript.  For a while that was
+#     reported as a PASS, because `kl`'s stdout is compared by containment (it
+#     is a REPL transcript, not the program's output) and containment is
+#     satisfied by a transcript whose boot failed.  The entry declares
+#     `transcript_error_markers` and both readers check them BEFORE the
+#     containment test, so the gate started saying what was always true.
+#     metaeval:kl failed a second time over: the eval-capable slice calls
+#     `eval` at run time and the VM answered `Panic: &{22 package shen does
+#     not exist.}`, so none of its three lines printed.
+#
+#     At shen-go 30ab469 neither happens.  Measured on this branch,
+#     2026-09-23: `yggdrasil run tests/fib.shen OUT --target kl` and the same
+#     on tests/metaeval.shen produce transcripts with zero `Panic:` /
+#     `Recovered in Eval` / `goroutine ` lines; metaeval prints all three of
+#     `eval list: 42`, `eval define: 42`, `eval string: 42`; and
+#     `yggdrasil trace-check tests/fib.shen OUT --target kl` reports
+#     `OK called=33` with `phase: boot=28 program=11`.  `kl` gates for real on
+#     fib, hello, parity and prolog now, and a marker coming back is a
+#     regression -- which TestTraceCheckFixtures (trace_test.go) asserts
+#     rather than tolerates.
+#
+# metaeval:kl stays, with a DIFFERENT reason from the one it had.  The old
+# reason ("the eval-capable slice prints none of its three lines") is dead:
+# at 30ab469 the slice prints all three, in order, with no panic anywhere in
+# the transcript.  What it fails on now is containment, and that is a property
+# of `kl`'s declared stdout=repl-transcript rather than of the run.  The VM
+# echoes each toplevel form's value, so the three answers arrive interleaved
+# with prompts and echoes:
+#
+#   553 #> eval list: 42
+#   "eval list: 42
+#   "
+#   554 #> #vector
+#   555 #> eval define: 42
+#   "eval define: 42
+#   "
+#   556 #> eval string: 42
+#   "eval string: 42
+#   "
+#
+# while tests/metaeval.expected is the three lines CONTIGUOUS, so
+# `canon(golden)` is not a substring of `canon(transcript)` and both the
+# vs-truth and two-boot legs report DIFFER.  fib/hello/parity/prolog are
+# one-line-ish goldens and are unaffected.  Fixing this is a question about
+# what containment should mean for a multi-line golden on a transcript
+# target, not a shen-go bug, and nothing here should paper over it.
+#
+# A new entry belongs here only with the observed failure quoted in it.
+KNOWN_GAPS='metaeval:kl  at shen-go 30ab469 the slice prints all three lines and the transcript carries no error marker; it fails containment because the kl VM interleaves its prompts and value echoes between them ("553 #> eval list: 42" / "\"eval list: 42\n\"" / "554 #> #vector" / ...) and tests/metaeval.expected is the three lines contiguous'
 
 gap_reason() {  # gap_reason <fixture> <target> -> prints reason, or empty
     printf '%s\n' "$KNOWN_GAPS" | while IFS= read -r line; do
@@ -111,7 +175,27 @@ if [ -n "$FIXTURES" ]; then
 else
     NAMES=()
     for f in tests/*.shen; do
-        NAMES+=("$(basename "$f" .shen)")
+        name="$(basename "$f" .shen)"
+        # Fixtures the shaker is meant to REFUSE never produce an artifact,
+        # so they are not parity material.  (They have no golden either,
+        # which would skip them anyway; this says why.)
+        case "$name" in init-order-bad) continue ;; esac
+        # The two computed-name fixtures exist to VIOLATE the shake's
+        # hypothesis that every name the artifact can call occurs
+        # syntactically in it -- they are `yggdrasil trace-check` material,
+        # not parity material, and they ship a golden because trace-check
+        # compares the run's stdout against one.
+        #
+        #   computed-call  its SLICE cannot run at all, by construction: it
+        #                  resolves shen.printF through (intern "shen.printF")
+        #                  and the shake does not keep it.  Only the --full
+        #                  artifact runs, which is the whole point.
+        #   computed-read  its slice does run (checked on go), but its parity
+        #                  across the other twelve targets has not been
+        #                  measured, and a gate list is not the place to find
+        #                  out.  `--fixtures computed-read` runs it on demand.
+        case "$name" in computed-call|computed-read) continue ;; esac
+        NAMES+=("$name")
     done
 fi
 

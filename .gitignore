@@ -9,9 +9,15 @@ KLambda/callgraph-*.shen
 # Compiled Go binary bundled into the uvx wheel at build time.
 pybin/*/_bin/
 
-# Default `go build` output.
+# Default `go build` output. `/ygg` is the name docs/port-contract.md and the
+# acceptance commands build under (`go build -o ./ygg .`).
 /yggdrasil
 /yggdrasil_bin
+/ygg
 
 # Local launcher binaries built by integration scripts.
 .bin/
+
+# Runtime trace written by a --trace artifact run from the repo root.
+/yggdrasil.trace
+.claude/worktrees/

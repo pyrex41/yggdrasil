@@ -49,6 +49,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # shen-go doubles as the stage-1 host here, so an unpinned master makes
+      # a red gate unattributable: rendering, host, or port? The SHA lives in
+      # .github/shen-go.ref -- one copy for the three workflows that need it.
+      # (ShenScript and shen-lua below are still floating; pinning those is
+      # separate work.)
+      - name: read the pinned shen-go SHA
+        run: |
+          set -euo pipefail
+          ref="$(grep -Eom1 '^[0-9a-f]{40}$' .github/shen-go.ref)"
+          echo "SHEN_GO_REF=$ref" >> "$GITHUB_ENV"
+          echo "shen-go pinned at $ref (.github/shen-go.ref)"
+
       - uses: actions/setup-go@v5
         with:
           go-version: "1.27.x"
@@ -67,7 +79,11 @@ jobs:
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/.."
-          git clone --depth 1 -b master https://github.com/pyrex41/shen-go.git
+          # Full clone for shen-go: a shallow one carries no object to check
+          # SHEN_GO_REF out of.
+          git clone -q https://github.com/pyrex41/shen-go.git
+          git -C shen-go checkout -q "$SHEN_GO_REF"
+          echo "shen-go host pinned at $(git -C shen-go rev-parse HEAD)"
           git clone --depth 1 -b master https://github.com/pyrex41/ShenScript.git
           git clone --depth 1 -b main   https://github.com/pyrex41/shen-lua.git
 

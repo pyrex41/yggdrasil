@@ -1,0 +1,220 @@
+name: analysis-oracle
+
+# Stage 1 of docs/analysis-rules.md: the shake restated as a Datalog rule set,
+# checked against the shake itself.
+#
+# For every fixture, in whichever eval mode it lands in, this job dumps the
+# shake's facts (`yggdrasil facts`), evaluates analysis/analysis.dl over them
+# with real Soufflé, and diffs `reach` against the defun list of the kernel.kl
+# the same shake wrote. Equality is the whole claim: the rules describe THIS
+# shaker, not a nicer one. A difference is a bug in the rules or in the shake,
+# and the job says which names moved.
+#
+# Soufflé is an ORACLE, never a dependency. It runs here and nowhere else; a
+# user's shake is pure Shen on a certified kernel, which is the property the
+# tool exists to provide (docs/reachability.md). The same relationship the
+# Warshall closure has to the worklist traversal.
+#
+# analysis/refeval.py evaluates the same rules in stdlib Python for developers
+# without Soufflé, and go test uses it when `souffle` is off PATH. This job
+# runs both and diffs them, so the two readings of analysis.dl cannot drift.
+#
+# It needs a shen-go build plus a shake per fixture, so it is minutes rather
+# than seconds -- but "minutes" was never a reason to let it run NEVER. Until
+# this trigger list grew a `push`, the job had schedule + workflow_dispatch +
+# a path-filtered `pull_request`, and the branch it was written on has no PR:
+# Soufflé had therefore never evaluated analysis/analysis.dl anywhere, on any
+# commit, and an oracle that has never run is a comment. `push` on the trunk
+# and on the development branch is the fix; the path filter stays on
+# `pull_request`, where an unrelated contributor's PR should not pay for it.
+
+on:
+  push:
+    branches:
+      - main
+      - claude/qilang-discussion-analysis-6pbsx2
+  schedule:
+    - cron: "41 5 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "analysis/**"
+      - "yggdrasil.shen"
+      - "main.go"
+      - "KLambda/**"
+      - ".github/workflows/analysis-oracle.yml"
+
+concurrency:
+  group: analysis-oracle-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  oracle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # The stage-1 host is PINNED, for exactly the reason the Soufflé version
+      # below is pinned: an oracle whose host is "whatever master was that
+      # night" cannot attribute a red run to the rules, to the shake, or to the
+      # host. The SHA itself, and the note on moving it, live in
+      # .github/shen-go.ref -- one copy for the three workflows that need it.
+      - name: read the pinned shen-go SHA
+        run: |
+          set -euo pipefail
+          ref="$(grep -Eom1 '^[0-9a-f]{40}$' .github/shen-go.ref)"
+          echo "SHEN_GO_REF=$ref" >> "$GITHUB_ENV"
+          echo "shen-go pinned at $ref (.github/shen-go.ref)"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.x"
+
+      # Soufflé ships a .deb per release; prefer it, pinned, because a rule set
+      # that only evaluates on "whatever is latest" is not an oracle.
+      #
+      # The pin is release 2.5, and the asset is chosen by the runner's own
+      # VERSION_ID. Two dead ends are recorded here so nobody re-walks them:
+      #
+      #   * 2.4.1 has no .deb for a live runner. Its only .deb is
+      #     x86_64-ubuntu-2004-souffle-2.4.1-Linux.deb; the 2204 name this job
+      #     used to ask for never existed, which is the 404 that ran here.
+      #   * The souffle-lang.github.io/ppa apt repo stopped at souffle 2.4
+      #     (Release file dated 2023-03-05) and every version in it Depends on
+      #     libffi7/libtinfo5-era libraries. ubuntu-latest is ubuntu-24.04,
+      #     which ships libffi8 and no libffi7, so apt can only answer "held
+      #     broken packages". The repo is not a fallback, it is a trap; it is
+      #     gone.
+      #
+      # 2.5 publishes both a 2204 and a 2404 .deb, so the case below covers the
+      # current image and the one before it. A runner on any other release
+      # fails LOUDLY here rather than installing something unpinned: adding a
+      # line to the case, with the sha512 from that release's sha512sum.txt, is
+      # the fix.
+      #
+      # The download is checked against the sha512 published in the release's
+      # own sha512sum.txt before it is installed. A pinned URL whose bytes
+      # changed underneath is not a pin.
+      - name: install souffle
+        env:
+          SOUFFLE_VERSION: "2.5"
+        run: |
+          set -euo pipefail
+
+          . /etc/os-release
+          case "${VERSION_ID:-}" in
+            24.04)
+              deb="x86_64-ubuntu-2404-souffle-${SOUFFLE_VERSION}-Linux.deb"
+              sha512="6b86e554f6aa5abf8a8b55d8312ae37c0957c5bd6c9edeea89246db9406f645ec5e600b84fe6636b1c163da556f0da6c3d2dad46c1083413f2fcf4f95b9ac62c"
+              ;;
+            22.04)
+              deb="x86_64-ubuntu-2204-souffle-${SOUFFLE_VERSION}-Linux.deb"
+              sha512="c21e2f8153c140499f5b2aa30a148dddec7be5663e36071466cdc225a6682f9fe699b939241c7c28258ee96d1e2c2fe5585e9e8e6b74fb20172f06d2b40774da"
+              ;;
+            *)
+              echo "::error::no pinned souffle ${SOUFFLE_VERSION} .deb for ${PRETTY_NAME:-unknown runner} (VERSION_ID=${VERSION_ID:-unset}); add its asset and sha512 from https://github.com/souffle-lang/souffle/releases/tag/${SOUFFLE_VERSION}"
+              exit 1
+              ;;
+          esac
+
+          url="https://github.com/souffle-lang/souffle/releases/download/${SOUFFLE_VERSION}/${deb}"
+          echo "souffle ${SOUFFLE_VERSION} for ${PRETTY_NAME:-unknown}: $url"
+          if ! curl -fsSL --retry 3 --retry-delay 5 -o /tmp/souffle.deb "$url"; then
+            echo "::error::could not download the pinned souffle asset $deb from $url -- check the asset list at https://github.com/souffle-lang/souffle/releases/tag/${SOUFFLE_VERSION}"
+            exit 1
+          fi
+
+          if ! echo "${sha512}  /tmp/souffle.deb" | sha512sum -c -; then
+            echo "::error::sha512 mismatch on $deb: the pinned asset's bytes changed, got $(sha512sum /tmp/souffle.deb | cut -d' ' -f1)"
+            exit 1
+          fi
+
+          sudo apt-get update -qq
+          # --no-install-recommends: the .deb's Depends (g++, mcpp, libffi8,
+          # libncurses5-dev, libsqlite3-dev, zlib1g-dev, python3) are all in
+          # noble and all the oracle needs; recommends are not.
+          if ! sudo apt-get install -y --no-install-recommends /tmp/souffle.deb; then
+            echo "::error::apt-get could not install $deb on ${PRETTY_NAME:-unknown runner} -- its Depends are unsatisfiable on this image"
+            exit 1
+          fi
+
+          if ! command -v souffle >/dev/null; then
+            echo "::error::$deb installed but no souffle on PATH"
+            exit 1
+          fi
+          echo "souffle installed: $(command -v souffle)"
+          souffle --version
+
+      # The stage-1 host, built the same way parity-gate.yml builds it, at the
+      # pinned SHEN_GO_REF above. A full clone, not `--depth 1`: a shallow
+      # clone carries no object to check a SHA out of.
+      - name: check out and build the shen-go stage-1 host (pinned)
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/.."
+          git clone -q https://github.com/pyrex41/shen-go.git
+          cd shen-go
+          git checkout -q "$SHEN_GO_REF"
+          echo "shen-go host pinned at $(git rev-parse HEAD)"
+          make shen
+          ls -l shen || ls -l bin/shen
+
+      - name: build the CLI
+        run: go build -o yggdrasil_bin .
+
+      - name: rules vs shake, every fixture
+        env:
+          YGGDRASIL_HOST: ${{ github.workspace }}/../shen-go/shen
+        run: |
+          set -euo pipefail
+          # The host may land at ./shen or ./bin/shen depending on the
+          # makefile's era; take whichever exists.
+          if [ ! -x "$YGGDRASIL_HOST" ]; then
+            YGGDRASIL_HOST="$GITHUB_WORKSPACE/../shen-go/bin/shen"
+            export YGGDRASIL_HOST
+          fi
+          fail=0
+          checked=0
+          for prog in tests/*.shen; do
+            name="$(basename "$prog" .shen)"
+            # Refused by the init-order check on purpose; nothing to compare.
+            [ "$name" = init-order-bad ] && continue
+            work="$RUNNER_TEMP/$name"
+            rm -rf "$work"; mkdir -p "$work/shake" "$work/facts" "$work/out"
+
+            ./yggdrasil_bin shake "$prog" "$work/shake" >/dev/null
+            ./yggdrasil_bin facts "$prog" "$work/facts" >/dev/null
+            souffle -F "$work/facts" -D "$work/out" analysis/analysis.dl
+
+            # kernel.kl's defun list, minus the initialiser the shake
+            # synthesises at write time (no call-graph row, so no rule can
+            # derive it).
+            grep -o '^(defun [^ )]*' "$work/shake/kernel.kl" \
+              | sed 's/^(defun //' | grep -vx 'shen.initialise' | sort -u > "$work/want.txt"
+            sort -u "$work/out/reach.csv" > "$work/got-souffle.txt"
+            python3 analysis/refeval.py "$work/facts" | sort -u > "$work/got-refeval.txt"
+
+            mode=eval-free
+            [ -s "$work/out/evalcapable.csv" ] && mode=eval-capable
+
+            if ! diff -u "$work/want.txt" "$work/got-souffle.txt" > "$work/diff-souffle.txt"; then
+              echo "::error::$name ($mode): souffle reach != kernel.kl defuns"
+              head -40 "$work/diff-souffle.txt"
+              fail=1
+            elif ! diff -u "$work/got-souffle.txt" "$work/got-refeval.txt" > "$work/diff-engines.txt"; then
+              echo "::error::$name ($mode): souffle and analysis/refeval.py disagree"
+              head -40 "$work/diff-engines.txt"
+              fail=1
+            else
+              echo "ok  $name ($mode): $(wc -l < "$work/want.txt") defuns"
+            fi
+            checked=$((checked + 1))
+          done
+          echo "checked $checked fixtures"
+          # A run that checked nothing -- or quietly fewer than tests/ holds --
+          # is not a pass. tests/ carries 17 .shen fixtures at d1d1e23, one of
+          # which (init-order-bad) is refused by design, so 16 is the floor.
+          # Adding a fixture may raise it; losing one must be loud.
+          [ "$checked" -ge 16 ] || { echo "::error::only $checked fixtures checked, expected at least 16"; fail=1; }
+          exit "$fail"

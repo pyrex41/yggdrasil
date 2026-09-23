@@ -3,7 +3,7 @@
 *2026-06-11T22:53:26Z by Showboat 0.6.1*
 <!-- showboat-id: f13bb21e-fd4c-4bea-b91b-3c2b524ba3d8 -->
 
-[Yggdrasil](README.md) tree-shakes a [Shen](https://shenlanguage.org) program against Mark Tarver’s refreshed S41.2 kernel (canonical mirror `pyrex41/shen-upstream`) and emits the minimal KLambda slice plus a manifest; per-target builders in the sibling port repos then compile that slice with each port's own KL compiler. This demo shakes one program and produces a running artifact on **Common Lisp (SBCL), LuaJIT, Rust, Go, and JavaScript (Node)**.
+[Yggdrasil](README.md) tree-shakes a [Shen](https://shenlanguage.org) program against Mark Tarver’s S42 kernel and emits the minimal KLambda slice plus a manifest; per-target builders in the sibling port repos then compile that slice with each port's own KL compiler. This demo shakes one program and produces a running artifact on **Common Lisp (SBCL), LuaJIT, Rust, Go, and JavaScript (Node)**.
 
 Assumptions: sibling checkouts `../shen-cl` (with a built `bin/sbcl/shen`), `../shen-lua`, `../shen-rust`, `../shen-go`, `../ShenScript`, and `sbcl`, `luajit`, `cargo`, `go`, `node` on PATH. Run from the Yggdrasil repo root.
 
@@ -45,7 +45,7 @@ grep -c "(defun" out-demo/kernel.kl && grep -E "manifest-version|kernel-version|
 
 ```output
 54
-manifest-version=3
+manifest-version=4
 kernel-version=42-s42.20260825
 user=fib.kl
 fn=fib 1
@@ -56,7 +56,7 @@ needs-eval=false
 
 ## Stage 2 — Common Lisp (SBCL)
 
-The Lisp builder compiles the slice with shen-cl's `kl->lisp` and saves a native executable (`LISP_IMPL=clisp|ecl` also work; see README).
+The Lisp builder compiles the slice with shen-cl's `kl->lisp` and saves a native executable (`LISP_IMPL=clisp|ecl` also work; see docs/targets.md).
 
 ```bash
 builders/lisp/build.sh out-demo out-demo/fib-lisp >/dev/null 2>&1 && ./out-demo/fib-lisp

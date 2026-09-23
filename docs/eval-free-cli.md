@@ -91,9 +91,19 @@ targets and the parity gate will (correctly) fail it. The fixture uses
 ## What is still missing
 
 There is no way to keep a `read`-based driver *and* an eval-free shake, and
-arguably there should be: `(read (stinput))` whose result never reaches
-`eval`/`eval-kl` is reading data, not code, and the analysis cannot currently
-tell those apart. Tracked in
-[#22](https://github.com/pyrex41/yggdrasil/issues/22). Until then, a program
-that must consume S-expressions from stdin has to either accept
-`needs-eval=true` or bring its own reader.
+on the S42 kernel that is not an artefact of the analysis. `read` reaches
+`eval` by a real call chain:
+
+```
+read -> shen.read-loop -> shen.try-parse -> shen.process-sexprs
+     -> shen.unpackage&macroexpand -> shen.unpackage -> eval
+```
+
+`shen.unpackage` evaluates the exceptions expression of every
+`(package Name Exceptions ...)` form the reader returns, so a program that
+calls `read` on arbitrary input can evaluate code, and the shake keeps the
+compiler because the kernel's reader can call it. A reader that returned
+package forms unevaluated would be a kernel change. Until then a program that
+must consume S-expressions from stdin either accepts `needs-eval=true` or
+brings its own reader over `read-byte`. Tracked, with the measurement, in
+[#27](https://github.com/pyrex41/yggdrasil/issues/27).
