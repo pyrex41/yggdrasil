@@ -543,6 +543,18 @@ type builder struct {
 	Stdout          string `json:"stdout"`
 	StdoutSource    string `json:"stdout_source"`
 	StdoutCheckedBy string `json:"stdout_checked_by"`
+	// TranscriptErrorMarkers is the other half of stdout=repl-transcript,
+	// and without it that fact is a licence to pass. Containment says the
+	// program's output is in the transcript somewhere -- which a run whose
+	// boot PANICKED and carried on also satisfies, and shen-go's cmd/kl
+	// does exactly that today. These are the substrings that, appearing
+	// anywhere in the transcript, mean the run went wrong; both readers
+	// (checkGolden in trace.go, compareParity here) check them BEFORE
+	// comparing anything, and fail naming the marker and the first line it
+	// matched.
+	TranscriptErrorMarkers          []string `json:"transcript_error_markers"`
+	TranscriptErrorMarkersSource    string   `json:"transcript_error_markers_source"`
+	TranscriptErrorMarkersCheckedBy string   `json:"transcript_error_markers_checked_by"`
 	// Level-1 self-description (docs/port-contract.md): facts about the
 	// PORT that the Datalog rules and the conformance report consume. Each
 	// fact is three flat keys -- the value, `_source` (where it was read
@@ -1046,7 +1058,7 @@ func cmdStage(cmd string, rest []string) int {
 	fs.SetOutput(os.Stderr)
 	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: shen-cl`)
 	evalStyle := fs.String("eval-style", "sub", "how the host evaluates the shake expr (sub | positional)")
-	target := fs.String("target", "", "stage-2 target (yggdrasil targets lists them: lisp/lua/go/kl/joy/rust/js/julia/scheme/swift/erlang/truffle/truffle-native/c)")
+	target := fs.String("target", "", "stage-2 target: one of the entries in builders.json, which `yggdrasil targets` lists (naming them here too is a second copy that goes stale, and did)")
 	web := fs.Bool("web", false, "with --target js: emit a browser-safe ES module (passes --web to ShenScript's builder)")
 	typecheck := fs.Bool("typecheck", false, "typecheck PROG under (tc +) on the host before shaking; failure aborts with no artifacts, success is recorded as typechecked= in the manifest")
 	trace := fs.Bool("trace", false, "weave runtime call tracing into the emitted KL: every defun records its entry and every (value V) its read, to ./"+traceFileName+" at run time (see yggdrasil trace-check)")
@@ -1512,6 +1524,46 @@ const (
 	stdoutTranscript       = "repl-transcript"     // the program's output is embedded in one
 )
 
+// transcriptErrorMarkers resolves a target's declared error markers, the
+// target's own else `_default`'s. Empty for every target that does not declare
+// stdout=repl-transcript, where the comparison is equality and a marker would
+// have nothing to add.
+func transcriptErrorMarkers(target string) []string {
+	builders, defaults, err := parseBuilders()
+	if err != nil {
+		return nil
+	}
+	if b := builders[target]; len(b.TranscriptErrorMarkers) > 0 {
+		return b.TranscriptErrorMarkers
+	}
+	return defaults.TranscriptErrorMarkers
+}
+
+// transcriptError is the first marker a transcript carries and the first line
+// carrying it, or ("", ""). It is what a transcript target's comparison must
+// consult before it concludes anything from containment.
+//
+// Why this exists at all: `kl` passed `parity` and `trace-check` on every
+// fixture while every boot printed
+//
+//	Panic: &{22 implementation error in shen.change-pointer-value}
+//	Recovered in Eval: (shen.initialise)
+//
+// and a goroutine dump. The VM recovers and runs the next toplevel form, so
+// the program's output is in the transcript and containment was satisfied by a
+// run whose initialiser had failed. Containment is the strongest comparison
+// available on a transcript; it is not, on its own, a verdict.
+func transcriptError(markers []string, transcript string) (marker, line string) {
+	for _, ln := range strings.Split(transcript, "\n") {
+		for _, m := range markers {
+			if m != "" && strings.Contains(ln, m) {
+				return m, strings.TrimRight(ln, "\r")
+			}
+		}
+	}
+	return "", ""
+}
+
 // runFacts resolves a target's stdin/stdout facts, inheriting `_default`'s
 // values the way the port facts inherit. An unknown target yields the defaults
 // and no error: naming a target that does not exist is build()'s failure to
@@ -1662,6 +1714,11 @@ type parityVerdict struct {
 	hasPasses bool
 	pass1     string
 	pass2     string
+	// why is the reason every leg failed at once, when the failure is
+	// about the comparison rather than about one leg: an error marker in a
+	// transcript, or a golden with nothing in it. Empty when the legs above
+	// are the whole verdict.
+	why string
 }
 
 // compareParity decides those three, for an ordinary target by EQUALITY and
@@ -1691,6 +1748,26 @@ func compareParity(r *parityResult, truth string) parityVerdict {
 	}
 	if !r.transcript {
 		return v
+	}
+	// Two ways containment concludes nothing, checked BEFORE it runs. Both
+	// fail every leg, because neither is a statement about one boot.
+	if truth == "" {
+		v.vsTruth, v.twoBoot, v.twoPass = false, false, false
+		v.why = "golden-empty: the truth output is empty, so containment holds " +
+			"against any transcript whatsoever and this target was not checked at all"
+		return v
+	}
+	markers := transcriptErrorMarkers(r.target)
+	for i, out := range []string{a, b} {
+		if m, line := transcriptError(markers, out); m != "" {
+			v.vsTruth, v.twoBoot, v.twoPass = false, false, false
+			v.why = fmt.Sprintf("transcript-error: boot%s carries the declared error marker %q "+
+				"(builders.json transcript_error_markers) at\n      %s\n"+
+				"    The truth may still appear later in the transcript -- this runtime recovers and "+
+				"runs the next form -- which is exactly why containment is not a verdict on its own",
+				[2]string{"A", "B"}[i], m, line)
+			return v
+		}
 	}
 	v.vsTruth = strings.Contains(a, truth)
 	v.twoBoot = strings.Contains(b, truth)
@@ -1898,21 +1975,27 @@ func cmdParity(rest []string) int {
 				"runtime's own lines and is not byte-stable)"
 		}
 		fmt.Printf("%-8s %-6s %-9s %-9s %-8s%s\n", t, "ok", mark(vsTruth), mark(twoBoot), tp, extra)
-		if !vsTruth && r.transcript {
+		if v.why != "" {
+			fmt.Printf("    %s\n", v.why)
+		} else if !vsTruth && r.transcript {
 			fmt.Printf("    vs-truth: the transcript does not contain the truth output\n"+
 				"      want (somewhere in it): %q\n      got the whole transcript:  %q\n", truth, a)
 		} else if !vsTruth {
 			ln, xs, ys := firstDiff(a, truth)
 			fmt.Printf("    vs-truth first diff @ line %d:\n      got:  %q\n      want: %q\n", ln, xs, ys)
 		}
-		if !twoBoot && r.transcript {
+		if v.why != "" {
+			// Already said once; the legs are all false for the one reason.
+		} else if !twoBoot && r.transcript {
 			fmt.Printf("    two-boot: the second boot's transcript does not contain the truth output\n"+
 				"      want (somewhere in it): %q\n      got the whole transcript:  %q\n", truth, canon(r.outB))
 		} else if !twoBoot {
 			ln, xs, ys := firstDiff(a, canon(r.outB))
 			fmt.Printf("    two-boot first diff @ line %d:\n      bootA: %q\n      bootB: %q\n", ln, xs, ys)
 		}
-		if hasPasses && !twoPass && r.transcript {
+		if v.why != "" {
+			// As above.
+		} else if hasPasses && !twoPass && r.transcript {
 			t1, t2, _ := splitPasses(truth)
 			fmt.Printf("    two-pass: a half of the transcript does not contain the truth's\n"+
 				"      pass1 wants: %q\n      pass1 got:   %q\n"+

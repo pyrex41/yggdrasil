@@ -50,9 +50,21 @@ import (
 // "" both mean nothing checks the fact; the spelling is "none" in the file so
 // that a missing key and a deliberate "nobody checks this" look different to a
 // reader, and the same to this code.
+//
+// A "none: <why>" prefix is also nothing, and reads as nothing, the same way
+// factSourced treats it. The reason a fact is unchecked is worth writing down
+// -- `_default`'s stdin/stdout say that the parity gate would catch a port
+// that broke them, but that CI runs the gate on three targets and it skips
+// any target whose toolchain is absent -- and a value that has to be the bare
+// word "none" to read as unchecked is a value that turns into `verified` the
+// moment somebody explains themselves in it. That is exactly how two facts
+// came to read `verified` on eleven targets off a sentence naming a script.
 func factChecked(checkedBy string) bool {
 	s := strings.TrimSpace(checkedBy)
-	return s != "" && !strings.EqualFold(s, "none")
+	if s == "" || strings.EqualFold(s, "none") {
+		return false
+	}
+	return !strings.HasPrefix(strings.ToLower(s), "none:")
 }
 
 // factSourced reports whether a `_source` string says anything at all. A bare

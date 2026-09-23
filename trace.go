@@ -607,9 +607,17 @@ type goldenResult struct {
 // A target that DECLARES `stdout: repl-transcript` has a runtime whose stdout
 // is not the program's: shen-go's cmd/kl prints numbered prompts, echoes each
 // form's value and reports its own panics, with the program's output embedded
-// in that, so containment is the strongest thing assertable there. That is the
-// only softening, it is keyed on the declared fact rather than on a target's
-// name, and it is a fact about the transcript rather than about the run. The
+// in that, so containment is the strongest thing assertable there. It is keyed
+// on the declared fact rather than on a target's name, and it is a fact about
+// the transcript rather than about the run.
+//
+// Containment alone is NOT a verdict, and reporting it as one is the defect
+// this paragraph was written over: `kl` printed OK on every fixture while
+// every boot panicked in `(shen.initialise)` and the VM recovered and carried
+// on, so the fixture's answer was in the transcript and the comparison passed.
+// So the target's declared `transcript_error_markers` are checked first, and
+// so is an empty golden, which containment satisfies unconditionally. Only
+// then does containment decide anything. The
 // case such a runtime genuinely cannot serve -- a fixture stdin, where the VM
 // eats the bytes as toplevel forms and the program reads EOF -- never reaches
 // here: evidencePossible refuses it as a named skip before anything is shaken,
@@ -620,13 +628,49 @@ type goldenResult struct {
 // and has to reach the consumers that find verdicts by the sentinel line.
 func checkGolden(prog, target, stdout string) (goldenResult, error) {
 	path := strings.TrimSuffix(prog, ".shen") + ".expected"
+	got := canon(stdout)
+	_, stdoutFact := runFacts(target)
+	transcript := stdoutFact == stdoutTranscript
+
+	// The error markers come FIRST, before the golden is even looked for.
+	// A marker is a fact about the RUN -- this runtime printed a panic and
+	// carried on -- and not about the comparison, so it must not depend on
+	// a fixture having committed a golden. It did, and tests/partial.shen
+	// ships none: kl/partial reported OK over the same panicking boot that
+	// failed kl/fib, because the comparison returned early and the markers
+	// were checked inside it.
+	if transcript {
+		if m, line := transcriptError(transcriptErrorMarkers(target), got); m != "" {
+			return goldenResult{}, &traceFailure{
+				sentinel: "yggdrasil-trace-check: FAIL stdout=transcript-error",
+				detail: fmt.Errorf("the traced %s run's transcript carries the declared error "+
+					"marker %q (builders.json transcript_error_markers) at\n    %s\n"+
+					"  The fixture's output may still appear later in the transcript -- this "+
+					"runtime recovers and runs the next toplevel form -- so containment would "+
+					"have passed over a run that failed. A trace of such a run is not evidence",
+					target, m, line)}
+		}
+	}
+
 	want, err := os.ReadFile(path)
 	if err != nil {
 		return goldenResult{how: "no committed golden for this fixture"}, nil
 	}
-	got, wanted := canon(stdout), canon(string(want))
+	wanted := canon(string(want))
 	sentinel := "yggdrasil-trace-check: FAIL stdout=mismatch-vs-" + filepath.Base(path)
-	if _, stdoutFact := runFacts(target); stdoutFact == stdoutTranscript {
+	if transcript {
+		// The other way containment concludes nothing, checked before it
+		// runs: a comparison that cannot fail must not be reported as one
+		// that passed.
+		if wanted == "" {
+			return goldenResult{path: path}, &traceFailure{
+				sentinel: "yggdrasil-trace-check: FAIL stdout=golden-empty",
+				detail: fmt.Errorf("%s is empty, and this target's stdout is compared by "+
+					"containment (builders.json declares stdout=%s), so the comparison holds "+
+					"against any transcript whatsoever. Commit the fixture's real output or "+
+					"delete the file; an empty golden is a check that cannot fail",
+					path, stdoutTranscript)}
+		}
 		if !strings.Contains(got, wanted) {
 			return goldenResult{path: path}, &traceFailure{sentinel: sentinel, detail: fmt.Errorf(
 				"the traced %s run's transcript does not contain %s:\n  want: %q\n  got:  %q",

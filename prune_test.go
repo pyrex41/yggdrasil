@@ -242,9 +242,10 @@ func TestPruneInitGoArtifactStillRuns(t *testing.T) {
 //  1. a target that DECLARES a list resolves to its own, and the
 //     target-agnostic union contains every name in it -- otherwise a
 //     no-target --prune-init would prune something a measured port reads;
-//  2. a target that declares none resolves to unknown, and portReadsFor says
-//     so, so nothing downstream can mistake the union it is handed for a
-//     measurement of that port;
+//  2. a target that declares none resolves to unknown AND to the empty list,
+//     so nothing downstream can attribute another port's globals to it --
+//     `facts --target lua` wrote go's five into portReads.facts as lua's EDB
+//     for exactly as long as this returned the union;
 //  3. at least one target has declared a list, or the union is empty and
 //     --prune-init has nothing to prune against at all;
 //  4. only `go` is verified, and `go` is.
@@ -262,6 +263,7 @@ func TestPortReadsAreDeclaredForEveryTarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	_ = union
 	if len(union) == 0 {
 		t.Fatalf("no target declares a port_reads list: the target-agnostic union is empty and " +
 			"--prune-init has nothing to prune against")
@@ -296,10 +298,13 @@ func TestPortReadsAreDeclaredForEveryTarget(t *testing.T) {
 					t.Errorf("target %s reads %s but the union does not contain it", name, v)
 				}
 			}
-		} else if !equalStrings(reads, union) {
-			// An unknown target is handed the union -- the most that is
-			// known -- and the caller is told it is not a measurement.
-			t.Errorf("target %s is unknown but portReadsFor returned %v rather than the union", name, reads)
+		} else if len(reads) != 0 {
+			// The empty list, and nothing borrowed from a port that was
+			// measured: a relation attributed to a runtime nobody read it
+			// off is the 35-name default again, one layer down.
+			t.Errorf("target %s is unknown but portReadsFor returned %v; unknown resolves to "+
+				"the empty list, and only the --prune-init-unverified path substitutes the union",
+				name, reads)
 		}
 		if portReadsVerified(name) && name != "go" {
 			t.Errorf("target %s claims a verified port_reads; only go's list has been read off a runtime", name)
@@ -918,12 +923,20 @@ func TestPruneInitRefusesUnverifiedTarget(t *testing.T) {
 	if !strings.Contains(got, "(set ygg.*prune-init* true)") {
 		t.Errorf("the escape hatch must still ask for pruning:\n%s", got)
 	}
-	reads, _, err := portReadsFor(unverified)
+	// The union over the DECLARED lists, which is what the WARN above says
+	// it prunes against -- portReadsFor(unverified) is the empty list, and
+	// pruning against nothing would drop every init form.
+	union, _, err := portReadsFor("")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(got, "(set ygg.*port-reads* ["+strings.Join(reads, " ")+"])") {
-		t.Errorf("the escape hatch installed a different list than portReadsFor resolves:\n%s", got)
+	if !strings.Contains(got, "(set ygg.*port-reads* ["+strings.Join(union, " ")+"])") {
+		t.Errorf("the escape hatch installed a list that is neither the union it announced "+
+			"nor anything else recognisable:\n%s", got)
+	}
+	if reads, _, _ := portReadsFor(unverified); len(reads) != 0 {
+		t.Errorf("portReadsFor(%s) returned %v; an unknown target resolves to nothing",
+			unverified, reads)
 	}
 
 	// A verified target is never refused. The target-agnostic union no longer
@@ -1049,6 +1062,175 @@ func TestPruneRefusalIsOnlyOnPruning(t *testing.T) {
 			t.Errorf("facts --target %s prunes nothing and must not be refused: %v", name, err)
 		}
 	}
+}
+
+// hickey-14, the second reader. `yggdrasil facts --target lua` installs a
+// port_reads list as the shake's portReads EDB and prunes nothing. While
+// portReadsFor handed out the union for an unknown target, that dumped go's
+// five globals into portReads.facts under lua's name: a measured port's
+// relation, silently attributed to a port nobody has measured, in a file whose
+// whole purpose is to be read as fact.
+//
+// Unknown now installs the EMPTY relation and says so on stderr, once. Empty
+// is the honest EDB -- it is not this port's reads, and it is not another
+// port's either -- and it agrees with what `yggdrasil contract --target lua`
+// prints, which is the property the two readers have to share.
+func TestFactsOnUnknownPortReadsInstallsAnEmptyRelation(t *testing.T) {
+	const expr = `(yggdrasil.facts ["/p/prog.shen"] "/p/out")`
+	builders, defaults, err := parseBuilders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var unknownTarget string
+	for name, b := range builders {
+		if _, known := effectivePortReads(b, defaults); !known {
+			unknownTarget = name
+			break
+		}
+	}
+	if unknownTarget == "" {
+		t.Skip("every target declares a port_reads list")
+	}
+
+	var got string
+	stderr := captureStderr(t, func() {
+		var err error
+		got, err = wrapShakeExpr(expr, shakeOpts{target: unknownTarget})
+		if err != nil {
+			t.Fatalf("facts --target %s must not be refused: %v", unknownTarget, err)
+		}
+	})
+	if !strings.Contains(got, "(set ygg.*port-reads* [])") {
+		t.Errorf("facts --target %s installs a non-empty portReads relation:\n%s", unknownTarget, got)
+	}
+	union, _, err := portReadsFor("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range union {
+		if strings.Contains(got, v) {
+			t.Errorf("facts --target %s installs %s, which was read off another port's runtime:\n%s",
+				unknownTarget, v, got)
+		}
+	}
+	for _, want := range []string{"WARN", portReadsUnknown, unknownTarget, "EMPTY"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("the WARN does not mention %q:\n%s", want, stderr)
+		}
+	}
+	if n := strings.Count(stderr, "yggdrasil: WARN"); n != 1 {
+		t.Errorf("want exactly one WARN line, got %d:\n%s", n, stderr)
+	}
+
+	// The contract report says the same word about the same target.
+	raw, err := rawBuilders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := contractFactRow("port_reads", raw[unknownTarget], raw[builderDefaultsKey],
+		builders[unknownTarget], defaults)
+	if r.status != portReadsUnknown {
+		t.Errorf("facts installs an empty relation for %s and the contract report says %q",
+			unknownTarget, r.status)
+	}
+
+	// A target that HAS declared one is untouched: its own list, no WARN.
+	declared, _, err := portReadsCoverage()
+	if err != nil || len(declared) == 0 {
+		t.Fatalf("no declared target to check the other half against: %v", err)
+	}
+	stderr = captureStderr(t, func() {
+		var err error
+		got, err = wrapShakeExpr(expr, shakeOpts{target: declared[0]})
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+	reads, _, err := portReadsFor(declared[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "(set ygg.*port-reads* ["+strings.Join(reads, " ")+"])") {
+		t.Errorf("facts --target %s does not install its own declared list:\n%s", declared[0], got)
+	}
+	if stderr != "" {
+		t.Errorf("a measured target warned about nothing: %s", stderr)
+	}
+}
+
+// Every `_checked_by` in builders.json that is not "none" must name something
+// that EXISTS: a Test function in a *_test.go here, or a file in the repo.
+//
+// This is the flag's only defence. `verified` is the strongest word the
+// contract report prints, and it is earned by a string in a data file -- so a
+// string naming a test nobody wrote, or a test somebody later renamed, inflates
+// every row that cites it and nothing notices. Two of the values in this file
+// said `scripts/parity-gate.sh` for a fact the gate checks on three targets in
+// CI and skips entirely where a toolchain is absent; they now say "none" and
+// explain why, which is what this test is here to keep true of the rest.
+func TestCheckedByNamesSomethingThatExists(t *testing.T) {
+	raw, err := rawBuilders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := map[string]bool{}
+	files, err := filepath.Glob("*_test.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn := regexp.MustCompile(`func (Test[A-Za-z0-9_]+)\(`)
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range fn.FindAllStringSubmatch(string(b), -1) {
+			tests[m[1]] = true
+		}
+	}
+	if len(tests) == 0 {
+		t.Fatal("no Test functions found; this test would pass vacuously")
+	}
+	named := regexp.MustCompile(`Test[A-Za-z0-9_]+`)
+	path := regexp.MustCompile(`(scripts|analysis|builders|docs)/[A-Za-z0-9_./-]+`)
+
+	checked := 0
+	for target, block := range raw {
+		for key, v := range block {
+			if !strings.HasSuffix(key, "_checked_by") {
+				continue
+			}
+			val := jsonString(v)
+			if !factChecked(val) {
+				continue
+			}
+			checked++
+			hits := 0
+			for _, name := range named.FindAllString(val, -1) {
+				hits++
+				if !tests[name] {
+					t.Errorf("builders.json %s.%s names %s, which no *_test.go defines. "+
+						"A checked_by that names nothing is how a row reads `verified` "+
+						"with nothing behind it", target, key, name)
+				}
+			}
+			for _, rel := range path.FindAllString(val, -1) {
+				hits++
+				if _, err := os.Stat(rel); err != nil {
+					t.Errorf("builders.json %s.%s names %s, which does not exist", target, key, rel)
+				}
+			}
+			if hits == 0 {
+				t.Errorf("builders.json %s.%s is %q: it claims something checks the fact but "+
+					"names no Test function and no file. Say \"none: <why>\" instead",
+					target, key, val)
+			}
+		}
+	}
+	if checked == 0 {
+		t.Error("no fact in builders.json claims a checked_by; this test would never catch one")
+	}
+	t.Logf("%d checked_by values name a test or a file", checked)
 }
 
 // captureStderr runs fn with os.Stderr replaced by a pipe and returns what was

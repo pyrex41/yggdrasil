@@ -75,8 +75,17 @@ treatment the day its entry says so.
   and each half of a two-pass transcript contains the corresponding half
   of the truth. The report line says so. Demanding equality would make
   such a target permanently red on a property it cannot have, which
-  teaches a reader to ignore the column; containment still fails loudly
-  when a boot or a pass prints the wrong answer.
+  teaches a reader to ignore the column.
+
+  Containment on its own, though, is satisfied by a transcript whose boot
+  **failed** and whose runtime recovered and carried on — which is exactly
+  what `kl` does — so a target declaring `repl-transcript` must also
+  declare **`transcript_error_markers`**, and those are checked first. A
+  transcript carrying one fails every leg, with the marker and the first
+  line that matched. So is an empty truth (`golden-empty`): containment
+  holds against every transcript there is, so an empty
+  `tests/<fixture>.expected` would report a target as checked that was
+  never checked.
 
 ## The two-pass fixture convention
 
@@ -162,15 +171,30 @@ run rather than quietly shrinking the gate. If a probed gap starts passing the
 gate **fails**, naming the line to delete — an exclusion that outlives its
 cause is exactly where the next real failure would hide.
 
-The list holds one entry, `metaeval:kl`. `kl` joined the gate when it became
-a `builders.json` entry rather than a runner special-cased in `trace.go`
-(hickey-13): it runs the shaken KL on shen-go's bare KLambda VM with no
-stage-2 compiler in between, and the eval-capable slice `metaeval` needs
-takes that VM through the compiler at run time, where it panics part way --
-the transcript reaches `eval list: 42` and stops mid-line. That is a shen-go
-VM limit, not a shake finding: the other four fixtures pass on `kl`, and
-`metaeval` passes on `go`, which compiles the same slice. CI is unaffected
-either way, since `parity-gate.yml` passes `--targets go,js,lua`.
+The list holds five entries, all `kl`, all the same cause. `kl` joined the
+gate when it became a `builders.json` entry rather than a runner
+special-cased in `trace.go` (hickey-13): it runs the shaken KL on shen-go's
+bare KLambda VM with no stage-2 compiler in between, and that VM panics while
+evaluating `(shen.initialise)` on every boot of every fixture —
+
+```
+54 #> Panic: &{22 implementation error in shen.change-pointer-value}
+Recovered in Eval: (shen.initialise)
+```
+
+— then recovers and runs the next form, so the fixture's own output still
+appears further down. For a while the gate called that a pass, because `kl`'s
+stdout is compared by containment. It does not any more (see the two
+exceptions above), so every fixture on `kl` is now a known gap with the
+mechanism written out. `metaeval:kl` fails a second time over, on its own
+reason: the eval-capable slice calls `eval` at run time and the VM answers
+`Panic: &{22 package shen does not exist.}` while evaluating `(pr (cn "eval
+list: " (shen.app (eval (make-expr 6)) …)))`, so none of its three lines
+print. `stdin-sum` needs no entry — `kl` declares `stdin:
+appended-to-program`, so the gate skips it there by fact. Fixing either panic
+is shen-go's; the probes fail the gate the day it is fixed, which is when
+these lines come out. CI is unaffected either way, since `parity-gate.yml`
+passes `--targets go,js,lua`.
 
 The previous entry, `metaeval:js`, was deleted when #23 fixed the underlying
 gap — and it was this check that demanded the deletion: the probe started

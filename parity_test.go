@@ -178,3 +178,67 @@ func TestTranscriptTargetIsComparedByContainment(t *testing.T) {
 		t.Errorf("a second pass that printed something else passed two-pass: %+v", v)
 	}
 }
+
+// The same hole on the gate's side: `parity --target kl` reported ok/ok on
+// every fixture while every boot panicked in (shen.initialise) and the VM
+// carried on, because containment found the fixture's answer further down the
+// transcript. compareParity checks the target's declared
+// transcript_error_markers first, and an empty truth first of all.
+//
+// This is the test builders.json's kl.transcript_error_markers_checked_by
+// names, and it reads the markers off the declaration rather than repeating
+// them.
+func TestTranscriptErrorMarkerFailsParity(t *testing.T) {
+	markers := transcriptErrorMarkers("kl")
+	if len(markers) == 0 {
+		t.Fatal("kl declares no transcript_error_markers; containment would be the whole gate")
+	}
+	const truth = "fib 20 = 6765"
+	clean := "0- 1+ \nfib 20 = 6765\n1- done 0x1234\n"
+
+	ok := &parityResult{target: "kl", outA: clean, outB: clean, transcript: true}
+	if v := compareParity(ok, truth); !v.vsTruth || !v.twoBoot || v.why != "" {
+		t.Fatalf("a clean transcript failed the gate: %+v", v)
+	}
+
+	for _, m := range markers {
+		t.Run(strings.TrimSpace(m), func(t *testing.T) {
+			bad := "0- 1+ \n53 #> " + m + "&{22 implementation error in shen.change-pointer-value}\n" +
+				"fib 20 = 6765\n1- done\n"
+			// Boot A carries it.
+			v := compareParity(&parityResult{target: "kl", outA: bad, outB: clean, transcript: true}, truth)
+			if v.vsTruth || v.twoBoot || v.twoPass {
+				t.Errorf("a transcript carrying %q passed a leg: %+v", m, v)
+			}
+			if !strings.Contains(v.why, m) || !strings.Contains(v.why, "shen.change-pointer-value") {
+				t.Errorf("the verdict does not name the marker and the line: %q", v.why)
+			}
+			if !strings.Contains(v.why, "transcript-error") {
+				t.Errorf("the verdict does not name its reason: %q", v.why)
+			}
+			// Boot B alone carries it: the second boot is a boot too.
+			v = compareParity(&parityResult{target: "kl", outA: clean, outB: bad, transcript: true}, truth)
+			if v.vsTruth || v.twoBoot {
+				t.Errorf("a marker in bootB passed: %+v", v)
+			}
+			if !strings.Contains(v.why, "bootB") {
+				t.Errorf("the verdict does not say which boot: %q", v.why)
+			}
+			// A target that declares no markers is unaffected, and an
+			// ordinary target compares by equality as before.
+			if v := compareParity(&parityResult{target: "go", outA: bad, outB: bad}, truth); v.why != "" {
+				t.Errorf("an ordinary target was judged by a transcript's markers: %q", v.why)
+			}
+		})
+	}
+
+	// An empty truth: containment holds against anything, so it is a FAIL
+	// with its own reason rather than three quiet oks.
+	v := compareParity(ok, "")
+	if v.vsTruth || v.twoBoot || v.twoPass {
+		t.Errorf("an empty golden passed by containment: %+v", v)
+	}
+	if !strings.Contains(v.why, "golden-empty") {
+		t.Errorf("the verdict does not name its reason: %q", v.why)
+	}
+}

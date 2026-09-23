@@ -58,14 +58,14 @@
       "and a checked_by, when someone measures one."
     ],
     "port_reads": "unknown",
-    "port_reads_source": "none: nobody has read this port's native global reads off its runtime. The previous value here was a conservative guess (go's five native reads plus every global the kernel's own defuns read in a full boot) presented as data for twelve ports that were never measured",
+    "port_reads_source": "none: nobody has read this port's native global reads off its runtime. The previous value here was a conservative guess (go's five native reads plus every global the kernel's own defuns read in a full boot) presented as data for thirteen ports that were never measured",
     "port_reads_checked_by": "none",
     "stdin": "delivered",
     "stdin_source": "the default run contract: `yggdrasil run` and the parity gate hand the caller's bytes (or --stdin FILE) to the artifact's own stdin, and the artifact's program comes from its build",
-    "stdin_checked_by": "scripts/parity-gate.sh on tests/stdin-sum.shen: the fixture reads its stdin and prints a digest of it, so a port that did not receive those bytes fails the gate",
+    "stdin_checked_by": "none: scripts/parity-gate.sh on tests/stdin-sum.shen would catch a port that did not receive its stdin, but CI runs the gate on go, js and lua only and the gate skips a target whose toolchain is absent, so nothing checks this value for the other eleven",
     "stdout": "program",
     "stdout_source": "the default run contract: the artifact's stdout is the program's output and nothing else, which is what makes tests/<fixture>.expected comparable byte for byte",
-    "stdout_checked_by": "scripts/parity-gate.sh: every gated target's stdout is compared with the committed golden under canon()"
+    "stdout_checked_by": "none: scripts/parity-gate.sh compares every GATED target's stdout with the golden under canon(), but CI gates go, js and lua only and the gate skips a target whose toolchain is absent, so nothing checks this value for the other eleven"
   },
   "lisp": {
     "run_impl": "shen-cl",
@@ -250,8 +250,14 @@
       "`go` entry's dir_env at run time and was reachable from exactly one",
       "subcommand. It is an entry here so that build, run, parity and",
       "trace-check all reach it through the one data path, and so that what",
-      "is peculiar about it is DECLARED (stdin, stdout below) rather than",
-      "matched on the target's name in Go."
+      "is peculiar about it is DECLARED (stdin, stdout, transcript_error_",
+      "markers below) rather than matched on the target's name in Go.",
+      "",
+      "transcript_error_markers is the other half of stdout=repl-transcript:",
+      "containment says the program's output is in there somewhere, which a",
+      "run whose boot panicked and carried on also satisfies. The markers say",
+      "what, inside a transcript, means the run went wrong, and both readers",
+      "check them BEFORE the containment test."
     ],
     "run_impl": "shen-go cmd/kl",
     "dir_env": "YGGDRASIL_SHEN_GO_DIR",
@@ -288,7 +294,14 @@
     "stdin_checked_by": "TestStdinFactDrivesTheSkip and TestEvidencePossible (trace_test.go): trace-check refuses a fixture stdin on any target declaring this value, by name, before anything is shaken",
     "stdout": "repl-transcript",
     "stdout_source": "shen-go cmd/kl/main.go: the VM prints a numbered prompt and echoes each toplevel form's value, and ends the program by recovering a panic and printing the dump, so the program's output is EMBEDDED in a transcript that also carries goroutine addresses and is not byte-stable across two boots of the same program",
-    "stdout_checked_by": "TestCheckGolden/kl-containment (trace_test.go) and TestTranscriptTargetIsComparedByContainment (parity_test.go): a golden is checked by containment in the transcript -- on both the vs-truth and the two-boot leg -- which is the strongest thing assertable there"
+    "stdout_checked_by": "TestCheckGolden (trace_test.go, the kl-containment subtest) and TestTranscriptTargetIsComparedByContainment (parity_test.go): a golden is checked by containment in the transcript -- on both the vs-truth and the two-boot leg -- which is the strongest thing assertable there",
+    "transcript_error_markers": [
+      "Recovered in Eval",
+      "Panic:",
+      "goroutine "
+    ],
+    "transcript_error_markers_source": "shen-go cmd/kl/main.go and kl/eval.go Eval.func1: the VM recovers a panic, prints `Panic: &{<n> <message>}`, then `Recovered in Eval: <the form>`, then the goroutine dump, and CARRIES ON with the next toplevel form. Observed on every kl boot today: `(shen.initialise)` panics with `Panic: &{22 implementation error in shen.change-pointer-value}` and the program still runs afterwards, so containment alone reads a failed boot as a pass",
+    "transcript_error_markers_checked_by": "TestTranscriptErrorMarkersFailBeforeContainment (trace_test.go) and TestTranscriptErrorMarkerFailsParity (parity_test.go): a transcript carrying a marker FAILS even when the truth is contained in it, and a clean transcript still passes"
   },
   "joy": {
     "run_impl": "shen-joy",

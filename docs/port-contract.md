@@ -40,7 +40,7 @@ two sibling keys:
 | key | meaning |
 |---|---|
 | `<fact>_source` | the file and function the fact was read off, or `none: <why not>` |
-| `<fact>_checked_by` | the test that fails when the fact drifts, or `none` |
+| `<fact>_checked_by` | the test that fails when the fact drifts, or `none`, or `none: <why nothing checks it>` -- which reads as `none` (`factChecked`), so explaining yourself cannot promote a row to `verified` |
 
 There is deliberately no `_verified` boolean. There used to be two, and
 they spelled one word over two unrelated predicates:
@@ -148,6 +148,12 @@ inheritance and none is silent:
 |---|---|---|
 | `stdin` | `delivered` (default): the artifact receives the caller's bytes. `appended-to-program`: the runtime reads its PROGRAM from stdin, so the caller's bytes land after it, as further toplevel forms | `evidencePossible` in `trace.go` (a fixture stdin on such a target is the named skip `stdin-appended-to-program`, never a pass) and `cmdParity` (the target is skipped, by fact, when `--stdin` is given) |
 | `stdout` | `program` (default): stdout is the program's output. `repl-transcript`: the program's output is embedded in the runtime's own prompts, echoes and diagnostics | `checkGolden` in `trace.go` and `compareParity` in `main.go`: the golden is compared by **containment** rather than equality, on every leg, because such a transcript is not byte-stable even across two boots of the same program |
+| `transcript_error_markers` | substrings that, appearing anywhere in a transcript, mean the run went wrong (`kl`: `Recovered in Eval`, `Panic:`, `goroutine `) | the same two, **before** they compare anything: a transcript carrying one FAILS, naming the marker and the first line that matched. Required of any target declaring `stdout: repl-transcript` -- containment alone is satisfied by a run whose boot panicked and carried on, which is what `kl` does today |
+
+An empty golden is a FAIL of its own (`golden-empty`) on the containment
+path, for the same reason: `strings.Contains(anything, "")` is true, so an
+empty `tests/<fixture>.expected` would report a target as checked that was
+never checked at all.
 
 `kl` is the only target declaring the non-default value of either, and
 those two facts are the whole of what used to be a runner special-cased by
@@ -367,14 +373,14 @@ level1  native_overrides   verified   58 entries, installed_after=shen.initialis
 level1  native_deps        unknown    not declared in builders.json
 level1  call_style         unknown    not declared in builders.json
 level1  dispatch           unknown    not declared in builders.json
-level1  stdin              verified   delivered
+level1  stdin              declared   delivered
                                       inherited: builders.json _default (this target declares none of its own)
                                       source:     the default run contract: ...
-                                      checked_by: scripts/parity-gate.sh on tests/stdin-sum.shen: ...
-level1  stdout             verified   program
+                                      checked_by: none: scripts/parity-gate.sh would catch a port that broke it, but CI gates three targets and skips any whose toolchain is absent
+level1  stdout             declared   program
                                       inherited: builders.json _default (this target declares none of its own)
                                       source:     the default run contract: ...
-                                      checked_by: scripts/parity-gate.sh: ...
+                                      checked_by: none: ... (as above)
 level2  trace              not-run    yggdrasil trace-check
 level3  extractor          not-run    yggdrasil scip-check (go only)
 level4  parity             not-run    yggdrasil parity
@@ -404,7 +410,10 @@ level1  stdin              verified   appended-to-program
                                       checked_by: TestStdinFactDrivesTheSkip and TestEvidencePossible (trace_test.go): ...
 level1  stdout             verified   repl-transcript
                                       source:     shen-go cmd/kl/main.go: the VM prints a numbered prompt and echoes each toplevel form's value ...
-                                      checked_by: TestCheckGolden/kl-containment (trace_test.go) and TestTranscriptTargetIsComparedByContainment (parity_test.go): ...
+                                      checked_by: TestCheckGolden (trace_test.go, the kl-containment subtest) and TestTranscriptTargetIsComparedByContainment (parity_test.go): ...
+level1  transcript_error_markers verified   3 entries (Recovered in Eval, Panic:, goroutine )
+                                      source:     shen-go cmd/kl/main.go and kl/eval.go Eval.func1: the VM recovers a panic, prints it, and CARRIES ON ...
+                                      checked_by: TestTranscriptErrorMarkersFailBeforeContainment (trace_test.go) and TestTranscriptErrorMarkerFailsParity (parity_test.go): ...
 ```
 
 Three statuses, and `unknown` is the important one: an undeclared key gets

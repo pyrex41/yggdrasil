@@ -50,13 +50,15 @@ import (
 // portReadsFor returns the globals a target's runtime reads natively, and
 // whether that answer is KNOWN.
 //
-// For a named target: its own declared list (known), else `_default`'s -- and
-// `_default`'s value is "unknown", so in practice else the union over the
-// targets that have declared, marked unknown. A list is still returned in the
-// unknown case because it is the most that is known, and `facts --target T`
-// (which prunes nothing) wants the best available EDB rather than an empty
-// relation. What must not happen is PRUNING against it unasked, and that is
-// what the second return value is for.
+// For a named target: its own declared list, or NOTHING with known=false. It
+// used to return the union over the declared lists in the unknown case, on the
+// reasoning that it was the most that was known -- and `yggdrasil facts
+// --target lua` then wrote portReads.facts containing go's five globals, as
+// lua's EDB, silently. A relation attributed to a port that nobody read it off
+// is the same defect as the 35-name default, one layer down. Unknown resolves
+// to the empty list, wrapShakeExpr says so on stderr, and the only caller that
+// substitutes the union is the --prune-init-unverified path, which announces
+// it in the same breath.
 //
 // For the empty target: the union over every builder's declared list, sorted,
 // with known reporting whether every target contributed one. A target-agnostic
@@ -92,7 +94,7 @@ func portReadsFor(target string) ([]string, bool, error) {
 		}
 		reads, known := effectivePortReads(b, defaults)
 		if !known {
-			return union(), false, nil
+			return nil, false, nil
 		}
 		out := append([]string(nil), reads...)
 		sort.Strings(out)
@@ -217,6 +219,17 @@ func wrapShakeExpr(expr string, o shakeOpts) (string, error) {
 		fmt.Fprintf(os.Stderr, "yggdrasil: WARN --prune-init on target %s prunes against %s; "+
 			"%s, so the artifact may read a global the initialiser no longer writes\n",
 			o.target, describeReadsSource(known, o.target), why)
+		if !known {
+			// There is no list for this target. The hatch prunes against
+			// the union over the declared lists -- the most conservative
+			// thing available -- and the WARN above has just said that it
+			// is not a measurement of this target.
+			union, _, err := portReadsFor("")
+			if err != nil {
+				return "", err
+			}
+			reads = union
+		}
 	}
 	if o.pruneInit && o.target == "" && !known {
 		declared, unknown, err := portReadsCoverage()
@@ -242,7 +255,21 @@ func wrapShakeExpr(expr string, o shakeOpts) (string, error) {
 			"  `yggdrasil contract --target T` prints which T is which.\n",
 			strings.Join(declared, ", "), len(reads), strings.Join(unknown, ", "))
 	}
-	if len(reads) == 0 {
+	if !o.pruneInit && o.target != "" && !known {
+		// `facts --target T` and `build --target T` with pruning off: the
+		// list is only an EDB, and the honest EDB for a port nobody has
+		// measured is EMPTY. Filling it with another port's globals is how
+		// portReads.facts came to say that lua reads shen.*lambdatable*.
+		// One line, on stderr, because a silently empty relation is the
+		// other half of the same problem.
+		fmt.Fprintf(os.Stderr, "yggdrasil: WARN portReads is %s for target %s (builders.json: it "+
+			"declares no port_reads and %s says %q), so the portReads relation is EMPTY -- it is "+
+			"not this port's reads and it is not another port's either. `yggdrasil contract "+
+			"--target %s` says the same.\n",
+			portReadsUnknown, o.target, builderDefaultsKey, portReadsUnknown, o.target)
+		reads = nil
+	}
+	if o.pruneInit && len(reads) == 0 {
 		return "", fmt.Errorf("--prune-init: builders.json lists no port_reads for %s, and no other "+
 			"target declares one either, so there is nothing to prune against",
 			targetLabel(o.target))

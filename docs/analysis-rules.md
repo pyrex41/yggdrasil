@@ -490,6 +490,7 @@ entry** rather than matched on its name in Go:
 | `program_file` | `{outdir}/_klvm_feed.kl` | the run feeds this file to stdin before anything else (`programFileFor`, `openRunStdin`) |
 | `stdin` | `appended-to-program` | `trace-check` refuses a fixture stdin by name; the parity gate skips such a target when `--stdin` is given |
 | `stdout` | `repl-transcript` | the golden is checked by **containment** in the transcript, on `trace-check`'s stdout leg and on every leg of the parity gate |
+| `transcript_error_markers` | `["Recovered in Eval", "Panic:", "goroutine "]` | checked **before** containment by both of those; a transcript carrying one FAILS, naming the marker and the line |
 
 The feed file is written by a named build helper, `{yggdrasil} program-file
 OUTDIR FILE`, because concatenating the kernel, `(shen.initialise)` and the
@@ -497,6 +498,31 @@ user files **in manifest order** is logic and not a command line; the step
 runs in process and is also reachable as `yggdrasil program-file` for
 reproducing it by hand. `TestNoTargetNameIsSpecialCasedInGo` (`trace_test.go`)
 fails if the string `"kl"` reappears in a non-test Go source.
+
+**Containment is not a verdict, and `kl` is red today.** The third fact is
+there because the first two were not enough. `kl` reported
+`yggdrasil-trace-check: OK` and `parity: PASS` on every fixture while every
+boot printed
+
+```
+53 #> shen.initialise
+54 #> Panic: &{22 implementation error in shen.change-pointer-value}
+Recovered in Eval: (shen.initialise)
+Error(goroutine 1 [running]: ...
+```
+
+The VM recovers and runs the next toplevel form, so the fixture's answer
+appears further down the transcript and containment was satisfied — by a
+run whose initialiser had failed. Both readers now check the declared
+markers first and fail naming the marker and the line, so the check says
+what was always true: `(shen.initialise)` panics on this runtime, on every
+fixture. That is recorded, not worked around — `scripts/parity-gate.sh`
+carries one `KNOWN_GAPS` line per fixture on `kl` with that mechanism, and
+the gate FAILS when a probe starts passing, which is when they come out.
+`metaeval` fails a second time over: the eval-capable slice calls `eval` at
+run time and the VM answers `Panic: &{22 package shen does not exist.}`.
+Fixing either is shen-go's, not Yggdrasil's; what belongs here is that the
+tool stopped reporting it as a pass.
 
 What `kl` is good for is unchanged, and is why it was worth keeping: the
 claim is about the KL the shake writes, and `cmd/kl` executes that KL

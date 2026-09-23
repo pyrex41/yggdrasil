@@ -65,16 +65,41 @@ done
 # it -- and it was this script's own stale-gap check that demanded the removal,
 # which is the mechanism working as intended rather than a formality.
 #
-# metaeval:kl is here because `kl` joined the gate when it became a
+# Every entry below is `kl`, and they all have the same cause. `kl` joined the
+# gate when it stopped being a runner special-cased in trace.go and became a
 # builders.json entry (hickey-13): it runs the shaken KL on shen-go's bare
-# KLambda VM, with no stage-2 compiler in between. The eval-capable slice
-# metaeval needs takes the VM through the compiler at run time and it panics
-# part way -- the transcript reaches "eval list: 42" and then stops mid-line --
-# so the fixture's later output never appears. That is a shen-go VM limit, not
-# a shake finding: every other fixture passes on kl, and metaeval passes on the
-# `go` target, which compiles the same slice. Delete this line when the VM
-# stops panicking; the probe below will demand it.
-KNOWN_GAPS='metaeval:kl  shen-go cmd/kl panics part way through the eval-capable slice; the same slice passes on --target go'
+# KLambda VM, with no stage-2 compiler in between. That VM panics while
+# evaluating `(shen.initialise)` -- on EVERY boot, of every fixture:
+#
+#   53 #> shen.initialise
+#   54 #> Panic: &{22 implementation error in shen.change-pointer-value}
+#   Recovered in Eval: (shen.initialise)
+#   Error(goroutine 1 [running]: ...
+#
+# and then recovers and runs the next toplevel form, so the fixture's own
+# output still appears further down the transcript. For a while that was
+# reported as a PASS: `kl`'s stdout is compared by containment (it is a REPL
+# transcript, not the program's output), and containment is satisfied by a
+# transcript whose boot failed. It is not any more -- the entry declares
+# `transcript_error_markers` and both readers check them before comparing --
+# so the gate now says what was always true: the boot is broken on this
+# runtime, on every fixture.
+#
+# metaeval:kl fails a second time over, further on and for its own reason: the
+# eval-capable slice calls `eval` at run time and the VM answers
+# `Panic: &{22 package shen does not exist.}` while evaluating
+# `(pr (cn "eval list: " (shen.app (eval (make-expr 6)) ...)))`, so the
+# fixture's first line never prints at all. (An earlier version of this comment
+# said the transcript reaches "eval list: 42" and stops; it does not reach it.)
+#
+# Fixing either is shen-go's, not Yggdrasil's. When it is fixed the probes
+# below start passing and this gate FAILS until these lines are deleted, which
+# is the point of them being here rather than in a paragraph somewhere.
+KNOWN_GAPS='fib:kl  shen-go cmd/kl panics in (shen.initialise) with "implementation error in shen.change-pointer-value" on every boot, recovers, and carries on
+hello:kl  shen-go cmd/kl panics in (shen.initialise) with "implementation error in shen.change-pointer-value" on every boot, recovers, and carries on
+parity:kl  shen-go cmd/kl panics in (shen.initialise) with "implementation error in shen.change-pointer-value" on every boot, recovers, and carries on
+prolog:kl  shen-go cmd/kl panics in (shen.initialise) with "implementation error in shen.change-pointer-value" on every boot, recovers, and carries on
+metaeval:kl  the same boot panic, and then Panic: &{22 package shen does not exist.} while evaluating (pr (cn "eval list: " (shen.app (eval (make-expr 6)) ...))), so the eval-capable slice prints none of its three lines'
 
 gap_reason() {  # gap_reason <fixture> <target> -> prints reason, or empty
     printf '%s\n' "$KNOWN_GAPS" | while IFS= read -r line; do

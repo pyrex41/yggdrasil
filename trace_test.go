@@ -16,9 +16,13 @@ package main
 
 import (
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -263,11 +267,31 @@ func TestTraceCheckFixtures(t *testing.T) {
 					// from. See evidencePossible.
 					t.Skipf("no evidence obtainable here: %s (%v)", name, err)
 				}
+				// A target whose transcript carries its declared error
+				// markers is EXPECTED to fail today, and the expectation
+				// is written down here rather than hidden in a skip:
+				// shen-go's cmd/kl panics in (shen.initialise) on every
+				// boot, recovers, and runs the rest, so containment used
+				// to report OK over a failed boot. The assertion is
+				// two-sided -- it demands the transcript-error failure
+				// AND fails if the run starts passing, which is when
+				// these four lines and the KNOWN_GAPS entries in
+				// scripts/parity-gate.sh must come out.
+				if line := failSentinel(err); strings.Contains(line, "transcript-error") {
+					t.Logf("%s: %s -- shen-go's VM panics in the boot; expected until it does not", name, line)
+					return
+				}
 				if err != nil {
 					t.Fatalf("trace-check: %v", err)
 				}
 				if res == nil {
 					t.Skipf("target %s is not runnable here", target)
+				}
+				if len(transcriptErrorMarkers(target)) > 0 && res.ok {
+					t.Errorf("%s now PASSES with no error marker in its transcript. "+
+						"The port's boot has been fixed: delete this branch, and delete the "+
+						"<fixture>:%s lines from scripts/parity-gate.sh's KNOWN_GAPS",
+						name, target)
 				}
 				if !res.ok {
 					t.Fatalf("containment failed: %s", res.sentinel)
@@ -926,40 +950,87 @@ func TestPhaseDegenerate(t *testing.T) {
 // rule and its own skip, reachable from one subcommand and invisible to the
 // rest -- a target that was not a target. It is an entry in builders.json now,
 // and what is peculiar about it is declared there (program_file, stdin,
-// stdout), so the string "kl" appears in no Go source at all.
+// stdout, transcript_error_markers).
 //
-// The check is the string literal, over the non-test sources. Test files are
-// exempt and have to be: they name targets on purpose (this one does), and
-// they reach into the sibling shen-go checkout, whose KL package is a
-// directory called kl. A non-test file that needs the name is the regression.
-func TestNoTargetNameIsSpecialCasedInGo(t *testing.T) {
+// THIS IS A LINT, and its name says so, because what it checks is narrower
+// than "no special case": it parses each non-test Go source and fails on a
+// string literal that names `kl` -- "kl" itself, "cmd/kl" or any other literal
+// containing it as a path or word, and the entry's run_impl string. Parsing
+// rather than grepping is what lets the prose say "shen-go's cmd/kl reads its
+// program from stdin" in a comment, which is the true sentence this file is
+// built on, while a literal with the same text in the code fails.
+//
+// What it does NOT catch: a name reached some other way -- built up from
+// pieces, read from a constant, matched with a prefix. The behavioural tests
+// are what cover that (TestStdinFactDrivesTheSkip, and the assertion below
+// that the entry carries everything the deleted runner did); this one catches
+// the obvious regression cheaply and in one place.
+func TestLintNoKlNameLiteralInNonTestGoSources(t *testing.T) {
+	fset := token.NewFileSet()
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
 	}
+	impl := "shen-go cmd/kl"
+	if builders, err := loadBuilders(); err == nil {
+		impl = builders["kl"].RunImpl
+	}
+	// A literal is a hit when it IS the target name, or when it carries it
+	// as a path segment or a whole word -- "cmd/kl", "./cmd/kl", "kl vm" --
+	// or when it is the entry's run_impl. Substrings of longer words
+	// ("klvm", "kernel.kl") are not: those name files and binaries, which
+	// is not what special-casing a target looks like.
+	word := regexp.MustCompile(`(^|[^A-Za-z0-9_.-])kl($|[^A-Za-z0-9_.-])`)
+	hit := func(v string) bool {
+		return v == "kl" || v == impl || word.MatchString(v)
+	}
+	scanned := 0
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		src, err := os.ReadFile(name)
+		f, err := parser.ParseFile(fset, name, nil, 0) // no comments: prose may say it
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("parsing %s: %v", name, err)
 		}
-		for i, line := range strings.Split(string(src), "\n") {
-			if strings.Contains(line, `"kl"`) {
-				t.Errorf(`%s:%d matches on the target name "kl":
-
-    %s
+		scanned++
+		ast.Inspect(f, func(n ast.Node) bool {
+			lit, ok := n.(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				return true
+			}
+			v, err := strconv.Unquote(lit.Value) // handles `raw` and "quoted"
+			if err != nil || !hit(v) {
+				return true
+			}
+			t.Errorf(`%s: the string literal %s names the target kl.
 
   Every target reaches build/run/parity/trace-check through builders.json.
   What is peculiar about a target belongs on its entry as a declared fact
-  (see kl's program_file/stdin/stdout), read back through programFileFor or
-  runFacts -- not as a name compared in Go, which the next such target would
-  silently not match.`, name, i+1, strings.TrimSpace(line))
-			}
+  (kl's program_file/stdin/stdout/transcript_error_markers), read back
+  through programFileFor, runFacts or transcriptErrorMarkers -- not as a
+  name compared in Go, which the next such target would silently not match.`,
+				fset.Position(lit.Pos()), lit.Value)
+			return true
+		})
+	}
+	if scanned == 0 {
+		t.Fatal("no non-test Go sources were scanned; this lint would pass vacuously")
+	}
+	// The lint has to be able to fire: a literal it would not catch means
+	// it is checking a spelling nobody uses.
+	for _, v := range []string{"kl", "cmd/kl", "./cmd/kl", impl} {
+		if !hit(v) {
+			t.Errorf("the lint would not catch the literal %q", v)
 		}
 	}
+	for _, v := range []string{"klvm", "kernel.kl", "shen-go", "yggdrasil.manifest.txt"} {
+		if hit(v) {
+			t.Errorf("the lint fires on %q, which names a file rather than the target", v)
+		}
+	}
+
 	// And the target really is reachable as data: nothing but builders.json
 	// puts it there.
 	builders, err := loadBuilders()
@@ -970,7 +1041,8 @@ func TestNoTargetNameIsSpecialCasedInGo(t *testing.T) {
 	if !ok {
 		t.Fatal("builders.json has no kl entry; trace-check --target kl would now be an unknown target")
 	}
-	if b.ProgramFile == "" || len(b.Build) < 2 || b.Stdin != stdinAppendedToProgram {
+	if b.ProgramFile == "" || len(b.Build) < 2 || b.Stdin != stdinAppendedToProgram ||
+		b.Stdout != stdoutTranscript || len(b.TranscriptErrorMarkers) == 0 {
 		t.Errorf("kl's entry does not declare what the deleted runner did: %+v", b)
 	}
 }
@@ -1065,11 +1137,127 @@ func TestRunOnKlTargetFeedsTheProgramOnStdin(t *testing.T) {
 	if !strings.Contains(canon(out), canon(string(want))) {
 		t.Errorf("the kl transcript does not contain %q", canon(string(want)))
 	}
+	// Containment is all this test claims, and it is a claim about the
+	// PLUMBING: the program reached the VM on stdin and ran. It is not a
+	// claim that the run was good -- the same transcript carries the boot
+	// panic below, which is why trace-check and the parity gate check the
+	// declared markers before they conclude anything from containment.
+	if m, line := transcriptError(transcriptErrorMarkers("kl"), out); m != "" {
+		t.Logf("the run reached the program, and its transcript also carries %q at %q: "+
+			"this test is about stdin delivery, not about the run being correct", m, line)
+	} else {
+		t.Logf("no error marker in the transcript: shen-go's boot panic may have been fixed, " +
+			"in which case the KNOWN_GAPS entries for kl in scripts/parity-gate.sh are stale")
+	}
 	// And with no program file the same argv produces no such answer, which
 	// is what makes the assertion above about the plumbing rather than about
 	// the VM having the program from somewhere else.
 	bare, _, _ := runCapture(argv, "", "")
 	if strings.Contains(canon(bare), canon(string(want))) {
 		t.Error("the VM printed the fixture's answer with no program fed to it")
+	}
+}
+
+// hickey-13 follow-up, and the one that mattered most: containment is not a
+// verdict. `trace-check --target kl` printed OK on every fixture while the
+// transcript carried
+//
+//	Panic: &{22 implementation error in shen.change-pointer-value}
+//	Recovered in Eval: (shen.initialise)
+//
+// and a goroutine dump -- the VM recovers and runs the next toplevel form, so
+// the fixture's answer WAS in the transcript and the comparison passed over a
+// run whose initialiser had failed. The target now declares
+// transcript_error_markers, and checkGolden checks them before it concludes
+// anything from containment.
+//
+// The markers come from builders.json, not from this file: a test that carried
+// its own copy would pass while the declaration said something else.
+func TestTranscriptErrorMarkersFailBeforeContainment(t *testing.T) {
+	markers := transcriptErrorMarkers("kl")
+	if len(markers) == 0 {
+		t.Fatal("kl declares stdout=repl-transcript and no transcript_error_markers: " +
+			"containment is then the whole verdict, which is what this test exists against")
+	}
+	dir := t.TempDir()
+	prog := filepath.Join(dir, "x.shen")
+	if err := os.WriteFile(filepath.Join(dir, "x.expected"), []byte("fib 20 = 6765\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A clean transcript: prompts, echoes, the answer. Still passes.
+	clean := "0- 1+ \nfib 20 = 6765\n1- done\n"
+	g, err := checkGolden(prog, "kl", clean)
+	if err != nil || !g.checked {
+		t.Fatalf("a clean transcript containing the golden failed: %+v %v", g, err)
+	}
+
+	// The real one, per marker: the truth is in there, and it still fails.
+	for _, m := range markers {
+		t.Run(strings.TrimSpace(m), func(t *testing.T) {
+			bad := "0- 1+ \n53 #> " + m + "&{22 implementation error in shen.change-pointer-value}\n" +
+				"fib 20 = 6765\n1- done\n"
+			if !strings.Contains(canon(bad), canon("fib 20 = 6765\n")) {
+				t.Fatal("this fixture is meant to CONTAIN the truth")
+			}
+			g, err := checkGolden(prog, "kl", bad)
+			if err == nil {
+				t.Fatalf("a transcript carrying %q passed because the truth appeared after it: %+v", m, g)
+			}
+			if got := failSentinel(err); got != "yggdrasil-trace-check: FAIL stdout=transcript-error" {
+				t.Errorf("sentinel = %q, want the transcript-error FAIL line", got)
+			}
+			if !strings.Contains(err.Error(), m) {
+				t.Errorf("the failure does not name the marker it matched: %v", err)
+			}
+			if !strings.Contains(err.Error(), "shen.change-pointer-value") {
+				t.Errorf("the failure does not quote the line it matched: %v", err)
+			}
+			if g.checked {
+				t.Error("a refused comparison reports itself as checked")
+			}
+		})
+	}
+
+	// A target whose stdout is the program's is not affected: the markers
+	// are a property of a transcript, and equality already fails on one.
+	if _, err := checkGolden(prog, "go", "fib 20 = 6765\n"); err != nil {
+		t.Errorf("an ordinary target's exact output was refused: %v", err)
+	}
+
+	// A fixture with NO committed golden must still fail on a marker. This
+	// is the case that got away: the check lived inside the comparison, and
+	// tests/partial.shen ships no .expected, so kl/partial reported OK over
+	// the same panicking boot that failed kl/fib. A marker is a fact about
+	// the run, so it cannot be conditional on a file the fixture may not
+	// have.
+	nogolden := filepath.Join(dir, "absent.shen")
+	if g, err := checkGolden(nogolden, "kl", clean); err != nil || g.checked {
+		t.Fatalf("a clean transcript with no golden must decline, not fail: %+v %v", g, err)
+	}
+	bad := "0- 1+ \n53 #> Panic: &{22 implementation error in shen.change-pointer-value}\nfib\n"
+	g, err = checkGolden(nogolden, "kl", bad)
+	if err == nil {
+		t.Fatalf("a transcript carrying a marker passed because the fixture ships no golden: %+v", g)
+	}
+	if got := failSentinel(err); got != "yggdrasil-trace-check: FAIL stdout=transcript-error" {
+		t.Errorf("sentinel = %q, want the transcript-error FAIL line", got)
+	}
+
+	// And an empty golden is a FAIL of its own, because containment holds
+	// against every transcript there is.
+	empty := filepath.Join(dir, "e.shen")
+	if err := os.WriteFile(filepath.Join(dir, "e.expected"), []byte("\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g, err = checkGolden(empty, "kl", clean)
+	if err == nil {
+		t.Fatalf("an empty golden passed by containment: %+v", g)
+	}
+	if got := failSentinel(err); got != "yggdrasil-trace-check: FAIL stdout=golden-empty" {
+		t.Errorf("sentinel = %q, want the golden-empty FAIL line", got)
+	}
+	if g.checked {
+		t.Error("a comparison that could not fail reports itself as checked")
 	}
 }
