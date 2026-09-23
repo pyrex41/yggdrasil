@@ -2050,32 +2050,34 @@
 
 (set ygg.*prune-init* false)
 
-\\ Conservative default: every global the go runtime reads natively, plus
-\\ every global the kernel's own defuns read in the full (unshaken) boot.
+\\ Default: the UNION of the port_reads lists that have actually been read
+\\ off a runtime -- today shen-go's five, since `go` is the only entry in
+\\ builders.json that declares one.  Every other target's entry declares
+\\ none and inherits `_default`, whose value is the literal string
+\\ "unknown": nobody has measured what those runtimes read natively.
 \\
-\\ This list is a COPY, and builders.json's "_default" block is the
-\\ authority.  It exists for a direct host invocation -- (load
-\\ "yggdrasil.shen") and call ygg.shake yourself -- where there is no Go
-\\ driver to push a list in.  Every invocation through `yggdrasil` or
-\\ Bifrost overrides it per shake (prune.go's portReadsFor: the target's own
-\\ declared list, else _default, else the union for a target-agnostic shake).
+\\ This list is a COPY of that union, and builders.json is the authority.
+\\ It exists for a direct host invocation -- (load "yggdrasil.shen") and
+\\ call ygg.shake yourself -- where there is no Go driver to push a list
+\\ in.  Every invocation through `yggdrasil` or Bifrost overrides it per
+\\ shake (prune.go's portReadsFor: the target's own declared list, else the
+\\ same union, and --prune-init REFUSES a target that resolves to unknown).
 \\ The two must stay equal element for element; TestPortReadsDefaultMatchesShen
-\\ in prune_test.go parses this form and fails if they drift.
+\\ in prune_test.go computes the union from builders.json, parses this form,
+\\ and fails if they drift.
+\\
+\\ It is NOT a conservative superset for a port nobody has measured, and it
+\\ no longer pretends to be: it held 35 names for exactly that reason --
+\\ go's five plus every global the kernel's own defuns read in a full boot
+\\ -- and that guess was indistinguishable, to everything downstream, from
+\\ a list somebody had checked.  If you set ygg.*prune-init* by hand on a
+\\ host, you are pruning against shen-go's reads, whatever you then build.
 (set ygg.*port-reads*
-     [\\ read natively by the go runtime (shen-go, kl/): the two port
-      \\ globals, then open / load-file via ResolveHomePath, then
-      \\ arity and fn via kernelArity / nativeFn
-      *stinput* *stoutput* *home-directory* *property-vector*
-      shen.*lambdatable*
-      \\ ... plus every global the kernel's own defuns read in the full boot
-      *hush* *macros* *maximum-print-sequence-size* *version*
-      shen.*alldatatypes* shen.*datatypes* shen.*extraspecial*
-      shen.*factorise?* shen.*gensym* shen.*history* shen.*infs* shen.*it*
-      shen.*loading?* shen.*maxinferences* shen.*names* shen.*occurs*
-      shen.*optimise* shen.*package* shen.*profiled* shen.*prolog-memory*
-      shen.*residue* shen.*shen-type-theory-enabled?* shen.*sigf*
-      shen.*special* shen.*spy* shen.*step* shen.*synonyms* shen.*tc*
-      shen.*tracking* shen.*userdefs*])
+     [\\ read natively by the go runtime (shen-go, kl/): open / load-file
+      \\ via ResolveHomePath, arity and fn via kernelArity / nativeFn,
+      \\ then the two port globals.  Sorted, as portReadsFor returns them.
+      *home-directory* *property-vector* *stinput* *stoutput*
+      shen.*lambdatable*])
 
 \\ (value V) with a literal V anywhere in a defun's body - unlike
 \\ ygg.io-reads this DOES descend into lambda and freeze, because a defun

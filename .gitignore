@@ -20,3 +20,4 @@ pybin/*/_bin/
 
 # Runtime trace written by a --trace artifact run from the repo root.
 /yggdrasil.trace
+.claude/worktrees/

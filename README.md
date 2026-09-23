@@ -210,10 +210,16 @@ nothing can read the global they set. It is `0` unless you pass
 pruning changes the bytes of `kernel.kl`, and pruning against a
 `port_reads` list nobody has checked can drop a `(set V Lit)` the port's
 runtime reads natively. The CLI refuses `--prune-init --target T` outright
-unless `T`'s `port_reads` names a test in `builders.json`; only `go` does.
-Shake without `--target` (the union over every builder is sound for any of
-them), or pass `--prune-init-unverified` to prune against the placeholder
-anyway and take a warning. With the flag off the emitted `kernel.kl` is
+unless `T`'s `port_reads` names a test in `builders.json`; only `go` does,
+and for every other target the answer is not an unchecked list but
+`unknown` — nobody has measured what that runtime reads. Shaking **without**
+`--target` is refused too while any target is unknown: the union it would
+prune against is over the targets that *have* declared a list (today `go`
+alone), so it is sound for those and for no one else, and a no-target slice
+is by definition one that may be built for a port nobody checked. Both
+refusals name the targets the union is over and the targets it says nothing
+about. `--prune-init-unverified` prunes against that union anyway and takes
+a warning. With the flag off the emitted `kernel.kl` is
 byte-identical to a pre-stage-4 shake's, save for the single
 `shen.initialise` line the later D8 ordering change permutes (see
 [docs/verification-guide.md](docs/verification-guide.md) §6).
@@ -226,13 +232,18 @@ program, or when the **port's own runtime** reads it natively — shen-go's
 That last list is per-backend data, so it lives in `builders.json` next to
 the backend, as a **`"port_reads"`** array with a `"port_reads_source"`
 naming the runtime lines it was read off and a `"port_reads_checked_by"`
-naming the test that fails when it drifts. Today only `go` declares one;
-every other target inherits the `_default` block's conservative superset,
-stated once, with `checked_by: none` — declared, not verified.
-`yggdrasil contract --target T` prints which is which. With no `--target`
-the union of every target's effective list is used, which is the only
-choice sound for a slice that may be built anywhere; `--target T` uses
-`T`'s own, which is smaller and prunes more.
+naming the test that fails when it drifts. Today only `go` declares one.
+Every other target inherits the `_default` block, whose value is the
+literal string **`"unknown"`**: it held a 35-name conservative guess once,
+which every unmeasured target inherited, so "nobody looked" and "somebody
+measured this" reached every consumer in the same shape.
+`yggdrasil contract --target T` now prints `port_reads  unknown` for such
+a target, with the source saying why and a line saying what it costs —
+`--prune-init` refuses that target by name, and refuses a shake with no
+`--target` for the same reason — the union over the declared lists is sound
+for the targets in it and for no others. `--target go` uses `go`'s own,
+which is the only measured one, and is the only invocation the flag accepts
+unasked.
 
 Only a form that is exactly `(set V Lit)` for an atomic `Lit` is ever
 dropped. A form whose value is a call — `(set *property-vector* (vector

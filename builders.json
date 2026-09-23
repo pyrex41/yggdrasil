@@ -19,62 +19,53 @@
     "The Erlang target compiles the shaken slice to BEAM with shen-erl; scheme",
     "compiles via kl->scheme; swift interprets the minimal slice directly.",
     "The C target (shen-c) emits NativeFunction C + Makefile/CMakeLists and",
-    "links libshenc.a (option 5 rung 1; not eval_kl_object of the source)."
+    "links libshenc.a (option 5 rung 1; not eval_kl_object of the source).",
+    "",
+    "A step whose argv[0] is '{yggdrasil}' is not a subprocess: it names one",
+    "of yggdrasil's own build helpers (main.go's internalSteps, also reachable",
+    "as `yggdrasil <name> ...` for debugging). They exist for the steps that",
+    "are LOGIC rather than a command line -- 'program-file' concatenates",
+    "kernel.kl, (shen.initialise) and the manifest's user files into one KL",
+    "stream -- so a target that needs one is still an entry in this file",
+    "rather than a runner hard-coded in Go.",
+    "",
+    "'program_file' (substituted as {program_file}) says the run's stdin must",
+    "carry that file before anything else: it is how a runtime that reads its",
+    "PROGRAM from stdin is described as data. Declare it together with the",
+    "'stdin' fact below, which is what makes the consequences visible."
   ],
   "_default": {
     "_comment": [
       "Facts inherited by every target that does not state its own.",
       "loadBuilders() skips _-prefixed keys; prune.go's portReadsFor()",
-      "reads this block explicitly. yggdrasil.shen's (set ygg.*port-reads*",
-      "...) default must equal this list element for element --",
-      "TestPortReadsDefaultMatchesShen pins that.",
+      "reads this block explicitly.",
       "",
       "Fact provenance is three flat keys per fact:",
       "  <key>                the fact",
       "  <key>_source         where it was read from, or 'none'",
       "  <key>_checked_by     the test that fails when it drifts, or 'none'",
       "A fact whose _checked_by is 'none' is DECLARED, never verified;",
-      "`yggdrasil contract --target T` prints which is which."
+      "`yggdrasil contract --target T` prints which is which.",
+      "",
+      "port_reads is the literal string \"unknown\", and that is the whole",
+      "point: only `go` has had its native reads read off a runtime, so for",
+      "every other target this repository does not know the answer. It used",
+      "to hold a 35-name conservative guess, which every undeclared target",
+      "inherited -- absence of a measurement wearing the shape of a fact.",
+      "A target that resolves to unknown is REFUSED by --prune-init (see",
+      "prune.go) and prints `port_reads  unknown` in `yggdrasil contract`.",
+      "Replace this with a real list on a target's own entry, with a source",
+      "and a checked_by, when someone measures one."
     ],
-    "port_reads": [
-      "*stinput*",
-      "*stoutput*",
-      "*home-directory*",
-      "*property-vector*",
-      "shen.*lambdatable*",
-      "*hush*",
-      "*macros*",
-      "*maximum-print-sequence-size*",
-      "*version*",
-      "shen.*alldatatypes*",
-      "shen.*datatypes*",
-      "shen.*extraspecial*",
-      "shen.*factorise?*",
-      "shen.*gensym*",
-      "shen.*history*",
-      "shen.*infs*",
-      "shen.*it*",
-      "shen.*loading?*",
-      "shen.*maxinferences*",
-      "shen.*names*",
-      "shen.*occurs*",
-      "shen.*optimise*",
-      "shen.*package*",
-      "shen.*profiled*",
-      "shen.*prolog-memory*",
-      "shen.*residue*",
-      "shen.*shen-type-theory-enabled?*",
-      "shen.*sigf*",
-      "shen.*special*",
-      "shen.*spy*",
-      "shen.*step*",
-      "shen.*synonyms*",
-      "shen.*tc*",
-      "shen.*tracking*",
-      "shen.*userdefs*"
-    ],
-    "port_reads_source": "none: the conservative union (go's five native reads plus every global the kernel's own defuns read in a full boot), not read off any other port's runtime",
-    "port_reads_checked_by": "none"
+    "port_reads": "unknown",
+    "port_reads_source": "none: nobody has read this port's native global reads off its runtime. The previous value here was a conservative guess (go's five native reads plus every global the kernel's own defuns read in a full boot) presented as data for thirteen ports that were never measured",
+    "port_reads_checked_by": "none",
+    "stdin": "delivered",
+    "stdin_source": "the default run contract: `yggdrasil run` and the parity gate hand the caller's bytes (or --stdin FILE) to the artifact's own stdin, and the artifact's program comes from its build",
+    "stdin_checked_by": "none: scripts/parity-gate.sh on tests/stdin-sum.shen would catch a port that did not receive its stdin, but CI runs the gate on go, js and lua only and the gate skips a target whose toolchain is absent, so nothing checks this value for the other eleven",
+    "stdout": "program",
+    "stdout_source": "the default run contract: the artifact's stdout is the program's output and nothing else, which is what makes tests/<fixture>.expected comparable byte for byte",
+    "stdout_checked_by": "none: scripts/parity-gate.sh compares every GATED target's stdout with the golden under canon(), but CI gates go, js and lua only and the gate skips a target whose toolchain is absent, so nothing checks this value for the other eleven"
   },
   "lisp": {
     "run_impl": "shen-cl",
@@ -244,6 +235,73 @@
       "variable?"
     ],
     "special_forms_source": "shen-go da55c5d, derived as a class and not from a fixture's residue. `do` is syntactic: src/compiler.shen:6 `Env [do X Y] -> [$do (parse Env X) (parse Env Y)]`, the only parse head that is also a kernel defun. The other six are exactly the intersection of the `shenPrimitive` table (codegen/codegen.go:919-965) with kernel.kl's 687 defun names, each emitted by emitDirectPrimitive (codegen/codegen.go:888) as a bare Go call with no PrimFunc lookup, unconditionally for kernel chunks because cmd/yggdrasil-build/main.go:428 sets `cg.Sealed = true` before compiling them: `not` codegen.go:958 -> PrimNot, `symbol?` :960 -> PrimIsSymbol, `read-file-as-bytelist` :961 -> PrimReadFileAsByteList, `read-file-as-string` :962 -> PrimReadFileAsString, `variable?` :963 -> PrimIsVariable, `integer?` :964 -> PrimIsInteger. Which of the seven a given slice actually needs subtracted is a property of the program; the declaration is the port's whole class."
+  },
+  "kl": {
+    "_comment": [
+      "The shaken KL run directly on shen-go's bare KLambda VM (cmd/kl in",
+      "the same checkout the `go` target uses), no stage-2 compiler in",
+      "between. It is the most direct reading of the question trace-check",
+      "asks -- the claim under test is about the KL the shake WRITES -- and",
+      "the fallback when the `go` builder's own full-kernel compiler image",
+      "will not boot. `--target go` remains the compositional case that also",
+      "checks the backend.",
+      "",
+      "This was a runner hard-coded in trace.go (klRunner) that borrowed the",
+      "`go` entry's dir_env at run time and was reachable from exactly one",
+      "subcommand. It is an entry here so that build, run, parity and",
+      "trace-check all reach it through the one data path, and so that what",
+      "is peculiar about it is DECLARED (stdin, stdout, transcript_error_",
+      "markers below) rather than matched on the target's name in Go.",
+      "",
+      "transcript_error_markers is the other half of stdout=repl-transcript:",
+      "containment says the program's output is in there somewhere, which a",
+      "run whose boot panicked and carried on also satisfies. The markers say",
+      "what, inside a transcript, means the run went wrong, and both readers",
+      "check them BEFORE the containment test."
+    ],
+    "run_impl": "shen-go cmd/kl",
+    "dir_env": "YGGDRASIL_SHEN_GO_DIR",
+    "dir_default": "shen-go",
+    "needs": [
+      "go"
+    ],
+    "build": [
+      {
+        "argv": [
+          "go",
+          "build",
+          "-o",
+          "{outdir}/klvm",
+          "./cmd/kl"
+        ],
+        "cwd": "{shen_go}"
+      },
+      {
+        "argv": [
+          "{yggdrasil}",
+          "program-file",
+          "{outdir}",
+          "{program_file}"
+        ]
+      }
+    ],
+    "run": [
+      "{outdir}/klvm"
+    ],
+    "program_file": "{outdir}/_klvm_feed.kl",
+    "stdin": "appended-to-program",
+    "stdin_source": "shen-go cmd/kl/main.go: the VM reads its program from os.Stdin and takes no file argument, so the run feeds it {program_file} and whatever the caller sends on stdin arrives AFTER the program text, as further toplevel forms -- the program itself then reads EOF",
+    "stdin_checked_by": "TestStdinFactDrivesTheSkip and TestEvidencePossible (trace_test.go): trace-check refuses a fixture stdin on any target declaring this value, by name, before anything is shaken",
+    "stdout": "repl-transcript",
+    "stdout_source": "shen-go cmd/kl/main.go: the VM prints a numbered prompt and echoes each toplevel form's value, and ends the program by recovering a panic and printing the dump, so the program's output is EMBEDDED in a transcript that also carries goroutine addresses and is not byte-stable across two boots of the same program",
+    "stdout_checked_by": "TestCheckGolden (trace_test.go, the kl-containment subtest) and TestTranscriptTargetIsComparedByContainment (parity_test.go): a golden is checked by containment in the transcript -- on both the vs-truth and the two-boot leg -- which is the strongest thing assertable there",
+    "transcript_error_markers": [
+      "Recovered in Eval",
+      "Panic:",
+      "goroutine "
+    ],
+    "transcript_error_markers_source": "shen-go cmd/kl/main.go and kl/eval.go Eval.func1: the VM recovers a panic, prints `Panic: &{<n> <message>}`, then `Recovered in Eval: <the form>`, then the goroutine dump, and CARRIES ON with the next toplevel form. Observed on every kl boot today: `(shen.initialise)` panics with `Panic: &{22 implementation error in shen.change-pointer-value}` and the program still runs afterwards, so containment alone reads a failed boot as a pass",
+    "transcript_error_markers_checked_by": "TestTranscriptErrorMarkersFailBeforeContainment (trace_test.go) and TestTranscriptErrorMarkerFailsParity (parity_test.go): a transcript carrying a marker FAILS even when the truth is contained in it, and a clean transcript still passes"
   },
   "joy": {
     "run_impl": "shen-joy",

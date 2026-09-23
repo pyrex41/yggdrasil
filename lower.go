@@ -766,7 +766,13 @@ func lowerCheckRuns(prog, reference, target, canonicalDir, loweredDir, stdinFile
 		if argv == nil {
 			return nil, labels, "", &lowerCheckSkip{reason: "toolchain-missing", run: r.label}
 		}
-		out, _, rerr := runCapture(argv, stdinFile)
+		progFile, perr := programFileFor(r.tgt, r.dir)
+		if perr != nil {
+			return nil, labels, "", &lowerCheckRunErr{
+				sentinel: "yggdrasil-lower-check: FAIL pair=none build=" + r.label,
+				err:      perr}
+		}
+		out, _, rerr := runCapture(argv, progFile, stdinFile)
 		if rerr != nil {
 			return nil, labels, "", &lowerCheckRunErr{
 				sentinel: "yggdrasil-lower-check: FAIL pair=none run=" + r.label,

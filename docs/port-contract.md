@@ -40,7 +40,7 @@ two sibling keys:
 | key | meaning |
 |---|---|
 | `<fact>_source` | the file and function the fact was read off, or `none: <why not>` |
-| `<fact>_checked_by` | the test that fails when the fact drifts, or `none` |
+| `<fact>_checked_by` | the test that fails when the fact drifts, or `none`, or `none: <why nothing checks it>` -- which reads as `none` (`factChecked`), so explaining yourself cannot promote a row to `verified` |
 
 There is deliberately no `_verified` boolean. There used to be two, and
 they spelled one word over two unrelated predicates:
@@ -58,6 +58,52 @@ Facts a target does not state are inherited from the `_default` block,
 and a target that states none is a target whose runtime nobody has
 measured -- the missing key is how that looks.
 
+### `unknown` is a value
+
+For `port_reads` the missing key was not enough, because `_default`
+carried a list: a 35-name conservative guess that every unmeasured target
+inherited, so "nobody looked" and "somebody measured this" arrived at
+every consumer in the same shape. `_default.port_reads` is now the literal
+string
+
+```json
+"port_reads": "unknown"
+```
+
+with a `port_reads_source` that says why, and that value is first-class
+everywhere downstream (hickey-14):
+
+* **`prune.go`** resolves it to `(nil, false)`. `--prune-init --target T`
+  on such a target is **refused**, naming the target and saying that
+  nobody has read what its runtime reads natively. `--prune-init-unverified`
+  overrides it and prunes against the union below, with a `WARN`.
+* **a target-agnostic `--prune-init`** (no `--target`) is **refused** on
+  the same grounds while any target is unknown. The union it would prune
+  against is over the targets that **have** declared a list -- today `go`
+  alone, five globals -- and a shake with no `--target` is by definition a
+  slice that may be built for one of the others, where a global the
+  initialiser no longer writes is a run-time failure far from this flag.
+  The older claim, "the union over every builder is sound for any of
+  them", was true of a union of guesses; the union of the measurements is
+  *smaller*, so it prunes more. The refusal names both halves -- the
+  targets the union is over, and the targets it says nothing about -- and
+  `--prune-init-unverified` proceeds with the same two halves as a `WARN`.
+* **`yggdrasil contract --target T`** prints
+  `level1  port_reads  unknown  unknown: nobody has read this port's native
+  global reads off its runtime`, with the `_default` source under it and a
+  line saying what unknown costs. `unknown` in that report now means "not
+  declared, **or** declared as the literal `unknown`".
+* **`yggdrasil.shen`'s `(set ygg.*port-reads* ...)`** -- the copy a direct
+  host invocation uses when there is no Go driver to push a list in -- is
+  the same union of declared lists, pinned element for element by
+  `TestPortReadsDefaultMatchesShen`. It is no longer a conservative
+  superset for an unmeasured port, and its comment says so.
+
+Any string other than `unknown` in a `port_reads` value is a parse error
+(`TestPortReadsRejectsAnyOtherString`): a typo must not be able to turn a
+declaration into a silence, which is the failure this value exists to make
+visible.
+
 ### Level 1, as it exists: three keys
 
 Each has at least one consumer in the code and appears in
@@ -66,7 +112,7 @@ Each has at least one consumer in the code and appears in
 
 | key | meaning | consumed by | status on `go` today |
 |---|---|---|---|
-| `port_reads` | globals the runtime reads natively | `liveGlobal` (dead-init) in `prune.go`, `yggdrasil.shen` and `main.go` | **verified** (5 entries, `TestPruneInitGoArtifactStillRuns`); every other target inherits `_default`'s 35-name placeholder and reads **declared** |
+| `port_reads` | globals the runtime reads natively | `liveGlobal` (dead-init) in `prune.go`, `yggdrasil.shen` and `main.go` | **verified** (5 entries, `TestPruneInitGoArtifactStillRuns`); every other target inherits `_default`'s `"unknown"` and reads **unknown** -- see above |
 | `special_forms` | KL names the port's compiler lowers without a lookup (`do` on shen-go) | level-3 delta accounting in `scip.go`: a kept defun that is never looked up | **declared** (7 entries, each cited to a line of shen-go; `special_forms_checked_by` is `none`). Unknown on every other target |
 | `native_overrides` | kernel defuns the port replaces with natives (`InstallKernelFast` on shen-go, `overrides.scm` on shen-scheme), plus `native_overrides_installed_after`: the boot phase after which the swap happens | `prune.go`, and the obligations below | **verified** (58 entries, `installed_after=shen.initialise`, `TestNativeOverridesMatchKernelFast`). Unknown on every other target |
 
@@ -90,6 +136,31 @@ An earlier draft of this note also proposed `trace_flush`. It is gone: the
 weaver now appends `(ygg.trace-end)` unconditionally (Obligation F below),
 so there is nothing for a port to declare. No file in the repository
 mentions the key.
+
+### Level 1, the run facts: `stdin` and `stdout`
+
+These are facts about how a target's artifact is RUN rather than about its
+runtime's bindings, and unlike the four above they have consumers today.
+`_default` states the ordinary contract, so every target declares them by
+inheritance and none is silent:
+
+| key | values | consumed by |
+|---|---|---|
+| `stdin` | `delivered` (default): the artifact receives the caller's bytes. `appended-to-program`: the runtime reads its PROGRAM from stdin, so the caller's bytes land after it, as further toplevel forms | `evidencePossible` in `trace.go` (a fixture stdin on such a target is the named skip `stdin-appended-to-program`, never a pass) and `cmdParity` (the target is skipped, by fact, when `--stdin` is given) |
+| `stdout` | `program` (default): stdout is the program's output. `repl-transcript`: the program's output is embedded in the runtime's own prompts, echoes and diagnostics | `checkGolden` in `trace.go` and `compareParity` in `main.go`: the golden is compared by **containment** rather than equality, on every leg, because such a transcript is not byte-stable even across two boots of the same program |
+| `transcript_error_markers` | substrings that, appearing anywhere in a transcript, mean the run went wrong (`kl`: `Recovered in Eval`, `Panic:`, `goroutine `) | the same two, **before** they compare anything: a transcript carrying one FAILS, naming the marker and the first line that matched. Required of any target declaring `stdout: repl-transcript` -- containment alone is satisfied by a run whose boot panicked and carried on, which is what `kl` does today |
+
+An empty golden is a FAIL of its own (`golden-empty`) on the containment
+path, for the same reason: `strings.Contains(anything, "")` is true, so an
+empty `tests/<fixture>.expected` would report a target as checked that was
+never checked at all.
+
+`kl` is the only target declaring the non-default value of either, and
+those two facts are the whole of what used to be a runner special-cased by
+name inside `trace.go` (hickey-13). A companion recipe key,
+`program_file`, names the file such a run feeds to stdin first; it is a
+recipe key rather than a fact (no `_source`), so `yggdrasil contract` does
+not list it as a declaration.
 
 **Obligation N (native overrides).** The footprint is computed from the
 kernel's KL. If the port swaps a defun for a native, the native's callees
@@ -242,7 +313,7 @@ How a port implements the extractor is its business:
 | compiles to a language with a SCIP indexer, direct calls | SCIP index, occurrences inside definition ranges | a hypothetical direct-call Go or Rust backend |
 | compiles to a language, lookup calls | pattern the generated code for binding and lookup sites | shen-go today (`scip.go` does this from the Go source) |
 | compiles to a language without an indexer | the language's own parser (go/ast, esprima, Lua's `luac -l`) | shen-lua, ShenScript |
-| interpreter, artifact is the KL slice | identity: `node`/`edge` from `kernel.kl` itself | shen-swift, the `kl` runner |
+| interpreter, artifact is the KL slice | identity: `node`/`edge` from `kernel.kl` itself | shen-swift, the `kl` target |
 | whole-program optimising compiler | not compositional; `body` is meaningless, only `node`/`edge` are compared, and the report says so | SBCL, Chez |
 
 SCIP is therefore the *first row*, not the contract. What is fixed is the
@@ -280,13 +351,14 @@ commands that run things rather than declarations to read, so the report
 names them and says it did not run them, rather than printing a row that
 could only ever say `ok`:
 
-Run at Yggdrasil `3c499a1` against a sibling shen-go at `da55c5d`, with
-the long `source:` and `checked_by:` strings elided at `...`:
+Run against a sibling shen-go at `da55c5d`, with the long `source:` and
+`checked_by:` strings elided at `...`:
 
 ```
 yggdrasil-contract: target=go
   verified = checked_by names a test; read it for what the test catches and in which direction
-  declared = stated, nothing checks it; unknown = not declared
+  declared = stated, nothing checks it
+  unknown = not declared, or declared as the literal "unknown" -- nobody measured it; read the source for why
 level0  builder            ok         runs on shen-go, 3 build steps, needs go
 level1  port_reads         verified   5 entries
                                       source:     shen-go da55c5d kl/primitives.go (*stinput*, *stoutput*), ...
@@ -303,9 +375,47 @@ level1  native_overrides   verified   58 entries, installed_after=shen.initialis
 level1  native_deps        unknown    not declared in builders.json
 level1  call_style         unknown    not declared in builders.json
 level1  dispatch           unknown    not declared in builders.json
+level1  stdin              declared   delivered
+                                      inherited: builders.json _default (this target declares none of its own)
+                                      source:     the default run contract: ...
+                                      checked_by: none: scripts/parity-gate.sh would catch a port that broke it, but CI gates three targets and skips any whose toolchain is absent
+level1  stdout             declared   program
+                                      inherited: builders.json _default (this target declares none of its own)
+                                      source:     the default run contract: ...
+                                      checked_by: none: ... (as above)
 level2  trace              not-run    yggdrasil trace-check
 level3  extractor          not-run    yggdrasil scip-check (go only)
 level4  parity             not-run    yggdrasil parity
+```
+
+The same report on a target nobody has measured -- every target but `go`
+-- differs in one row, and that row is the point of `unknown` being a
+value:
+
+```
+yggdrasil-contract: target=lua
+level1  port_reads         unknown    unknown: nobody has read this port's native global reads off its runtime
+                                      inherited: builders.json _default (this target declares none of its own)
+                                      source:     none: nobody has read this port's native global reads off its runtime. The previous value here was a conservative guess ...
+                                      checked_by: none
+                                      consequence: --prune-init --target <this target> is refused (prune.go); so is a target-agnostic --prune-init, whose union is over the targets that HAVE declared a list
+```
+
+and on `kl`, whose two run facts are the whole of what used to be a
+special case in `trace.go`:
+
+```
+yggdrasil-contract: target=kl
+level0  builder            ok         runs on shen-go cmd/kl, 2 build steps, needs go
+level1  stdin              verified   appended-to-program
+                                      source:     shen-go cmd/kl/main.go: the VM reads its program from os.Stdin and takes no file argument ...
+                                      checked_by: TestStdinFactDrivesTheSkip and TestEvidencePossible (trace_test.go): ...
+level1  stdout             verified   repl-transcript
+                                      source:     shen-go cmd/kl/main.go: the VM prints a numbered prompt and echoes each toplevel form's value ...
+                                      checked_by: TestCheckGolden (trace_test.go, the kl-containment subtest) and TestTranscriptTargetIsComparedByContainment (parity_test.go): ...
+level1  transcript_error_markers verified   3 entries (Recovered in Eval, Panic:, goroutine )
+                                      source:     shen-go cmd/kl/main.go and kl/eval.go Eval.func1: the VM recovers a panic, prints it, and CARRIES ON ...
+                                      checked_by: TestTranscriptErrorMarkersFailBeforeContainment (trace_test.go) and TestTranscriptErrorMarkerFailsParity (parity_test.go): ...
 ```
 
 Three statuses, and `unknown` is the important one: an undeclared key gets
@@ -320,8 +430,9 @@ requires the source to cite a line of the port for each, and `scip-check`
 fails loudly if the declaration is wrong for a fixture it runs. Naming
 either in `special_forms_checked_by` would make the row `verified`
 honestly; until someone does, the report says what `builders.json` says. A target with no `port_reads` of its own reports
-`declared` with an `inherited: builders.json _default` line -- the
-conservative placeholder, named as one. `TestContractReportNamesSourceAndPhase`
+`unknown` with an `inherited: builders.json _default` line, the source
+saying why nobody measured it, and a `consequence:` line saying what
+unknown costs. `TestContractReportNamesSourceAndPhase`
 and `TestContractLegendPromisesNoMoreThanCheckedBySays` in `prune_test.go`
 are what fail if any of that drifts.
 
@@ -354,7 +465,7 @@ declarations marked `declared` rather than `verified`, and nothing else.
    real, in which case the footprint was wrong before and the doc records
    the change.
 2. Generalise `scip-check` into `graph-check` behind the extractor
-   contract: shen-go's recovery becomes one extractor, the `kl` runner's
+   contract: shen-go's recovery becomes one extractor, the `kl` target's
    identity extractor a second, and the query moves into `analysis.dl`
    and `*shake-rules*` so all three rule evaluators run it (two
    transcriptions and one independent engine -- `verification-guide.md`

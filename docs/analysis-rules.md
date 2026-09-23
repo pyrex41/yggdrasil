@@ -194,8 +194,11 @@ deadInit(N, V) :- writes(N, V), !liveGlobal(V).
 ```
 
 A `deadInit` form can be dropped from the synthesised initialiser. Measured
-on fib against the `go` runtime's `portReads`: 29 of the 35 globals the
-initialiser sets are dead, and 28 of the forms that set them are prunable.
+on fib against the `go` runtime's `portReads` — the only `portReads` list
+in the repository that was read off a runtime; every other target's is
+`unknown`, and stage 4 refuses to prune against it: 29 of the 35 globals
+the initialiser sets are dead, and 28 of the forms that set them are
+prunable.
 This is the one place the rule set makes the artifact smaller, and it is
 gated on a per-builder fact list that has to be written by reading each
 port's runtime, so it ships after the checks, not with them.
@@ -433,7 +436,7 @@ machinery on paths this input does not take, plus the over-approximation
 the edge rule is built on; it is what the shake keeps because it cannot
 prove otherwise, which is the correct trade.
 
-The `kl` runner does **not** agree with `go` name for name, and an earlier
+The `kl` target does **not** agree with `go` name for name, and an earlier
 version of this table said it did. The differences, measured at the
 commits above:
 
@@ -445,9 +448,10 @@ commits above:
 
 All four names are entries in `go`'s `native_overrides`, and the trace is
 a property of the **runtime**, not only of the KL: a name whose binding is
-native when the program reaches it records no KL entry. The two runtimes
-install natives differently. shen-go's generated `main` calls
-`shen.initialise` *before* `InstallKernelFast`, so a `go` artifact records
+native when the program reaches it records no KL entry. The two targets --
+one builder's compiled output, one builder's interpreter, both out of the
+same shen-go checkout -- install natives differently. shen-go's generated
+`main` calls `shen.initialise` *before* `InstallKernelFast`, so a `go` artifact records
 the boot's KL bodies -- which is where `<-vector` and `vector->` come from
 -- and misses any override entered afterwards. `thaw` and `shen.pvar?`
 are absent from `prolog`'s `go` trace and present in its `kl` one, which
@@ -584,28 +588,71 @@ asserted rather than described.
 
 ### Targets, and a port caveat
 
-`--target T` takes any target in `builders.json`, plus one that is not in
-it: `kl`.
+`--target T` takes any target in `builders.json`. `kl` is one of them.
 
-**`kl` is not a target.** It has no entry in `builders.json`, so it gets
-none of what an entry brings: no `port_reads`, no `special_forms`, no
-`native_overrides`, no row in `yggdrasil contract`, and no place in
-`yggdrasil targets` or the parity gate. It is a runner special-cased
-inside `trace.go`: its own `go build ./cmd/kl` in the sibling checkout,
-its own driver file, its own stdin convention (the program is fed on
-stdin, which is why a fixture with input cannot be run at all), and it
-borrows the `go` entry's `dir_env` to find that checkout. Counting it as
-one of "two runtimes" without saying that is overstating what the pair
-is: it is one builder's compiled output and one builder's interpreter,
-from the same repository.
+**`kl` is a target now** (hickey-13). It used to be the exception: a
+runner special-cased inside `trace.go` — its own `go build ./cmd/kl` in
+the sibling checkout, its own driver file, its own stdin convention, and
+the `go` entry's `dir_env` borrowed at run time to find that checkout —
+reachable from `trace-check` and from nothing else. It had no `port_reads`,
+no row in `yggdrasil contract`, and no place in `yggdrasil targets` or the
+parity gate, while the docs counted it as one of "two runtimes". A target
+that is not a target is a thing every consumer has to know about
+separately, and each of them knew about it differently.
 
-What it is good for is real, and is why it stays: the claim is about the
-KL the shake writes, and `cmd/kl` executes that KL verbatim with no
-backend in between, so it is the fallback that keeps the check runnable
-when a stage-2 builder is not. Promoting it to a real `builders.json`
-entry, or dropping the word "target" for it, is an open decision and not
-one this note should make quietly. (`yggdrasil contract --target kl`
-answers `unknown target "kl"`, which is the rest of the system agreeing.)
+It is an entry in `builders.json` like the rest: `yggdrasil targets` lists
+it, `build`, `run`, `parity`, `trace-check` and `contract` all reach it
+through the one data path, and `go build ./cmd/kl` plus the feed file are
+its two `build` steps. What is peculiar about it is **declared on the
+entry** rather than matched on its name in Go:
+
+| fact | value | what reads it |
+| --- | --- | --- |
+| `program_file` | `{outdir}/_klvm_feed.kl` | the run feeds this file to stdin before anything else (`programFileFor`, `openRunStdin`) |
+| `stdin` | `appended-to-program` | `trace-check` refuses a fixture stdin by name; the parity gate skips such a target when `--stdin` is given |
+| `stdout` | `repl-transcript` | the golden is checked by **containment** in the transcript, on `trace-check`'s stdout leg and on every leg of the parity gate |
+| `transcript_error_markers` | `["Recovered in Eval", "Panic:", "goroutine "]` | checked **before** containment by both of those; a transcript carrying one FAILS, naming the marker and the line |
+
+The feed file is written by a named build helper, `{yggdrasil} program-file
+OUTDIR FILE`, because concatenating the kernel, `(shen.initialise)` and the
+user files **in manifest order** is logic and not a command line; the step
+runs in process and is also reachable as `yggdrasil program-file` for
+reproducing it by hand. `TestNoTargetNameIsSpecialCasedInGo` (`trace_test.go`)
+fails if the string `"kl"` reappears in a non-test Go source.
+
+**Containment is not a verdict, and `kl` is red today.** The third fact is
+there because the first two were not enough. `kl` reported
+`yggdrasil-trace-check: OK` and `parity: PASS` on every fixture while every
+boot printed
+
+```
+53 #> shen.initialise
+54 #> Panic: &{22 implementation error in shen.change-pointer-value}
+Recovered in Eval: (shen.initialise)
+Error(goroutine 1 [running]: ...
+```
+
+The VM recovers and runs the next toplevel form, so the fixture's answer
+appears further down the transcript and containment was satisfied — by a
+run whose initialiser had failed. Both readers now check the declared
+markers first and fail naming the marker and the line, so the check says
+what was always true: `(shen.initialise)` panics on this runtime, on every
+fixture. That is recorded, not worked around — `scripts/parity-gate.sh`
+carries one `KNOWN_GAPS` line per fixture on `kl` with that mechanism, and
+the gate FAILS when a probe starts passing, which is when they come out.
+`metaeval` fails a second time over: the eval-capable slice calls `eval` at
+run time and the VM answers `Panic: &{22 package shen does not exist.}`.
+Fixing either is shen-go's, not Yggdrasil's; what belongs here is that the
+tool stopped reporting it as a pass.
+
+What `kl` is good for is unchanged, and is why it was worth keeping: the
+claim is about the KL the shake writes, and `cmd/kl` executes that KL
+verbatim with no backend in between, so it is the fallback that keeps the
+check runnable when a stage-2 builder is not. It is still one builder's
+compiled output and one builder's interpreter from the same repository —
+"two runtimes" is two ways of running one port's code, not two ports — and
+the table above is where the difference is now written down instead of
+being implied.
 
 **The fallback is not hypothetical.** shen-go commit `5edf47e` ("Native kernel hot
 paths") made `cmd/yggdrasil-build` panic in `shen.change-pointer-value`
@@ -669,11 +716,15 @@ are deliberately at different layers:
 
 There is a fourth case where no evidence is obtainable at all, and it is a
 named **skip**, never a pass: shen-go's `cmd/kl` reads its program from
-stdin and takes no file argument, so the `kl` runner has to append a
-fixture's `.stdin` bytes after the KL forms, the VM eats them as further
-toplevel forms, and the program reads EOF. `trace-check --target kl` on a
-fixture with stdin prints
-`yggdrasil-trace-check: SKIP kl-runner-cannot-deliver-stdin` and exits 3.
+stdin and takes no file argument, so the run appends a fixture's `.stdin`
+bytes after the KL forms, the VM eats them as further toplevel forms, and
+the program reads EOF. That is exactly what `kl`'s entry declares as
+`stdin: appended-to-program`, and `evidencePossible` reads the **fact**
+rather than the target's name: `trace-check` on a fixture with stdin, for
+any target declaring that value, prints
+`yggdrasil-trace-check: SKIP stdin-appended-to-program` and exits 3. A
+second runtime with the same property is refused the day its entry says so,
+with no edit to `trace.go`; deleting the fact deletes the skip.
 
 ### Against stage 4
 
@@ -952,21 +1003,30 @@ cannot drift apart.
      reads them, not because a rule says tables are special; the
      external-symbols `put` is not a `set` and so is never prunable anyway.
    - **every other target** declares no `port_reads` at all and inherits
-     the `_default` block, which holds one conservative superset: `go`'s
-     five plus every global the kernel's own defuns read in the full boot
-     (`readsIn` over the unshaken kernel, intersected with what the
-     initialiser writes) — 35 entries, `port_reads_checked_by: none`.
-     Against that list only `shen.*call*` and `shen.*system*` are ever dead,
-     so pruning is nearly a no-op until someone reads those runtimes. A
-     `shake` with no `--target` uses the union of every target's *effective*
-     list, which is that same superset.
+     the `_default` block, whose value is the literal string `unknown`
+     (hickey-14). `--prune-init --target T` on such a target is refused by
+     name, and so is a `shake` with no `--target` while any target is
+     unknown: the union it would use is over the targets that *have*
+     declared a list — today `go`'s five — so it is sound for those and
+     for no one else. Both refusals name the targets the union is over and
+     the targets it says nothing about; `--prune-init-unverified` prunes
+     against that union anyway, with the same two halves as a `WARN`.
 
-     The superset is stated once. It used to be pasted byte-for-byte into
-     twelve target entries, which made one heuristic look like twelve
-     independent measurements; a target that has declared nothing now looks
-     like a target that has declared nothing. `yggdrasil.shen` keeps its own
-     copy for a direct host invocation with no Go driver to push a list in,
-     and `TestPortReadsDefaultMatchesShen` fails if the two diverge.
+     `_default` used to hold a conservative superset instead: `go`'s five
+     plus every global the kernel's own defuns read in the full boot
+     (`readsIn` over the unshaken kernel, intersected with what the
+     initialiser writes), 35 entries, `port_reads_checked_by: none`.
+     Against that list only `shen.*call*` and `shen.*system*` were ever
+     dead, so pruning was nearly a no-op on any target but `go` — and, more
+     to the point, every unmeasured target resolved to a list of globals
+     indistinguishable downstream from a measured one. The superset had
+     already been collapsed from twelve pasted copies to one; collapsing it
+     further, to the word `unknown`, is the same repair carried to its
+     end. `yggdrasil.shen` keeps its own copy of the union of the declared
+     lists, for a direct host invocation with no Go driver to push a list
+     in, and `TestPortReadsDefaultMatchesShen` fails if the two diverge —
+     it is no longer a conservative superset for an unmeasured port, and
+     its comment in `yggdrasil.shen` says so.
 
    **Measured** when this stage landed, `--prune-init --target go`, over
    the sixteen fixtures then in `tests/` that shake (init-order-bad is
@@ -1011,14 +1071,30 @@ cannot drift apart.
 
    The CLI no longer leaves that to a gate. `wrapShakeExpr` in `prune.go`
    **refuses** `--prune-init --target T` outright when `T`'s `port_reads`
-   is not backed by a named test (`portReadsVerified`), naming the three
-   ways out: shake without `--target` (the union over every builder is
-   sound for any of them), drop the flag, or pass
-   `--prune-init-unverified` to prune against the placeholder anyway and
-   take a warning on stderr. Only `go` passes today; every other target
-   inherits `_default`, whose `port_reads_checked_by` is `none`.
-   `TestPruneInitRefusesUnverifiedTarget` is what fails if that stops
-   being true.
+   is not backed by a named test (`portReadsVerified`), naming the ways
+   out: name a target whose list is checked (`--target go`, the only one
+   today), drop the flag, or pass `--prune-init-unverified` and take a
+   warning on stderr. Every other target inherits `_default`, whose
+   `port_reads` is the literal string `unknown` and whose
+   `port_reads_checked_by` is `none`, so the refusal for those says that
+   nobody has measured that runtime rather than that its list is
+   unchecked -- different claims, and different repairs.
+
+   **A shake with no `--target` is refused on the same grounds**, and this
+   is the case that used to be the recommended way out ("the union over
+   every builder is sound for any of them"). That sentence was true of a
+   union of guesses. The union of the *measurements* is over the targets
+   that have declared a list -- `go` alone, five globals -- and it is
+   smaller, so it prunes **more**; a shake with no `--target` is by
+   definition a slice that may be built for one of the ports it says
+   nothing about. The refusal names both halves -- the targets the union
+   is over, and the targets it does not cover -- and
+   `--prune-init-unverified` proceeds with the same two halves as a
+   `WARN`. `TestPruneInitRefusesUnverifiedTarget`,
+   `TestTargetAgnosticPruneNamesWhatTheUnionIsOver` and
+   `TestPruneRefusalIsOnlyOnPruning` are what fail if any of that stops being
+   true -- the last of them because `facts --target T`, which installs a
+   list and prunes nothing, must never be caught by either refusal.
 
    What is *not* checked is the pruned artifact itself. `trace-check`
    shakes with pruning **off**, so its `initwrite` is the unpruned

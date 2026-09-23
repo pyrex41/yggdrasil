@@ -385,9 +385,12 @@ uncoveredCall(F) :- called(F), kernel(F), !reach(F).
 ```
 
 It must be empty. Taken on Yggdrasil `3c499a1`, shen-go `da55c5d`, host
-shen-cl, 2026-09-22, on four fixtures and two runtimes — the Go artifact
-and shen-go's bare KL VM (`cmd/kl`), the second of which is a special-cased
-runner rather than a `builders.json` target (section 11):
+shen-cl, 2026-09-22, on four fixtures and two targets out of the same
+shen-go checkout — the Go artifact and shen-go's bare KL VM (`cmd/kl`).
+Both are `builders.json` entries: `kl` used to be a runner special-cased
+inside `trace.go`, and what was peculiar about it is declared on its entry
+now (`program_file`, `stdin: appended-to-program`, `stdout:
+repl-transcript` — section 11):
 
 | fixture | reach | called (go) | called (kl) | globals read |
 |---|---|---|---|---|
@@ -396,7 +399,15 @@ runner rather than a `builders.json` target (section 11):
 | stdin-sum | 54 | 38 | skipped | 4 |
 | prolog | 66 | 41 | 43 | 5 |
 
-The two runtimes do **not** agree name for name, and the disagreement is
+The `kl` column is a coverage measurement and **not** a pass: every one of
+those runs panicked in `(shen.initialise)` before reaching the program, and
+the VM recovered and carried on. `trace-check --target kl` reported `OK` over
+that for as long as the golden was compared by containment alone; it now
+fails with `stdout=transcript-error`, naming the marker and the line, because
+the target declares `transcript_error_markers` and they are checked first.
+The numbers above still describe what those runs entered.
+
+The two do **not** agree name for name, and the disagreement is
 informative rather than alarming. `go` records `<-vector` and `vector->`
 on `fib` and `partial` that `kl` does not; `kl` records `shen.pvar?` and
 `thaw` on `prolog` that `go` does not. All four are entries in shen-go's
@@ -410,7 +421,10 @@ compiler. `analysis-rules.md` has the per-name table. Containment holds on
 both readings, which is the check doing its job across a real runtime
 difference. `stdin-sum` on `kl` is a named skip, not a pass: shen-go's
 `cmd/kl` reads its program from stdin and cannot also be fed a fixture's
-input.
+input. The skip is driven by the declared fact rather than by the target's
+name — `stdin: appended-to-program` on the entry, `SKIP
+stdin-appended-to-program` on the sentinel line — so a second runtime with
+the same property is refused the day its entry says so.
 
 The gap between reach and called is the static over-approximation made
 visible: on the go artifact, sixteen to twenty-five kept functions per
@@ -435,8 +449,10 @@ so a trace of a run that produced the wrong answer is not counted as
 evidence; and the fact writer declares its row counts in
 `FactsDir/trace.meta`, so a `called.facts` that is a strict prefix of the
 run is caught by the host half alone. A case where no evidence can be
-obtained at all — `--target kl` on a fixture with stdin, which shen-go's
-`cmd/kl` cannot be fed separately — is a named skip, not a pass.
+obtained at all — a fixture with stdin on a target that declares `stdin:
+appended-to-program`, which is `kl`, since shen-go's `cmd/kl` cannot be fed
+its program and the fixture's input on one descriptor — is a named skip,
+not a pass.
 
 It is also the floor of the port contract in section 11, because it is
 identical in form on every target.
@@ -752,12 +768,12 @@ except the two runtime-trace rows, whose numbers were taken on this branch on
 | The shake's output is byte-identical across the eight ports for one shake; it is *not* byte-identical across versions of Yggdrasil, and the D8 ordering change is where that was given up | checked for the port half, `once, by hand` for the version half | The port half is what the tool guarantees and what `yggdrasil parity` exercises. The version half was a self-imposed constraint, and stages 1 to 3 each verified it by hand against the previous binary — until D8 (`9084812`), which deleted the duplicate depth-first traversal that existed only to keep those bytes still, and moved exactly one line of `kernel.kl` (the synthesised `shen.initialise`, whose lambda-table literal is a permutation of the same entries) on the eval-free fixtures. Nothing re-runs a cross-version byte comparison today. What *is* guarded is the property that replaced it: `TestFootprintOrderIsKernelLoadOrder` (`footprint_test.go`) fails if the footprint's order is not kernel load order, on every fixture that shakes. The manifests were never byte-identical either — stage 2 added `init-order=`, stage 3 `computed-names=`, stage 4 `pruned-init=`, and the manifest version has since been bumped to 4; the honest claim is that each stage changed them by exactly the lines it declared | `go test with a host` for the order property; `once, by hand, at 9084812` for the byte comparison | 6, 7, 8, 9 |
 | The footprint is minimal for the rule set | checked, and qualified below | `TestFootprintEnginesAgree` (`footprint_test.go`) on every fixture that shakes: the worklist, the Warshall closure and the rules agree, so nothing reachable is dropped and nothing unreachable is kept, *relative to the rules' notion of an edge*. The Warshall leg is skipped above 150 nodes and says so | `go test with a host` | 3, 6 |
 | No toplevel form reads a global before it is written | checked, with an over-approximated write side | the init-order rules, on the final form sequence, refuse the shake on violation; `initorder_test.go` (`TestInitOrderBadIsRefused`, `TestInitOrderLaterWriteStillRefused`, `TestInitOrderOKShakesAndRecords` and the `checked-weak` fixtures) fails when they stop doing so, and `TestAnalysisOracleMatchesShake` diffs `readBeforeWrite` and `weakRead` across the engines like any other relation. The weakness is on the **write** side and is deliberate: a form that *calls* a function that *might* write `V` counts as writing `V`, whether or not that call runs. A read discharged only that way — or by a same-form write, or one inside a `freeze` the form thaws — records `init-order=checked-weak` rather than `checked`, which is how the manifest says which kind of answer this was | `go test with a host`, and `CI on every commit` for the rule-level diff | 7 |
-| Every function actually entered on a run was in the footprint | evidence, and now falsifiable | the woven trace and the containment query, on four fixtures and two runtimes (`TestTraceCheckFixtures`, `trace_test.go`). Still `evidence`, because one run exercises one path — but no longer a query that could not have failed. In the default mode it could not: on a port whose artifact *is* the slice, a call outside `reach` is a name the artifact does not contain, so it is a crash and not a record, and `trace-check` prints that caveat on its own report line. `trace-check --full` traces the **full** program and checks its **program phase** against the slice's `reach`; there the name resolves and the check can fail. `TestTraceCheckFullContains` fails if `tests/fib.shen` ever leaves the slice's reach in the program phase (and if the full artifact's boot stops entering anything outside it, which would mean the build is not the full program); `TestTraceCheckFullUncovered` fails if `tests/computed-call.shen`, which reaches `shen.printF` through `(intern "shen.printF")`, stops being caught; `TestTraceCheckSliceCannotSeeIt` is the control, asserting that the shaken artifact cannot produce the same evidence. The run also establishes that it finished (an end-of-run record), that it produced the fixture's committed answer, and that the facts were not truncated | `go test with a host` | 8, 8a |
+| Every function actually entered on a run was in the footprint | evidence, and now falsifiable | the woven trace and the containment query, on four fixtures and two targets (`TestTraceCheckFixtures`, `trace_test.go`). Still `evidence`, because one run exercises one path — but no longer a query that could not have failed. In the default mode it could not: on a port whose artifact *is* the slice, a call outside `reach` is a name the artifact does not contain, so it is a crash and not a record, and `trace-check` prints that caveat on its own report line. `trace-check --full` traces the **full** program and checks its **program phase** against the slice's `reach`; there the name resolves and the check can fail. `TestTraceCheckFullContains` fails if `tests/fib.shen` ever leaves the slice's reach in the program phase (and if the full artifact's boot stops entering anything outside it, which would mean the build is not the full program); `TestTraceCheckFullUncovered` fails if `tests/computed-call.shen`, which reaches `shen.printF` through `(intern "shen.printF")`, stops being caught; `TestTraceCheckSliceCannotSeeIt` is the control, asserting that the shaken artifact cannot produce the same evidence. The run also establishes that it finished (an end-of-run record), that it produced the fixture's committed answer, and that the facts were not truncated | `go test with a host` | 8, 8a |
 | Pruning the initialiser does not remove a `(set V _)` the shipped artifact still reads | evidence | `trace-check --prune-init` traces the artifact as `--prune-init` would ship it and fails naming any global the run read whose `(set V _)` the shake deleted and the target's `port_reads` does not declare. The pruned set is diffed off two real artifacts, not declared. `TestTraceCheckPrunedFixtures` (`fib` on `go`: 28 globals pruned, 0 of them read) fails if the positive case stops holding or if pruning stops pruning; `TestTraceCheckPrunedReadFails` fails if `tests/computed-read.shen` stops being caught, and asserts in the same test that the *default* check still reports `OK` on it — that difference is torvalds-12. Evidence, not checked: one run, one path, one target | `go test with a host` | 8b |
 | The backend compiled the same kept functions the same way in the full and shaken builds | evidence, and only for compositional backends | the KL-level graph recovered from the generated Go with `go/ast` (`TestScipCheckFixtures`, `scip_test.go`), asserted **by name**: any residue at all fails. On `tests/fib.shen --target go` the accounted subtractions are the port's declared `special_forms` (`do`, `not` applied here, each cited to a line of shen-go), the user's own defuns (`fib`), and the synthesised `shen.initialise` — `footprint=53 reachable=53 accounted=2`, `full defuns=688 reachable=545`. `tests/interpreter.shen` still fails with `kl-missing-in-full fix` / `shen.fix-help`, an open finding printed by name rather than subtracted. There is no Go-level SCIP comparison any more; that path compared four generated driver functions and was deleted | `go test with a host` | 9 |
 | The shaken artifact computes what the full program computes | evidence | the parity gate against goldens, across targets, boots and passes (`.github/workflows/parity-gate.yml`) | `CI on every commit` for the targets the gate builds; `go test with a host` for the fixtures' goldens | 10 |
 | No function name is computed at runtime | assumed, reported | `computed-names=` in the manifest; the shake warns when it is not `none`. Nothing refuses a program on it — the manifest makes the hypothesis visible, and that is all. `TestComputedNameWarnsAndRecords` / `TestComputedNameNoneIsRecorded` check that the reporting works, not that the hypothesis holds | `go test with a host` for the reporting; the hypothesis itself is re-established by nobody | 7 |
-| The port's self-description is truthful | assumed, reported; `verified` only where a named test exists | each `builders.json` fact carries a `_source` and a `_checked_by`, and `yggdrasil contract --target P` prints both. Exactly two rows read `verified` anywhere today, both on `go`: `port_reads` (`TestPruneInitGoArtifactStillRuns`) and `native_overrides` (`TestNativeOverridesMatchKernelFast`, which parses `InstallKernelFast` in the sibling checkout and compares both ways). `go`'s `special_forms` reads `declared` because its `special_forms_checked_by` is `none`, which is the literal truth about the declaration — though `TestGoBuilderDeclaresSpecialForms` (`scip_test.go`) does pin the seven names and require the source to cite a line of shen-go for each, and `TestSpecialFormsAudit` covers the residue accounting. Naming one of them in `builders.json` would make the row `verified`; nobody has. `port_writes`, `native_deps`, `call_style` and `dispatch` are `unknown` on every target, which is the report saying nobody declared them, not that the port has none. Twelve targets declare no `port_reads` of their own and inherit `_default`, whose `_checked_by` is `none` | `go test with a host` for the two verified rows; the rest is re-established by nobody | 11 |
+| The port's self-description is truthful | assumed, reported; `verified` only where a named test exists | each `builders.json` fact carries a `_source` and a `_checked_by`, and `yggdrasil contract --target P` prints both. Five rows read `verified` today: on `go`, `port_reads` (`TestPruneInitGoArtifactStillRuns`) and `native_overrides` (`TestNativeOverridesMatchKernelFast`, which parses `InstallKernelFast` in the sibling checkout and compares both ways); on `kl`, its three run facts `stdin`, `stdout` and `transcript_error_markers`, each naming a test that fails when the declaration drifts. `TestCheckedByNamesSomethingThatExists` (`prune_test.go`) is what keeps the word honest: every `_checked_by` that is not `none` must name a Test function that exists or a file that exists, so a sentence cannot inflate a row. `go`'s `special_forms` reads `declared` because its `special_forms_checked_by` is `none`, which is the literal truth about the declaration — though `TestGoBuilderDeclaresSpecialForms` (`scip_test.go`) does pin the seven names and require the source to cite a line of shen-go for each, and `TestSpecialFormsAudit` covers the residue accounting. Naming one of them in `builders.json` would make the row `verified`; nobody has. `port_writes`, `native_deps`, `call_style` and `dispatch` are `unknown` on every target, which is the report saying nobody declared them, not that the port has none. Thirteen targets declare no `port_reads` of their own and inherit `_default`, whose value is now the literal string `unknown` rather than a 35-name conservative guess -- so those rows read `unknown` too, and `--prune-init` refuses them by name (`port-contract.md`, "`unknown` is a value"). Every target also declares `stdin` and `stdout` by inheriting `_default`'s ordinary run contract, and those read `declared`, not `verified`: `_default`'s `_checked_by` says `none: …` and explains that the parity gate would catch a port that broke them but that CI gates three targets and skips any whose toolchain is absent. `kl` is the only target to state the other value of either, and it must then also declare `transcript_error_markers` -- containment over a transcript is satisfied by a run whose boot panicked, which is what `kl` does today | `go test with a host` for the five verified rows; the rest is re-established by nobody | 11 |
 | The backend compiles KL correctly | assumed | the port's own kernel test suite; the same assumption for the full and the shaken program | not re-established here at all | 2, 9 |
 
 The last row is the one Bruno Deferrari raised on
@@ -771,21 +787,26 @@ to remove that core but to make its contents a list: the rows marked
 
 Three gaps in the table above are known and deliberately left open rather
 than quietly fixed: `native_deps` and `dispatch` are proposed keys with no
-data and no consumer (`port-contract.md`); `kl` is a special-cased runner
-counted in places as a runtime (`analysis-rules.md`, "Targets, and a port
-caveat"); and shen-go's natives are installed *after* `shen.initialise`,
-which is the port's to change, not Yggdrasil's, and which is why
-`yggdrasil lower` refuses on every target that exists today (`lowering.md`,
-"The gate, and why it refuses everywhere today").
+data and no consumer (`port-contract.md`); thirteen of the fourteen targets'
+`port_reads` is `unknown` -- the honest value, and one nobody has replaced
+with a measurement (`port-contract.md`, "`unknown` is a value"); and
+shen-go's natives are installed *after* `shen.initialise`, which is the
+port's to change, not Yggdrasil's, and which is why `yggdrasil lower`
+refuses on every target that exists today (`lowering.md`, "The gate, and
+why it refuses everywhere today").
 
-A fourth was closed here rather than moved: nothing used to empirically
-check a **pruned** artifact beyond one `fib` stdout comparison on `go`,
-because `trace-check` shook with pruning off. `trace-check --prune-init` is
-that check and the row above is its claim. What it cost is worth recording:
-it needed the weaver to instrument a **computed** `(value E)` as well as a
-literal `(value V)`, because the read the pruner can get wrong is by
-definition the read no syntactic analysis can see, and until then the one
-instrument that could have shown it did not record it.
+Two gaps that were on this list are closed. `kl` was a special-cased runner
+counted in places as a runtime, and is a `builders.json` target now
+(`analysis-rules.md`, "Targets, and a port caveat"); its boot panics on
+shen-go's `cmd/kl` today, and the transcript error markers it declares make
+that a recorded failure rather than a green row. And nothing used to
+empirically check a **pruned** artifact beyond one `fib` stdout comparison
+on `go`, because `trace-check` shook with pruning off. `trace-check
+--prune-init` is that check and the row above is its claim. What it cost is
+worth recording: it needed the weaver to instrument a **computed** `(value
+E)` as well as a literal `(value V)`, because the read the pruner can get
+wrong is by definition the read no syntactic analysis can see, and until
+then the one instrument that could have shown it did not record it.
 
 Two honest limits on both new checks. They are `evidence` and not `checked`:
 each observes the one run it was given, on one target. And both negative
