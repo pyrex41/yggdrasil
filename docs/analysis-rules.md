@@ -250,19 +250,30 @@ being measured is the thing the shake actually emits.
 | | |
 |---|---|
 | pointcut | every `defun` entry, in `kernel.kl` and in every user file |
-| pointcut | every `(value V)` whose `V` is a literal symbol |
+| pointcut | every `(value V)`, literal symbol or not |
 | advice | append one record to a trace stream |
 | join model | around for the read (record, then perform it), before for the entry |
 
 ```
 (defun F Args Body)   ->  (defun F Args (do (ygg.traced F) Body'))
-(value V)             ->  (ygg.traced-value V)
+(value V)             ->  (ygg.traced-value V)          V a literal symbol
+(value E)             ->  (ygg.traced-value E')         anything else
 ```
 
-`ygg.traced-value` records `V` and then returns `(value V)`, so the advice
-observes the read without replacing it. A `(value X)` whose `X` is a KL
-variable is left alone: it names a global only at run time, and that case is
-exactly what `computedName` already reports.
+`ygg.traced-value` records its argument and then returns `(value ...)` of it,
+so the advice observes the read without replacing it. It is a `defun`, so the
+argument is evaluated exactly once: `(value (intern "shen.*tc*"))` interns
+once and records the symbol that came out.
+
+The second clause is what gives the read half of the trace teeth, and it was
+not always there. A `(value X)` whose `X` is a KL variable — the eta-wrapper
+`trim-top` builds for the `value` primitive is literally `(lambda X1 (value
+X1))`, and a user program can write `(value (intern "shen.*tc*"))` — names a
+global only at run time. That is exactly the read no syntactic analysis can
+see: no symbol for `rawsym` to keep alive, no `readsIn` row, no `reads` row,
+so it is exactly the read stage 4 may have deleted the initialiser for.
+Leaving it uninstrumented meant the one instrument that could have shown it
+never recorded it. See "Against stage 4" below.
 
 Weaving runs **after** the footprint, `rewrite-f-error`, `trim-top` and the
 init-order check, and immediately before anything is written, so it cannot
@@ -294,10 +305,27 @@ itself, which is where the great majority of them happen.
 
 The record format is a tag byte, a tab, the name, a tab, a phase byte, a
 newline: `f<TAB>NAME<TAB>b` for an entry, `v<TAB>NAME<TAB>p` for a read. The
-phase is `b` while `shen.initialise` is running and `p` afterwards — the flip
-is the last action of the woven initialiser body — because without it a `fib`
-run reads as 49,076 records of which 20,000 are `shen.fillvector` out of the
-property vector's initialiser, and "the program called X" is unanswerable.
+phase is `b` for **initialisation** and `p` for the **user's program proper**,
+because without the split a `fib` run reads as 49,076 records of which 20,000
+are `shen.fillvector` out of the property vector's initialiser, and "the
+program called X" is unanswerable.
+
+The boundary is the user program's **first toplevel form that is not a
+definition**: `ygg.trace-phase-flip` weaves `(set ygg.*trace-phase* 112)` in
+front of it, and appends it after the last form of the last file when a
+program has no such form at all. It used to be the last action of the woven
+initialiser body, and on a *shaken* artifact the two points coincide. On an
+unshaken one they do not, and the difference is not small. Installing the
+user's own defuns is the port's job, and a port with the whole kernel behind
+it does it through the kernel's own arity table — `shen.store-arity`,
+`shen.execute-store-arity`, `shen.update-lambdatable`, `shen.lambda-function`,
+`shen.assoc->`, `append`. On `trace-check --full tests/fib.shen --target go`
+that was the first 424 records of the "program" phase, every one of them
+outside the slice's `reach` and every one of them initialisation. A
+containment check reading those as the program leaving its footprint fails
+for the wrong reason, which is one step better than a check that cannot fail
+and no more. `TestPhaseBoundaryIsTheFirstProgramForm` (`trace_test.go`) pins
+where the flip is woven.
 The run's last record is `e<TAB>end`, written by `ygg.trace-end` from an
 extra toplevel form appended after the last form of the last user file; it is
 what distinguishes a finished run from a trace cut short (see "The trace has
@@ -357,6 +385,13 @@ nothing outside its footprint, and that every global it read is one that
 *some* kept defun body or toplevel form writes somewhere. That is evidence
 for soundness obligation 1, **not a proof**: a run exercises one path, and
 a different input can enter a function this one did not.
+
+In the default mode it is weaker than that again, and this is hickey-1: on a
+port whose artifact *is* the slice, `uncoveredCall` is empty **by
+construction**, because a call outside `reach` is a name the artifact does
+not contain and therefore an undefined-function crash rather than a record.
+`trace-check --full` is the mode in which that containment can fail; see the
+section of its own below. The report line says which of the two it just ran.
 
 `uncoveredRead` is weaker than its name suggests, and weaker than "read no
 global nothing writes". A read is covered if any kept defun body contains
@@ -461,6 +496,92 @@ dominated by machinery the shipped artifact does not contain. `shakeExpr` in
 `trace.go` is the one place that chooses a Shen entry point, and it returns
 the error there rather than letting one flag quietly win.
 
+That refusal still stands. `yggdrasil trace-check --full` nonetheless wants
+the full program woven, and gets it through a **named mode of its own**
+(`shakeOpts.traceFull`, `yggdrasil.shake-full-traced`) rather than by making
+the two flags compose. The question it asks is the one the paragraph above
+says nobody asked for — and it is different: not "A against A's footprint"
+but **A's program phase against A\*'s `reach`**. `TestShakeExprFullTraced`
+fails if the guard is deleted instead of stood beside, and if the mode can be
+reached by piling the two flags on.
+
+### `trace-check --prune-init`: the empirical half of stage 4
+
+```
+prunedRead(V) :- readGlobal(V), pruned(V), !portRead(V).
+```
+
+`yggdrasil trace-check PROG OUTDIR --target T --prune-init` shakes the
+artifact the way `--prune-init` would ship it, traces *that*, and fails
+naming any global the run read whose toplevel `(set V _)` the shake deleted
+and `T`'s `port_reads` does not declare as a native read.
+`--prune-init-unverified` is accepted with the same loud `WARN` as on
+`shake`, for a target whose `port_reads` is the inherited placeholder.
+
+`pruned` is **read off two artifacts, not declared**: the same program is
+shaken twice, once with pruning into `OUTDIR` and once without into
+`OUTDIR/_unpruned`, and the globals the unpruned initialiser writes with a
+`(set V _)` and the pruned one does not are the pruned ones. Anything the two
+builds share — the weaver's own forms included — cancels in the difference,
+which is what makes it safe to take from the emitted text. The manifest's
+`pruned-init=N` is a count; this
+needs the names, and deriving them from the artifacts means nothing has to be
+trusted to say what was dropped. `trace.go:initialiserSets` and
+`prunedGlobals` do it; `prune_test.go` uses the same parse, so the two
+readers of `kernel.kl` cannot drift.
+
+`--target kl` borrows `go`'s `port_reads`: `kl` is not a builder, it is
+shen-go's bare KLambda VM, which is the same Go runtime the `go` builder
+links (`prunePortReadsTarget`).
+
+`--prune-init` and `--full` are refused together: a full build prunes
+nothing, so there would be no pruned initialiser to check.
+
+Tests: `TestPrunedReadViolations` and `TestPrunedGlobalsIsTheDifference` pin
+the algebra with no host; `TestTraceCheckPrunedFixtures` is the positive case
+on a real pruned `go` artifact (`fib` prunes 28 globals and reads none of
+them); `TestTraceCheckPrunedReadFails` is the negative one.
+
+### `trace-check --full`: the containment check that can fail
+
+```
+uncoveredCall(F) :- called_program(F), kernel(F), !reach_slice(F).
+```
+
+`yggdrasil trace-check PROG OUTDIR --target T --full` shakes the program
+twice: once shaken and untraced, whose `kernel.kl` defun list **is** `reach`
+(the identity `TestAnalysisOracleMatchesShake` pins), and once full and
+woven. It builds and runs the full artifact, and checks the **program
+phase** of that run against the slice's `reach`.
+
+This is the check "What it checks, and what it cannot" says the slice cannot
+give. On an artifact that *is* the slice, a call to a kernel defun outside
+`reach` is a name the artifact does not contain: an undefined-function crash,
+not a record, so `uncoveredCall` is empty by construction. The full artifact
+holds every kernel defun and the untrimmed lambda-table literal, so the name
+resolves, the call is recorded, and the check fails.
+
+`called.facts` in this mode is the program phase **plus `shen.initialise`**,
+and not the boot phase. A full artifact's boot *is* the eval-capable
+initialiser the shake threw away, so feeding it in would report the whole of
+stage 1 as uncovered; it is reported separately instead
+(`boot-phase=` on the report line) and never failed. `shen.initialise` is
+added back because the host half refuses a relation that does not contain it
+— its absence is how a truncated `called.facts` is caught — the run did enter
+it, and it is not a `kernel` row, so it cannot affect `uncoveredCall` either
+way.
+
+Tests: `TestOutsideReach` pins the predicate with no host;
+`TestTraceCheckFullContains` is the positive case (`fib`: `reach=53`,
+program phase 9 names, 0 outside, 53 boot-phase names outside);
+`TestTraceCheckFullUncovered` is the negative one, on
+`tests/computed-call.shen`, which resolves `shen.printF` through `(intern
+"shen.printF")` and the kernel's lambda table — `yggdrasil-trace-check: FAIL
+uncovered=shen.printF`. `TestTraceCheckSliceCannotSeeIt` is its control: the
+same program on the *shaken* artifact cannot even produce a run (`fn:
+shen.printF is undefined`), which is the defect `--full` exists to fix,
+asserted rather than described.
+
 ### Targets, and a port caveat
 
 `--target T` takes any target in `builders.json`, plus one that is not in
@@ -563,11 +684,25 @@ occurrence in the user KL); `readGlobal` is the *empirical* counterpart. A
 global some run reads is live whatever the syntax concluded, so intersecting
 `readglobal.facts` with `deadInit` answers "did this run read anything the
 pruner was about to drop?" — a check on stage 4 rather than on stage 1.
-`trace-check` does not perform that intersection today: it shakes untraced
-facts with pruning off, so its `initwrite` is the unpruned `writes` and
-`uncoveredRead` cannot see a pruned global. Doing it needs one more
-comparison, not new facts, which is why the relation is written in stage 4's
-own shape.
+
+`trace-check --prune-init` now performs it, and the section above gives the
+rule. The default mode still cannot: it shakes with pruning off, so its
+`initwrite` is the *unpruned* `writes` and `uncoveredRead` looks at a global
+whose initialiser the shipped artifact no longer has and finds it written.
+That is not a subtlety, it is the finding, and it is what the two halves of
+`TestTraceCheckPrunedReadFails` assert: on `tests/computed-read.shen` the
+default check reports `OK` and the `--prune-init` check reports
+`FAIL pruned-read=shen.*tc*`, on the same program, the same target and the
+same golden-matching stdout.
+
+That fixture is worth reading for why the check needs the weaver's
+computed-read clause. `shen.*tc*` is named by a string, so `rawsym` cannot
+keep it alive and `--prune-init --target go` deletes `(set shen.*tc* false)`;
+the program writes the global itself before reading it, so the **run** is
+correct and its stdout matches `tests/computed-read.expected`. Nothing but
+the trace can see that the artifact reads a global its own initialisation no
+longer establishes — a stdout comparison certainly cannot, which is what the
+one `fib` comparison stage 4 had been resting on amounted to.
 
 Stage 4's `writes` is also where `initwrite` comes from — `initwrite(V) :-
 writes(_, V)` in `analysis.dl`, derived rather than dumped, so the two
@@ -765,8 +900,14 @@ cannot drift apart.
    variable, so it records `computed-names=top`, which is exactly the
    classification that keeps it out of the init-order check.
    `footprint_test.go` is the host-gated test. Both counts are as of the
-   commit that landed each; at `3c499a1` the fixture set is 20, and
-   `computed-name` and `init-order-letvar` are still the only two.
+   commit that landed each; at `3c499a1` the fixture set was 20, and
+   `computed-name` and `init-order-letvar` were the only two. The set is 22
+   now, and the two additions both trigger it on purpose:
+   `tests/computed-call.shen` and `tests/computed-read.shen` are the negative
+   cases for `trace-check --full` and `trace-check --prune-init`, and a
+   program that violates either claim is necessarily one that violates this
+   hypothesis — which is the honest limit on both of those checks, recorded
+   in the verification guide's section 12 rather than left implicit.
 4. **Dead initialisation.** — **done.**
    `readsIn`, `reads`, `writes` and `portReads` join the fact dump (21
    relations at the time; 29 at `3c499a1`); `liveGlobal`/`deadInit` join

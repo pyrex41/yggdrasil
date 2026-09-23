@@ -30,9 +30,10 @@ env:
   # Tests that legitimately skip when no Shen host is present.  Measured on
   # this branch with
   #   unset YGGDRASIL_HOST; go test ./... -count=1 -v 2>&1 | grep -c '^--- SKIP'
-  # in a checkout with no sibling shen-go, which is what this job has -> 33.
-  # (It was 21 before the eight fix branches merged; each new entry below is
-  # marked with the branch that brought it.)  The thirty-three are:
+  # in a checkout with no sibling shen-go, which is what this job has -> 39.
+  # (It was 21 before the eight fix branches merged and 33 after; each new
+  # entry below is marked with the branch that brought it.)  The thirty-nine
+  # are:
   #   analysis_test.go  TestAnalysisOracleMatchesShake TestFactsDoesNotChangeTheShake
   #   check_test.go     TestCheckTypedOK TestCheckTypedBadFailsButShakes
   #                     TestCheckUnsignedDefineFails
@@ -60,6 +61,18 @@ env:
   #   trace_test.go     TestTraceIsOptional TestTraceCheckRules TestTraceCheckFixtures
   #                     TestTraceCheckComplete (T2) TestTraceCheckTruncated (T2)
   #                     TestTraceCheckPrefix (T2)
+  #                     TestTraceCheckPrunedFixtures (trace-full)
+  #                     TestTraceCheckPrunedReadFails (trace-full)
+  #                     TestTraceCheckFullContains (trace-full)
+  #                     TestTraceCheckFullUncovered (trace-full)
+  #                     TestTraceCheckSliceCannotSeeIt (trace-full)
+  #                     TestPhaseBoundaryIsTheFirstProgramForm (trace-full)
+  #                     -- the six added by fix/trace-full: `trace-check
+  #                     --prune-init` and `trace-check --full`, their negative
+  #                     cases and its control, and the woven phase boundary.
+  #                     All six boot a stage-1 host; the first five also need
+  #                     the `go` stage-2 builder, which host-test makes and
+  #                     this job does not.
   #   why_test.go       TestWhyPartialFixtures
   # This is an EXACT count on ubuntu-latest, not a ceiling: a ceiling only
   # catches a test that becomes host-gated, and lets a test that stops being
@@ -69,7 +82,7 @@ env:
   # each add a host-gated test therefore needs the count re-measured and the
   # enumeration above re-written; that is the intended cost, and it is what
   # this integration paid.)
-  NO_HOST_EXPECTED_SKIPS: "33"
+  NO_HOST_EXPECTED_SKIPS: "39"
   # macos-latest and windows-latest may skip MORE than that, for reasons that
   # have nothing to do with a host: portable_test.go:138 skips without python3
   # and portable_test.go:382 skips without node.  Both are present on the

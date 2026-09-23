@@ -35,32 +35,18 @@ func withPrune(target string) shakeOpts {
 	return shakeOpts{pruneInit: true, target: target}
 }
 
-var setForm = regexp.MustCompile(`\(set ([^ ()]+) `)
-
-// initialiserSets returns the globals the synthesised initialiser sets, in
-// emission order. write-kl-file puts each toplevel form on its own line, so the
-// initialiser is one line.
-func initialiserSets(t *testing.T, dir string) []string {
+// initSets is trace.go's initialiserSets with the test's own failure
+// reporting. The parse lives in trace.go because `trace-check --prune-init`
+// computes the pruned set by diffing two of these lists at run time, and a
+// second reader that could disagree about what a (set V _) is would be a
+// second definition of "pruned".
+func initSets(t *testing.T, dir string) []string {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join(dir, "kernel.kl"))
+	out, err := initialiserSets(filepath.Join(dir, "kernel.kl"))
 	if err != nil {
-		t.Fatalf("reading kernel.kl: %v", err)
+		t.Fatal(err)
 	}
-	for _, line := range strings.Split(string(b), "\n") {
-		if !strings.HasPrefix(line, "(defun shen.initialise ") {
-			continue
-		}
-		var out []string
-		for _, m := range setForm.FindAllStringSubmatch(line, -1) {
-			out = append(out, m[1])
-		}
-		if len(out) == 0 {
-			t.Fatalf("the initialiser sets nothing:\n%s", line)
-		}
-		return out
-	}
-	t.Fatalf("kernel.kl has no shen.initialise")
-	return nil
+	return out
 }
 
 func manifestValue(t *testing.T, dir, key string) string {
@@ -137,7 +123,7 @@ func TestPruneInitDropsOnlyWholeSets(t *testing.T) {
 		t.Fatalf("shake --prune-init: %v", err)
 	}
 
-	before, after := initialiserSets(t, plain), initialiserSets(t, pruned)
+	before, after := initSets(t, plain), initSets(t, pruned)
 	if len(after) >= len(before) {
 		t.Fatalf("--prune-init dropped nothing: %d sets before, %d after", len(before), len(after))
 	}

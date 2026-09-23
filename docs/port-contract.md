@@ -173,15 +173,17 @@ disk:
 
   The trace now carries the phase itself, so this is readable off the
   artifact rather than inferred from shen-go's source: every record's
-  third column is `b` while `shen.initialise` runs and `p` afterwards,
-  and `trace-check` prints `phase: boot=N program=M`. On `fib --target go`
-  that line reads `boot=29 program=9`, and **all 11** of the override
-  entries above are tagged `b`. Not one override is entered in the program
-  phase, which is exactly what `installed_after: shen.initialise`
-  predicts. On `--target kl` the same run reports
-  `phase: DEGENERATE ... every record is tagged boot` -- shen-go's
-  `cmd/kl` never executes the woven flip -- and `trace-check` says so
-  rather than reporting `called-program=0` as a finding.
+  third column is `b` until the user program's first non-definition
+  toplevel form runs and `p` afterwards (on a shaken artifact that point
+  coincides with the end of `shen.initialise`; on a full artifact it comes
+  after the port has installed the user's own defuns), and `trace-check`
+  prints `phase: boot=N program=M`. On `fib --target go` that line reads
+  `boot=29 program=9`, and **all 11** of the override entries above are
+  tagged `b`. Not one override is entered in the program phase, which is
+  exactly what `installed_after: shen.initialise` predicts. On
+  `--target kl` the same run reports `boot=27 program=11`; the earlier
+  `DEGENERATE` reading on that target came from the flip being woven into
+  the initialiser, which shen-go's `cmd/kl` boots without.
 
   What this means for the query below: a name missing from `called` may be
   an override entered only after installation, and a name present may be

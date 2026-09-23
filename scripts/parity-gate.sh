@@ -116,6 +116,21 @@ else
         # so they are not parity material.  (They have no golden either,
         # which would skip them anyway; this says why.)
         case "$name" in init-order-bad) continue ;; esac
+        # The two computed-name fixtures exist to VIOLATE the shake's
+        # hypothesis that every name the artifact can call occurs
+        # syntactically in it -- they are `yggdrasil trace-check` material,
+        # not parity material, and they ship a golden because trace-check
+        # compares the run's stdout against one.
+        #
+        #   computed-call  its SLICE cannot run at all, by construction: it
+        #                  resolves shen.printF through (intern "shen.printF")
+        #                  and the shake does not keep it.  Only the --full
+        #                  artifact runs, which is the whole point.
+        #   computed-read  its slice does run (checked on go), but its parity
+        #                  across the other twelve targets has not been
+        #                  measured, and a gate list is not the place to find
+        #                  out.  `--fixtures computed-read` runs it on demand.
+        case "$name" in computed-call|computed-read) continue ;; esac
         NAMES+=("$name")
     done
 fi

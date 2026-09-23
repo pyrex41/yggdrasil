@@ -2607,42 +2607,101 @@
 (define ygg.trace-user
   Files -> Files  where (not (value ygg.*trace*))
   Files -> (ygg.trace-end-last
-            (map (/. Forms (map (fn ygg.trace-defun) Forms)) Files)))
+            (ygg.trace-phase-flip
+             (map (/. Forms (map (fn ygg.trace-defun) Forms)) Files))))
 
 (define ygg.trace-end-last
   [] -> []
   [Last] -> [(append Last [[ygg.trace-end]])]
   [F | Fs] -> [F | (ygg.trace-end-last Fs)])
 
+\\ THE PHASE BOUNDARY: the user program's first non-defun toplevel form.
+\\
+\\ It used to be the last thing the woven shen.initialise did, and on a
+\\ shaken artifact the two are the same point.  On an UNSHAKEN one they are
+\\ not, and the difference is not small: installing the user's own defuns is
+\\ done by the port, and a port with the whole kernel behind it installs them
+\\ through the kernel's own arity table -- shen.store-arity,
+\\ shen.execute-store-arity, shen.update-lambdatable, shen.lambda-function,
+\\ shen.assoc-> and append.  On `yggdrasil trace-check --full tests/fib.shen
+\\ --target go` that was the first 424 records of the "program" phase, all of
+\\ them outside the slice's reach, and every one of them initialisation.  A
+\\ containment check reading that as the program reaching outside its
+\\ footprint is a check that fails for the wrong reason, which is only one
+\\ step better than a check that cannot fail.
+\\
+\\ So the phase byte means: b = initialisation, which is the kernel's
+\\ initialiser AND the loading of the user's definitions; p = the user's
+\\ program proper, from its first toplevel form that is not a definition.  A
+\\ program that is nothing but definitions never reaches such a form, so the
+\\ flip is appended after the last file's last form instead -- it must
+\\ execute, or the run reads as one whose program phase never started.
+(define ygg.trace-phase-flip
+  Files -> (let R (ygg.tpf-files Files)
+             (if (hd R) (tl R) (ygg.tpf-append-last (tl R)))))
+
+\\ Both helpers return [Flipped? | Rest]: the flip goes in at the first
+\\ non-defun form of the first file that has one, and nowhere else.
+(define ygg.tpf-files
+  [] -> [false]
+  [F | Fs] -> (let R (ygg.tpf-forms F)
+                (if (hd R)
+                    [true (tl R) | Fs]
+                    (let S (ygg.tpf-files Fs)
+                      [(hd S) (tl R) | (tl S)]))))
+
+(define ygg.tpf-forms
+  [] -> [false]
+  [[defun | D] | Fs] -> (let R (ygg.tpf-forms Fs)
+                          [(hd R) [defun | D] | (tl R)])
+  [F | Fs] -> [true [set ygg.*trace-phase* 112] F | Fs])
+
+(define ygg.tpf-append-last
+  [] -> []
+  [Last] -> [(append Last [[set ygg.*trace-phase* 112]])]
+  [F | Fs] -> [F | (ygg.tpf-append-last Fs)])
+
 \\ A user file's toplevel (non-defun) forms get the (value V) rewrite but
 \\ no entry advice: they are not a join point, they are the boot itself.
 \\
-\\ shen.initialise is the phase boundary.  ygg.trace-open runs first (so the
-\\ stream exists before any entry advice, including the initialiser's own)
-\\ and sets the phase to boot; the flip to program is the LAST thing the
-\\ woven body does, through a let so the initialiser's own value is still
-\\ what it returns.  Everything the initialiser does - the 20,000
-\\ shen.fillvector calls among it - is therefore tagged b, and everything
-\\ the user's program does is tagged p.
+\\ shen.initialise OPENS the trace and starts the boot phase: ygg.trace-open
+\\ runs first, so the stream exists before any entry advice, including the
+\\ initialiser's own, and sets the phase to boot.  Everything the initialiser
+\\ does - the 20,000 shen.fillvector calls among it - is therefore tagged b.
+\\ The flip to the program phase is NOT here; it is the first non-defun
+\\ toplevel form of the user's files.  See ygg.trace-phase-flip for why the
+\\ two are not the same point in an unshaken artifact.
 (define ygg.trace-defun
   [defun shen.initialise Args Body]
-   -> (let R (intern "R")
-        [defun shen.initialise Args
-         [do [ygg.trace-open]
-             [do [ygg.traced shen.initialise]
-                 [let R (ygg.trace-values Body)
-                   [do [set ygg.*trace-phase* 112] R]]]]])
+   -> [defun shen.initialise Args
+        [do [ygg.trace-open]
+            [do [ygg.traced shen.initialise]
+                (ygg.trace-values Body)]]]
   [defun F Args Body]
    -> [defun F Args [do [ygg.traced F] (ygg.trace-values Body)]]
   Form -> (ygg.trace-values Form))
 
-\\ (value V) -> (ygg.traced-value V), for a literal symbol V only.  A
-\\ (value X) whose X is a KL variable - the eta-wrapper trim-top builds for
-\\ the `value` primitive is literally (lambda X1 (value X1)) - names a
-\\ global only at run time and is left alone; that case is exactly what
-\\ ygg.cn-global? already reports as a computed name.
+\\ (value V) -> (ygg.traced-value V).  Two clauses, not one:
+\\
+\\   - a literal symbol V is passed through as itself (symbols
+\\     self-evaluate in KL), which is the common case and the one the
+\\     shake's own readsIn/reads extractors can see;
+\\   - anything else - the eta-wrapper trim-top builds for the `value`
+\\     primitive is literally (lambda X1 (value X1)), and a user program can
+\\     write (value (intern "shen.*tc*")) - is woven too, with the
+\\     sub-expression itself traced first.  ygg.traced-value is a DEFUN, so
+\\     its argument is evaluated exactly once: (ygg.traced-value (intern
+\\     "shen.*tc*")) interns once and records the symbol that came out.
+\\
+\\ The second clause is what gives the read half of the trace teeth.  A
+\\ computed global name is precisely the read the shake cannot see - no
+\\ symbol for rawsym to keep alive, no readsIn row, no reads row - so it is
+\\ precisely the read that stage 4 may have pruned the initialiser for, and
+\\ leaving it uninstrumented meant the only artifact that could have shown
+\\ it never recorded it.  See trace.go's prunedReadViolations.
 (define ygg.trace-values
   [value V] -> [ygg.traced-value V]  where (ygg.cn-literal-sym? V)
+  [value V] -> [ygg.traced-value (ygg.trace-values V)]
   [X | Y] -> [(ygg.trace-values X) | (ygg.trace-values Y)]
   X -> X)
 
@@ -2945,6 +3004,29 @@
                     Unset (set ygg.*shake-full* false)
                     Done))
 
+\\ (yggdrasil.shake-full-traced Files Dir): the full program A, WOVEN.
+\\
+\\ It exists for one question, `yggdrasil trace-check --full`, and it is a
+\\ separate entry point rather than a --no-shake that also accepts --trace
+\\ because those two flags still mean what trace.go's shakeExpr says they
+\\ mean and are still refused together.  The question this one answers:
+\\ trace the program with every kernel defun present, so a call the slice
+\\ does NOT contain is recorded instead of crashing, and check the
+\\ program-phase called set against the SLICE's reach.  That check can fail;
+\\ the containment check run against a slice cannot, because there the name
+\\ is not in the artifact at all (see the head of trace.go).
+\\
+\\ The boot phase of a full artifact legitimately enters code outside the
+\\ slice -- the eval-capable initialiser is exactly what the shake threw
+\\ away -- so the phase split is not a convenience here, it is what makes
+\\ the answer readable at all.
+(define yggdrasil.shake-full-traced
+  Files Dir -> (let On  (set ygg.*trace* true)
+                    R   (trap-error (yggdrasil.shake-full Files Dir)
+                                    (/. E (ygg.trace-off-then E)))
+                    Off (set ygg.*trace* false)
+                    R))
+
 \\ The flag is process-global, so a failed full shake must not leave it set
 \\ for a later shake in the same host image (the facts and footprints entry
 \\ points do run several pipelines per process).
@@ -2965,10 +3047,16 @@
                     Warn      (ygg.cn-warn CNames)
                     InitOrder (ygg.init-order-check Tops KL)
                     InitDefun (synthesize-initialise Tops)
-                    OutCode   (append FootCode [InitDefun])
-                    Prims     (find-primitives (append OutCode KL))
+                    \\ Woven exactly where the shake weaves, and with the
+                    \\ same two functions: both are the identity while
+                    \\ ygg.*trace* is false, so an ordinary --no-shake build
+                    \\ is byte-for-byte the one this wrote before
+                    \\ yggdrasil.shake-full-traced existed.
+                    OutCode   (ygg.trace-kernel (append FootCode [InitDefun]))
+                    UserKL    (ygg.trace-user KL)
+                    Prims     (find-primitives (append OutCode UserKL))
                     WriteK    (write-kl-file (@s Dir "/kernel.kl") OutCode)
-                    UserOut   (write-user-files KLFiles KL Dir)
+                    UserOut   (write-user-files KLFiles UserKL Dir)
                     \\ A full build prunes nothing, so pruned-init is 0, and
                     \\ InitOrder carries the check's own answer.  Neither
                     \\ argument is optional: write-manifest took a fifth
@@ -2977,7 +3065,7 @@
                     \\ constant, and a short call here does not fail - Shen
                     \\ curries it into a closure this `let` then discards, so
                     \\ the full build silently wrote no manifest at all.
-                    WriteM    (write-manifest Dir UserOut KL Prims CNames 0
+                    WriteM    (write-manifest Dir UserOut UserKL Prims CNames 0
                                               InitOrder)
                     Restore   (set *maximum-print-sequence-size* MaxPrint)
                     Report    (pr (make-string "yggdrasil-shake: shaken=false defuns=~A~%"

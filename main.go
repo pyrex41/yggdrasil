@@ -277,6 +277,12 @@ type shakeOpts struct {
 	trace     bool   // --trace: weave the runtime call trace
 	pruneInit bool   // --prune-init: stage-4 dead-initialisation pruning
 	target    string // "" = no target: the union over all builders
+	// traceFull is `trace-check --full`: the full program A, woven. It is
+	// its own field rather than (full && trace) because shakeExpr still
+	// REFUSES that pair -- see the note there -- and a mode nobody can
+	// reach by setting two booleans that were never meant to compose is a
+	// mode whose one caller is visible at the call site.
+	traceFull bool
 	// --prune-init-unverified: proceed even when the target's port_reads
 	// list in builders.json is the conservative placeholder rather than a
 	// list read off that port's runtime. See wrapShakeExpr.
