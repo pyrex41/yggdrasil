@@ -28,12 +28,13 @@ import (
 // traceTargets returns the targets a run-based trace check can use here, in
 // preference order, or nil when there is no usable runtime.
 //
-// `kl` (shen-go's bare KLambda VM) is tried whenever a Go toolchain and the
-// sibling shen-go checkout are present. `go` is added only when its stage-2
-// builder actually works, established by building an untraced fixture: the
-// builder boots its own full-kernel compiler image, which is a much larger
-// thing to go wrong than the shake, and a broken one must not read as a
-// tracing regression. See the caveat in docs/analysis-rules.md.
+// `kl` (shen-go's bare KLambda VM, now an ordinary builders.json entry) is
+// tried whenever a Go toolchain and the sibling shen-go checkout are present.
+// `go` is added only when its stage-2 builder actually works, established by
+// building an untraced fixture: the builder boots its own full-kernel compiler
+// image, which is a much larger thing to go wrong than the shake, and a broken
+// one must not read as a tracing regression. See the caveat in
+// docs/analysis-rules.md.
 func traceTargets(t *testing.T, host []string) []string {
 	t.Helper()
 	if _, err := exec.LookPath("go"); err != nil {
@@ -48,7 +49,7 @@ func traceTargets(t *testing.T, host []string) []string {
 		t.Logf("no sibling shen-go checkout at %s", dir)
 		return nil
 	}
-	targets := []string{klTarget}
+	targets := []string{"kl"}
 
 	probe := t.TempDir()
 	if _, err := shake("tests/hello.shen", probe, host, "sub", true); err != nil {
@@ -748,14 +749,14 @@ func TestCheckGolden(t *testing.T) {
 		}
 	})
 	t.Run("kl-containment", func(t *testing.T) {
-		g, err := checkGolden(prog, klTarget, "0- 1+ \nfib 20 = 6765\n1- done\n")
+		g, err := checkGolden(prog, "kl", "0- 1+ \nfib 20 = 6765\n1- done\n")
 		if err != nil {
 			t.Fatalf("the golden embedded in a REPL transcript failed: %v", err)
 		}
 		if !g.checked || g.how != "contained in the kl transcript" {
 			t.Errorf("g = %+v", g)
 		}
-		if _, err := checkGolden(prog, klTarget, "0- 1+ \nfib 20 = 6764\n"); err == nil {
+		if _, err := checkGolden(prog, "kl", "0- 1+ \nfib 20 = 6764\n"); err == nil {
 			t.Error("a kl transcript without the golden in it passed")
 		}
 	})
@@ -764,20 +765,20 @@ func TestCheckGolden(t *testing.T) {
 // TestEvidencePossible: the one target/fixture pair on which a trace cannot
 // be evidence must be refused UP FRONT and BY NAME, not run and reported OK.
 //
-// shen-go's cmd/kl reads its program from os.Stdin and takes no file
-// argument, so klRunner has to append the fixture's stdin to the KL forms;
-// the VM eats them as toplevel forms and tests/stdin-sum answers
-// "bytes: 0 digest: 0" against a golden of "bytes: 15 digest: 12410". The
-// earlier code declined the stdout comparison and carried on, so a trace of
-// that run produced `yggdrasil-trace-check: OK` and a green fixture test.
+// shen-go's cmd/kl reads its program from os.Stdin and takes no file argument,
+// so the run appends the fixture's stdin to the KL forms; the VM eats them as
+// toplevel forms and tests/stdin-sum answers "bytes: 0 digest: 0" against a
+// golden of "bytes: 15 digest: 12410". The earlier code declined the stdout
+// comparison and carried on, so a trace of that run produced
+// `yggdrasil-trace-check: OK` and a green fixture test.
 func TestEvidencePossible(t *testing.T) {
-	err := evidencePossible(klTarget, "tests/stdin-sum.stdin")
+	err := evidencePossible("kl", "tests/stdin-sum.stdin")
 	if err == nil {
 		t.Fatal("kl + a fixture stdin was accepted: the VM eats the stdin bytes as toplevel forms, " +
 			"so the run answers the wrong thing and its trace is not evidence")
 	}
-	if got := skipName(err); got != "kl-runner-cannot-deliver-stdin" {
-		t.Errorf("skipName = %q, want the named skip", got)
+	if got := skipName(err); got != skipStdinAppended {
+		t.Errorf("skipName = %q, want %q", got, skipStdinAppended)
 	}
 	// A named skip is not a verdict: it must not print on the FAIL line.
 	if got := failSentinel(err); got != "" {
@@ -785,7 +786,7 @@ func TestEvidencePossible(t *testing.T) {
 	}
 	// Everything else is allowed through.
 	for _, c := range []struct{ target, stdin string }{
-		{klTarget, ""}, {"go", "tests/stdin-sum.stdin"}, {"go", ""},
+		{"kl", ""}, {"go", "tests/stdin-sum.stdin"}, {"go", ""},
 	} {
 		if err := evidencePossible(c.target, c.stdin); err != nil {
 			t.Errorf("evidencePossible(%q, %q) = %v, want nil", c.target, c.stdin, err)
@@ -793,6 +794,60 @@ func TestEvidencePossible(t *testing.T) {
 	}
 	if got := skipName(errors.New("plain")); got != "" {
 		t.Errorf("skipName invented a skip for a plain error: %q", got)
+	}
+}
+
+// hickey-13. The skip above is driven by a DECLARED FACT, not by the string
+// "kl". That distinction is the whole of the change: the refusal used to be
+// `target == klTarget`, which meant a second runtime with the same property
+// would have been run against bytes it cannot receive, and reported OK.
+//
+// This reads builders.json rather than a hard-coded expectation on either
+// side: whichever targets declare stdin=appended-to-program are exactly the
+// ones evidencePossible refuses a fixture stdin on, and the rest are exactly
+// the ones it lets through.
+func TestStdinFactDrivesTheSkip(t *testing.T) {
+	builders, err := loadBuilders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var declaring, plain []string
+	for name := range builders {
+		if stdin, _ := runFacts(name); stdin == stdinAppendedToProgram {
+			declaring = append(declaring, name)
+		} else {
+			plain = append(plain, name)
+		}
+	}
+	if len(declaring) == 0 {
+		t.Fatalf("no target declares stdin=%s; the skip this test is about can never fire, "+
+			"which means nothing exercises it", stdinAppendedToProgram)
+	}
+	for _, name := range declaring {
+		if got := skipName(evidencePossible(name, "tests/stdin-sum.stdin")); got != skipStdinAppended {
+			t.Errorf("target %s declares stdin=%s and trace-check does not skip it: %q",
+				name, stdinAppendedToProgram, got)
+		}
+		if err := evidencePossible(name, ""); err != nil {
+			t.Errorf("target %s with no fixture stdin was refused: %v", name, err)
+		}
+	}
+	for _, name := range plain {
+		if err := evidencePossible(name, "tests/stdin-sum.stdin"); err != nil {
+			t.Errorf("target %s does not declare stdin=%s but was skipped: %v",
+				name, stdinAppendedToProgram, err)
+		}
+	}
+	// And the two facts kl declares are the two softenings this file makes.
+	stdin, stdout := runFacts("kl")
+	if stdin != stdinAppendedToProgram || stdout != stdoutTranscript {
+		t.Errorf("kl's declared run facts are (%q, %q); trace.go's two softenings are keyed on "+
+			"(%q, %q)", stdin, stdout, stdinAppendedToProgram, stdoutTranscript)
+	}
+	// A target that declares neither gets neither softening: byte equality
+	// against the golden, and no skip.
+	if _, err := checkGolden("tests/fib.shen", "go", "0- 1+ \nfib 20 = 6765\n"); err == nil {
+		t.Error("a transcript passed the golden comparison on a target that declares stdout=program")
 	}
 }
 
@@ -863,5 +918,158 @@ func TestPhaseDegenerate(t *testing.T) {
 		if !strings.Contains(w, want) {
 			t.Errorf("the degenerate warning does not mention %q:\n%s", want, w)
 		}
+	}
+}
+
+// hickey-13, the other half: no target's NAME may be special-cased in the
+// tool. `kl` was a runner in trace.go with its own descriptor, its own golden
+// rule and its own skip, reachable from one subcommand and invisible to the
+// rest -- a target that was not a target. It is an entry in builders.json now,
+// and what is peculiar about it is declared there (program_file, stdin,
+// stdout), so the string "kl" appears in no Go source at all.
+//
+// The check is the string literal, over the non-test sources. Test files are
+// exempt and have to be: they name targets on purpose (this one does), and
+// they reach into the sibling shen-go checkout, whose KL package is a
+// directory called kl. A non-test file that needs the name is the regression.
+func TestNoTargetNameIsSpecialCasedInGo(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(string(src), "\n") {
+			if strings.Contains(line, `"kl"`) {
+				t.Errorf(`%s:%d matches on the target name "kl":
+
+    %s
+
+  Every target reaches build/run/parity/trace-check through builders.json.
+  What is peculiar about a target belongs on its entry as a declared fact
+  (see kl's program_file/stdin/stdout), read back through programFileFor or
+  runFacts -- not as a name compared in Go, which the next such target would
+  silently not match.`, name, i+1, strings.TrimSpace(line))
+			}
+		}
+	}
+	// And the target really is reachable as data: nothing but builders.json
+	// puts it there.
+	builders, err := loadBuilders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, ok := builders["kl"]
+	if !ok {
+		t.Fatal("builders.json has no kl entry; trace-check --target kl would now be an unknown target")
+	}
+	if b.ProgramFile == "" || len(b.Build) < 2 || b.Stdin != stdinAppendedToProgram {
+		t.Errorf("kl's entry does not declare what the deleted runner did: %+v", b)
+	}
+}
+
+// The build helper the kl recipe calls is the old klRunner's feed-file logic,
+// and it has to stay logic: kernel, then the initialiser, then the user files
+// IN MANIFEST ORDER. A recipe cannot express that, which is why the step is a
+// named helper rather than a shell line -- and why it is worth a test that
+// does not need a toolchain.
+func TestProgramFileStepConcatenatesInManifestOrder(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("kernel.kl", "(defun kernel () 0)\n")
+	write("b.kl", "(defun b () 2)\n")
+	write("a.kl", "(defun a () 1)\n")
+	// b before a, deliberately: the manifest's order is the program's, and
+	// a directory listing's is not.
+	write("yggdrasil.manifest.txt", "fn=a 0\nuser=b.kl\nuser=a.kl\n")
+
+	out := filepath.Join(dir, "feed.kl")
+	if err := programFileStep([]string{dir, out}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "(defun kernel () 0)\n\n(shen.initialise)\n(defun b () 2)\n\n(defun a () 1)\n\n"
+	if string(got) != want {
+		t.Errorf("program-file wrote\n  %q\nwant\n  %q", got, want)
+	}
+	// Its failures are errors, not empty files: a slice with no user= line
+	// would otherwise be fed to the VM as a kernel and nothing else.
+	write("yggdrasil.manifest.txt", "fn=a 0\n")
+	if err := programFileStep([]string{dir, out}); err == nil {
+		t.Error("a manifest with no user= line produced a program file anyway")
+	}
+	if err := programFileStep([]string{dir}); err == nil {
+		t.Error("program-file accepted the wrong number of arguments")
+	}
+}
+
+// `yggdrasil run tests/fib.shen OUT --target kl` works -- which it could not
+// before, because `kl` was not a target and `run` had never heard of it. The
+// whole path is exercised: the two build steps off builders.json (the VM, then
+// the feed file the named helper writes), programFileFor resolving the entry's
+// program_file, and openRunStdin putting that file on the run's stdin ahead of
+// whatever the caller sends. Host-gated and toolchain-gated like the rest.
+func TestRunOnKlTargetFeedsTheProgramOnStdin(t *testing.T) {
+	host := checkHost(t)
+	if traceTargets(t, host) == nil {
+		t.Skip("no go toolchain or no sibling shen-go checkout")
+	}
+	dir := t.TempDir()
+	if _, err := shake("tests/fib.shen", dir, host, "sub", true); err != nil {
+		t.Fatalf("shake: %v", err)
+	}
+	argv, err := build("kl", dir, false)
+	if err != nil {
+		t.Fatalf("build --target kl: %v", err)
+	}
+	if argv == nil {
+		t.Skip("the kl builder's tools are not on PATH")
+	}
+	feed, err := programFileFor("kl", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if feed == "" {
+		t.Fatal("kl declares a program_file; programFileFor resolved it to nothing")
+	}
+	if _, err := os.Stat(feed); err != nil {
+		t.Fatalf("the program-file build step wrote no %s: %v", feed, err)
+	}
+	// Without it the VM would read the caller's stdin as its program and
+	// print nothing of the fixture: that is the run this target needs and
+	// the reason the fact exists.
+	out, _, err := runCapture(argv, feed, "")
+	if err != nil {
+		// cmd/kl ends by recovering a panic at EOF, so a non-zero exit is
+		// the normal case here; the transcript is the evidence.
+		t.Logf("the kl VM exited non-zero (it panics at EOF): %v", err)
+	}
+	want, err := os.ReadFile("tests/fib.expected")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(canon(out), canon(string(want))) {
+		t.Errorf("the kl transcript does not contain %q", canon(string(want)))
+	}
+	// And with no program file the same argv produces no such answer, which
+	// is what makes the assertion above about the plumbing rather than about
+	// the VM having the program from somewhere else.
+	bare, _, _ := runCapture(argv, "", "")
+	if strings.Contains(canon(bare), canon(string(want))) {
+		t.Error("the VM printed the fixture's answer with no program fed to it")
 	}
 }

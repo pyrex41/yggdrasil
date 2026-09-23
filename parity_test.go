@@ -94,7 +94,7 @@ func TestRunCaptureFeedsStdin(t *testing.T) {
 	// No --stdin: the child must see EOF immediately, NOT the parent's stdin.
 	// A program that reads to EOF has to terminate, and both boots have to get
 	// the same bytes, or two-boot means nothing.
-	out, _, err := runCapture(argv, "")
+	out, _, err := runCapture(argv, "", "")
 	if err != nil {
 		t.Fatalf("helper failed: %v (out=%q)", err, out)
 	}
@@ -106,7 +106,7 @@ func TestRunCaptureFeedsStdin(t *testing.T) {
 	if err := os.WriteFile(f, []byte("hello yggdrasil"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, _, err = runCapture(argv, f)
+	out, _, err = runCapture(argv, "", f)
 	if err != nil {
 		t.Fatalf("helper failed: %v (out=%q)", err, out)
 	}
@@ -117,7 +117,64 @@ func TestRunCaptureFeedsStdin(t *testing.T) {
 	// A missing file is an error, not a silent empty stdin: the latter would
 	// pass the gate against a golden minted with real input only if the
 	// program happened to print the same thing either way.
-	if _, _, err = runCapture(argv, filepath.Join(t.TempDir(), "nope")); err == nil {
+	if _, _, err = runCapture(argv, "", filepath.Join(t.TempDir(), "nope")); err == nil {
 		t.Error("missing --stdin file must error")
+	}
+}
+
+// hickey-13. A target that declares `stdout: repl-transcript` is compared with
+// the truth by CONTAINMENT, on every leg, and a target that does not is
+// compared by equality. Both halves matter: the softening must reach the
+// transcript target (or `kl` is permanently red on a property it cannot have)
+// and must NOT reach any other (or a port could pass the gate by printing the
+// right answer somewhere inside the wrong output).
+//
+// This is the test builders.json's kl.stdout_checked_by names.
+func TestTranscriptTargetIsComparedByContainment(t *testing.T) {
+	const truth = "fib 20 = 6765"
+	// A transcript: the truth embedded in the runtime's own lines, and a
+	// second boot whose prompts and panic addresses differ.
+	bootA := "0- 1+ \nfib 20 = 6765\n1- done 0x1234\n"
+	bootB := "0- 1+ \nfib 20 = 6765\n1- done 0xbeef\n"
+
+	plain := &parityResult{outA: bootA, outB: bootB}
+	if v := compareParity(plain, truth); v.vsTruth || v.twoBoot {
+		t.Errorf("a target that declares stdout=program was compared by containment: %+v", v)
+	}
+	tr := &parityResult{outA: bootA, outB: bootB, transcript: true}
+	v := compareParity(tr, truth)
+	if !v.vsTruth || !v.twoBoot {
+		t.Errorf("the transcript target's boots both contain the truth and the gate says %+v", v)
+	}
+	// And it still fails on a boot that answered wrongly.
+	wrong := &parityResult{outA: bootA, outB: "0- 1+ \nfib 20 = 6764\n", transcript: true}
+	if v := compareParity(wrong, truth); v.twoBoot {
+		t.Errorf("a second boot with the wrong answer passed the two-boot leg: %+v", v)
+	}
+	if v := compareParity(&parityResult{outA: "0- nothing\n", outB: "0- nothing\n", transcript: true},
+		truth); v.vsTruth {
+		t.Errorf("a transcript without the truth in it passed vs-truth: %+v", v)
+	}
+
+	// The two-pass leg: each half of the transcript against the
+	// corresponding half of the truth, because the halves are not
+	// comparable with each other.
+	const twoPassTruth = "a => 1\n===\na => 1"
+	pass := &parityResult{transcript: true,
+		outA: "0 #> pass\na => 1\n===\n1 #> pass\na => 1\n2 #> done\n"}
+	pass.outB = pass.outA
+	v = compareParity(pass, twoPassTruth)
+	if !v.hasPasses || !v.twoPass {
+		t.Errorf("a transcript whose two passes both printed the truth's pass failed two-pass: %+v", v)
+	}
+	// Byte equality of the halves would have failed it, which is the point.
+	if v.pass1 == v.pass2 {
+		t.Fatal("this fixture is meant to have halves that differ byte for byte")
+	}
+	bad := &parityResult{transcript: true,
+		outA: "0 #> pass\na => 1\n===\n1 #> pass\na => 2\n2 #> done\n"}
+	bad.outB = bad.outA
+	if v := compareParity(bad, twoPassTruth); v.twoPass {
+		t.Errorf("a second pass that printed something else passed two-pass: %+v", v)
 	}
 }

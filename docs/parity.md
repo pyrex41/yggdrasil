@@ -55,6 +55,29 @@ For each built target the artifact is run **twice as two separate processes**
 
 On any mismatch the gate prints the first differing line for that check.
 
+### Two exceptions, both read off `builders.json`
+
+Neither is keyed on a target's name; both are declared facts on the
+target's entry, so a second target with the same property gets the same
+treatment the day its entry says so.
+
+* **`stdin: appended-to-program`.** The runtime reads its PROGRAM from
+  stdin (shen-go's `cmd/kl`), so a fixture's `--stdin` bytes would arrive
+  after the program text and be read as further toplevel forms. Such a
+  target is **skipped by name** on a fixture with stdin -- never run and
+  never counted -- exactly as `trace-check` skips it.
+* **`stdout: repl-transcript`.** The program's output is embedded in the
+  runtime's own prompts, echoes and diagnostics, and (for `cmd/kl`, which
+  ends a program by recovering a panic and printing the dump, goroutine
+  addresses included) is not byte-stable across two boots of the same
+  program. Every leg above is then **containment of the truth** rather
+  than equality: `bootA` contains the truth, `bootB` contains the truth,
+  and each half of a two-pass transcript contains the corresponding half
+  of the truth. The report line says so. Demanding equality would make
+  such a target permanently red on a property it cannot have, which
+  teaches a reader to ignore the column; containment still fails loudly
+  when a boot or a pass prints the wrong answer.
+
 ## The two-pass fixture convention
 
 The `two-pass` check is target-agnostic — no runtime hooks — because it relies on
@@ -139,11 +162,21 @@ run rather than quietly shrinking the gate. If a probed gap starts passing the
 gate **fails**, naming the line to delete — an exclusion that outlives its
 cause is exactly where the next real failure would hide.
 
-The list is empty today. Its one entry, `metaeval:js`, was deleted when #23
-fixed the underlying gap — and it was this check that demanded the deletion:
-the probe started passing and the gate failed with *"stale KNOWN_GAPS entries:
-metaeval:js"* until the line was removed. `metaeval` is now gated on go, lua,
-rust and js like every other fixture.
+The list holds one entry, `metaeval:kl`. `kl` joined the gate when it became
+a `builders.json` entry rather than a runner special-cased in `trace.go`
+(hickey-13): it runs the shaken KL on shen-go's bare KLambda VM with no
+stage-2 compiler in between, and the eval-capable slice `metaeval` needs
+takes that VM through the compiler at run time, where it panics part way --
+the transcript reaches `eval list: 42` and stops mid-line. That is a shen-go
+VM limit, not a shake finding: the other four fixtures pass on `kl`, and
+`metaeval` passes on `go`, which compiles the same slice. CI is unaffected
+either way, since `parity-gate.yml` passes `--targets go,js,lua`.
+
+The previous entry, `metaeval:js`, was deleted when #23 fixed the underlying
+gap — and it was this check that demanded the deletion: the probe started
+passing and the gate failed with *"stale KNOWN_GAPS entries: metaeval:js"*
+until the line was removed. `metaeval` is gated on go, lua, rust and js like
+every other fixture.
 
 ### Dead-initialisation pruning (stage 4)
 

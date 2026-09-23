@@ -19,6 +19,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -154,9 +155,12 @@ func TestPruneInitDropsOnlyWholeSets(t *testing.T) {
 		t.Errorf("manifest says pruned-init=%s, the initialiser lost %d sets", got, want)
 	}
 	// Nothing the port reads natively may go.
-	reads, err := portReadsFor("go")
+	reads, known, err := portReadsFor("go")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !known {
+		t.Fatal("go declares a port_reads list; portReadsFor must report it as known")
 	}
 	kept := map[string]bool{}
 	for _, v := range after {
@@ -197,7 +201,7 @@ func TestPruneInitGoArtifactStillRuns(t *testing.T) {
 		if err != nil || argv == nil {
 			return "", false
 		}
-		out, _, err := runCapture(argv, "")
+		out, _, err := runCapture(argv, "", "")
 		if err != nil {
 			return "", false
 		}
@@ -226,48 +230,76 @@ func TestPruneInitGoArtifactStillRuns(t *testing.T) {
 	}
 }
 
-// Every target must RESOLVE to a port_reads list, and the union a
-// target-agnostic shake uses must contain every one of them. A target added
-// without a resolvable list would prune against an empty list and drop
-// everything.
+// What every target must resolve to, now that most of them resolve to
+// UNKNOWN.
 //
-// Note what this does NOT require any more: that every target carry its own
-// copy of the key. Twelve of them used to, byte for byte, which made a
-// placeholder look like thirteen independent measurements. They now declare
-// nothing and inherit builders.json's `_default`, and the assertion moved from
-// "the key is present" to "the effective list is non-empty and inside the
-// union" -- the property stage 4 actually needs.
+// The old promise was "every target resolves to a non-empty list, and the
+// union contains it". That was satisfiable only because `_default` held a
+// 35-name guess every undeclared target inherited, which is the thing this
+// commit deleted. The promises that survive it, and are the ones stage 4
+// actually needs:
+//
+//  1. a target that DECLARES a list resolves to its own, and the
+//     target-agnostic union contains every name in it -- otherwise a
+//     no-target --prune-init would prune something a measured port reads;
+//  2. a target that declares none resolves to unknown, and portReadsFor says
+//     so, so nothing downstream can mistake the union it is handed for a
+//     measurement of that port;
+//  3. at least one target has declared a list, or the union is empty and
+//     --prune-init has nothing to prune against at all;
+//  4. only `go` is verified, and `go` is.
 func TestPortReadsAreDeclaredForEveryTarget(t *testing.T) {
 	builders, defaults, err := parseBuilders()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(defaults.PortReads) == 0 {
-		t.Fatalf("builders.json has no %s.port_reads: every target without its own list "+
-			"would prune against nothing", builderDefaultsKey)
+	if len(defaults.PortReads) != 0 {
+		t.Errorf("builders.json %s.port_reads is a list of %d names again. It must be %q: a "+
+			"default list is inherited by every unmeasured target, which makes absence of a "+
+			"measurement look like one", builderDefaultsKey, len(defaults.PortReads), portReadsUnknown)
 	}
-	union, err := portReadsFor("")
+	union, unionKnown, err := portReadsFor("")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(union) == 0 {
+		t.Fatalf("no target declares a port_reads list: the target-agnostic union is empty and " +
+			"--prune-init has nothing to prune against")
+	}
+	declared, unknown, err := portReadsCoverage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unionKnown != (len(unknown) == 0) {
+		t.Errorf("portReadsFor(\"\") reports known=%v with %d undeclared targets", unionKnown, len(unknown))
 	}
 	inUnion := map[string]bool{}
 	for _, v := range union {
 		inUnion[v] = true
 	}
 	for name := range builders {
-		reads, err := portReadsFor(name)
+		reads, known, err := portReadsFor(name)
 		if err != nil {
 			t.Errorf("portReadsFor(%s): %v", name, err)
 			continue
 		}
-		if len(reads) == 0 {
-			t.Errorf("target %s resolves to no port_reads (stage 4 would prune against an empty list)", name)
-			continue
+		if known != contains(declared, name) {
+			t.Errorf("portReadsFor(%s) reports known=%v; portReadsCoverage puts it in the other half",
+				name, known)
 		}
-		for _, v := range reads {
-			if !inUnion[v] {
-				t.Errorf("target %s reads %s but the union does not contain it", name, v)
+		if known {
+			if len(reads) == 0 {
+				t.Errorf("target %s is known but resolves to no port_reads", name)
 			}
+			for _, v := range reads {
+				if !inUnion[v] {
+					t.Errorf("target %s reads %s but the union does not contain it", name, v)
+				}
+			}
+		} else if !equalStrings(reads, union) {
+			// An unknown target is handed the union -- the most that is
+			// known -- and the caller is told it is not a measurement.
+			t.Errorf("target %s is unknown but portReadsFor returned %v rather than the union", name, reads)
 		}
 		if portReadsVerified(name) && name != "go" {
 			t.Errorf("target %s claims a verified port_reads; only go's list has been read off a runtime", name)
@@ -276,6 +308,25 @@ func TestPortReadsAreDeclaredForEveryTarget(t *testing.T) {
 	if !portReadsVerified("go") {
 		t.Errorf("go's port_reads was read off shen-go's kl/ package and is covered by a named " +
 			"test; builders.json's port_reads_checked_by should say so")
+	}
+}
+
+// The unknown value is a VALUE, not a typo escape hatch: any other string in
+// port_reads is an error. A file that said "unkown" and was read as "nobody
+// measured this" would be the original bug with a smaller blast radius.
+func TestPortReadsRejectsAnyOtherString(t *testing.T) {
+	var p portReadsList
+	if err := p.UnmarshalJSON([]byte(`"unknown"`)); err != nil || p != nil {
+		t.Errorf("%q must parse as the empty list: %v, %v", portReadsUnknown, p, err)
+	}
+	if err := p.UnmarshalJSON([]byte(`"unkown"`)); err == nil {
+		t.Error("a misspelled unknown was accepted as one")
+	}
+	if err := p.UnmarshalJSON([]byte(`["*stinput*"]`)); err != nil || len(p) != 1 {
+		t.Errorf("a declared list must still parse: %v, %v", p, err)
+	}
+	if err := p.UnmarshalJSON([]byte(`7`)); err == nil {
+		t.Error("a number was accepted as a port_reads value")
 	}
 }
 
@@ -330,11 +381,19 @@ func TestOnlyDeclaredPortReadsDifferFromTheDefault(t *testing.T) {
 	}
 }
 
-// yggdrasil.shen carries the same conservative list, for a direct host
-// invocation with no Go driver to push one in. builders.json's `_default` is
-// the authority; this is what catches the copy drifting from it.
+// yggdrasil.shen carries the same list the Go driver would push in for a
+// target-agnostic shake, for a direct host invocation with no Go driver to
+// push one. builders.json is the authority; this is what catches the copy
+// drifting from it.
+//
+// What it pins CHANGED with the representation. `_default.port_reads` is the
+// string "unknown" now, so there is no default list to compare against; the
+// list the Shen side must equal is portReadsFor(""), the union over the
+// targets that have actually declared one. Today that is go's five. The 35
+// names this used to pin were a guess, and the whole point of the change is
+// that a guess must not be the value a reader inherits.
 func TestPortReadsDefaultMatchesShen(t *testing.T) {
-	_, defaults, err := parseBuilders()
+	union, _, err := portReadsFor("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,15 +403,15 @@ func TestPortReadsDefaultMatchesShen(t *testing.T) {
 	}
 	shen := shenPortReadsDefault(t, string(src))
 
-	want, got := defaults.PortReads, shen
+	want, got := union, shen
 	if len(want) != len(got) {
-		t.Errorf("builders.json %s.port_reads has %d names, yggdrasil.shen's "+
-			"(set ygg.*port-reads* ...) has %d", builderDefaultsKey, len(want), len(got))
+		t.Errorf("the union of the declared port_reads lists in builders.json has %d names, "+
+			"yggdrasil.shen's (set ygg.*port-reads* ...) has %d", len(want), len(got))
 	}
 	for i := 0; i < len(want) && i < len(got); i++ {
 		if want[i] != got[i] {
-			t.Fatalf("the two default port_reads lists diverge at position %d: "+
-				"builders.json says %q, yggdrasil.shen says %q", i, want[i], got[i])
+			t.Fatalf("the two lists diverge at position %d: builders.json's union says %q, "+
+				"yggdrasil.shen says %q", i, want[i], got[i])
 		}
 	}
 	if t.Failed() {
@@ -362,7 +421,7 @@ func TestPortReadsDefaultMatchesShen(t *testing.T) {
 		}
 		for _, v := range want {
 			if !inShen[v] {
-				t.Errorf("  only in builders.json %s: %s", builderDefaultsKey, v)
+				t.Errorf("  only in builders.json: %s", v)
 			}
 		}
 		inJSON := map[string]bool{}
@@ -560,19 +619,38 @@ func TestContractReportNamesSourceAndPhase(t *testing.T) {
 		}
 	}
 
-	// An inheriting target must say so, and must never read as verified.
+	// A target that inherits the default inherits UNKNOWN, and the row has
+	// to say so out loud rather than printing a list it did not measure. It
+	// must also still say WHERE that unknown came from -- the source is the
+	// reason nobody measured it, which is the useful half.
 	luaRows := rows("lua")
 	pr := luaRows["port_reads"]
+	if pr.status != "unknown" {
+		t.Errorf("lua declares no port_reads and %s says %q; the report says %q with summary %q",
+			builderDefaultsKey, portReadsUnknown, pr.status, pr.summary)
+	}
 	if !pr.inherited {
 		t.Errorf("lua inherits port_reads from %s; the report must say so", builderDefaultsKey)
 	}
-	if pr.status != "declared" {
-		t.Errorf("lua's inherited port_reads reports %q; an unmeasured placeholder is declared, "+
-			"never verified", pr.status)
+	if !strings.Contains(pr.summary, portReadsUnknown) {
+		t.Errorf("lua's port_reads summary does not contain %q: %q", portReadsUnknown, pr.summary)
+	}
+	if !factSourced(pr.source) {
+		t.Errorf("lua's unknown port_reads row prints no source; the reason a fact was never "+
+			"measured is what a reader needs. source=%q", pr.source)
+	}
+	var refusal bool
+	for _, n := range pr.notes {
+		if strings.Contains(n, "--prune-init") {
+			refusal = true
+		}
+	}
+	if !refusal {
+		t.Errorf("the unknown row does not say what unknown COSTS (--prune-init refuses it): %v", pr.notes)
 	}
 	if factChecked(defaults.PortReadsCheckedBy) {
-		t.Errorf("builders.json %s.port_reads claims a checked_by (%q); nothing checks the "+
-			"conservative default against any runtime", builderDefaultsKey, defaults.PortReadsCheckedBy)
+		t.Errorf("builders.json %s.port_reads claims a checked_by (%q); nothing checks an "+
+			"unknown against any runtime", builderDefaultsKey, defaults.PortReadsCheckedBy)
 	}
 }
 
@@ -584,21 +662,27 @@ func TestContractReportNamesSourceAndPhase(t *testing.T) {
 // trustworthy stated the opposite of what the shaker would do. Synthetic
 // inputs, because the point is precisely that builders.json has no such target
 // and never should.
+//
+// `[]` still means "declares nothing" on both sides, and what it now inherits
+// is UNKNOWN rather than a list. That is the safe direction and the only one:
+// reading `[]` as "this port reads no globals" would be a licence to prune
+// every init form, from a key somebody could type by accident.
 func TestDeclaredEmptyPortReadsInheritsInBothReaders(t *testing.T) {
 	_, defaults, err := parseBuilders()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(defaults.PortReads) == 0 {
-		t.Fatalf("builders.json %s carries no port_reads to inherit", builderDefaultsKey)
+	if len(defaults.PortReads) != 0 {
+		t.Fatalf("builders.json %s.port_reads is a list again; this test is about what an "+
+			"empty declaration inherits", builderDefaultsKey)
 	}
-	empty := builder{PortReads: []string{}}
+	empty := builder{PortReads: portReadsList{}}
 
 	// Reader 1: the shaker.
-	eff := effectivePortReads(empty, defaults)
-	if len(eff) != len(defaults.PortReads) {
-		t.Fatalf("effectivePortReads on a declared-empty target returned %d names, want the "+
-			"%d-name default", len(eff), len(defaults.PortReads))
+	eff, known := effectivePortReads(empty, defaults)
+	if known || len(eff) != 0 {
+		t.Fatalf("effectivePortReads on a declared-empty target returned (%v, %v), want the "+
+			"unknown the default carries", eff, known)
 	}
 
 	// Reader 2: the contract report, on a raw block that states the key as an
@@ -617,12 +701,11 @@ func TestDeclaredEmptyPortReadsInheritsInBothReaders(t *testing.T) {
 			"own (%q); effectivePortReads inherits %s, and the report must say what the "+
 			"shaker will do", r.summary, builderDefaultsKey)
 	}
-	if want := describeStrings(defaults.PortReads); r.summary != want {
-		t.Errorf("the contract report summarises a declared-empty port_reads as %q, "+
-			"effectivePortReads resolves it to %q", r.summary, want)
+	if r.status != "unknown" {
+		t.Errorf("a declared-empty port_reads reports %q; both readers resolve it to unknown", r.status)
 	}
-	if r.status == "verified" {
-		t.Errorf("a target that declared nothing reports %q", r.status)
+	if !strings.Contains(r.summary, portReadsUnknown) {
+		t.Errorf("the report summarises a declared-empty port_reads as %q", r.summary)
 	}
 	var noted bool
 	for _, n := range r.notes {
@@ -632,14 +715,14 @@ func TestDeclaredEmptyPortReadsInheritsInBothReaders(t *testing.T) {
 	}
 	if !noted {
 		t.Errorf("the report inherits over a declared-empty list without saying it did; "+
-			"the reader sees `\"port_reads\": []` in the file and a 35-name row here. notes=%v",
+			"the reader sees `\"port_reads\": []` in the file and an unknown row here. notes=%v",
 			r.notes)
 	}
 
 	// And a target that DOES declare a list is still its own, on both sides.
-	own := builder{PortReads: []string{"*stinput*"}}
-	if got := effectivePortReads(own, defaults); len(got) != 1 {
-		t.Errorf("effectivePortReads overrode a declared one-name list: %v", got)
+	own := builder{PortReads: portReadsList{"*stinput*"}}
+	if got, known := effectivePortReads(own, defaults); !known || len(got) != 1 {
+		t.Errorf("effectivePortReads overrode a declared one-name list: %v %v", got, known)
 	}
 	ownBlock := map[string]json.RawMessage{
 		"port_reads":        json.RawMessage(`["*stinput*"]`),
@@ -782,6 +865,12 @@ func TestShakeExprDefaultIsByteIdentical(t *testing.T) {
 
 // torvalds-11: --prune-init against a target whose port_reads list is a
 // placeholder used to prune silently. It must now refuse, by name.
+//
+// hickey-14 sharpened what the refusal SAYS. There is no placeholder any more:
+// a target that declares nothing resolves to unknown, and the message has to
+// say that nobody measured this port rather than that its list is unverified,
+// because those are different repairs (measure it, versus write a test for the
+// list you have).
 func TestPruneInitRefusesUnverifiedTarget(t *testing.T) {
 	builders, err := loadBuilders()
 	if err != nil {
@@ -804,7 +893,7 @@ func TestPruneInitRefusesUnverifiedTarget(t *testing.T) {
 	const expr = `(yggdrasil.shake ["/p/prog.shen"] "/p/out")`
 	_, err = wrapShakeExpr(expr, shakeOpts{pruneInit: true, target: unverified})
 	if err == nil {
-		t.Fatalf("--prune-init --target %s was accepted; its port_reads list is a placeholder", unverified)
+		t.Fatalf("--prune-init --target %s was accepted; nothing has measured its port_reads", unverified)
 	}
 	if !strings.Contains(err.Error(), unverified) {
 		t.Errorf("the refusal must name the target; got %q", err)
@@ -814,8 +903,12 @@ func TestPruneInitRefusesUnverifiedTarget(t *testing.T) {
 			t.Errorf("the refusal must mention %q; got %q", want, err)
 		}
 	}
+	if _, known, _ := portReadsFor(unverified); !known && !strings.Contains(err.Error(), portReadsUnknown) {
+		t.Errorf("%s resolves to unknown and the refusal does not say the word: %q", unverified, err)
+	}
 
-	// The escape hatch proceeds, and still installs that target's list.
+	// The escape hatch proceeds, and still installs a list -- the union over
+	// the targets that HAVE declared one, since this target has none.
 	got, err := wrapShakeExpr(expr, shakeOpts{pruneInit: true, target: unverified, allowUnverifiedPortReads: true})
 	if err != nil {
 		t.Fatalf("--prune-init-unverified must proceed: %v", err)
@@ -823,15 +916,106 @@ func TestPruneInitRefusesUnverifiedTarget(t *testing.T) {
 	if !strings.Contains(got, "(set ygg.*prune-init* true)") {
 		t.Errorf("the escape hatch must still ask for pruning:\n%s", got)
 	}
+	reads, _, err := portReadsFor(unverified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "(set ygg.*port-reads* ["+strings.Join(reads, " ")+"])") {
+		t.Errorf("the escape hatch installed a different list than portReadsFor resolves:\n%s", got)
+	}
 
 	// A verified target is never refused, and neither is the target-agnostic
-	// union -- the conservative case by construction.
+	// union -- but the union is now over the targets that declared a list,
+	// not over every builder, so what it does NOT cover has to be said.
 	if _, err := wrapShakeExpr(expr, shakeOpts{pruneInit: true, target: "go"}); err != nil {
 		t.Errorf("--prune-init --target go must be accepted: %v", err)
 	}
 	if _, err := wrapShakeExpr(expr, shakeOpts{pruneInit: true}); err != nil {
 		t.Errorf("--prune-init with no target must be accepted (it uses the union): %v", err)
 	}
+}
+
+// What a target-agnostic --prune-init prunes against, and what it says about
+// it. The union used to be over every builder's EFFECTIVE list, which included
+// the 35-name guess, so "sound for any of them" was true of the guess and of
+// nothing else. It is now over the DECLARED lists only, which is a smaller and
+// honest list -- and a smaller list prunes MORE, so the tool has to name the
+// targets it is therefore silent about rather than let the old sentence stand.
+func TestTargetAgnosticPruneNamesWhatTheUnionIsOver(t *testing.T) {
+	declared, unknown, err := portReadsCoverage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(declared) == 0 {
+		t.Fatal("no target declares a port_reads list; the union is empty")
+	}
+	union, known, err := portReadsFor("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if known != (len(unknown) == 0) {
+		t.Errorf("the union reports known=%v with %d unmeasured targets", known, len(unknown))
+	}
+	// Every name in the union comes from a target that declared it: an
+	// inherited guess reaching the union is the bug.
+	_, defaults, err := parseBuilders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	builders, _, err := parseBuilders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fromDeclared := map[string]bool{}
+	for _, name := range declared {
+		reads, _ := effectivePortReads(builders[name], defaults)
+		for _, v := range reads {
+			fromDeclared[v] = true
+		}
+	}
+	for _, v := range union {
+		if !fromDeclared[v] {
+			t.Errorf("the union contains %s, which no target declared", v)
+		}
+	}
+
+	// And the WARN says both halves out loud. Captured off stderr, because
+	// a message nobody can read is the same as no message.
+	stderr := captureStderr(t, func() {
+		if _, err := wrapShakeExpr(`(yggdrasil.shake ["/p/prog.shen"] "/p/out")`,
+			shakeOpts{pruneInit: true}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	for _, want := range append(append([]string{"WARN", "UNION"}, declared...), unknown...) {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("the target-agnostic --prune-init WARN does not mention %q:\n%s", want, stderr)
+		}
+	}
+}
+
+// captureStderr runs fn with os.Stderr replaced by a pipe and returns what was
+// written to it.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := os.Stderr
+	os.Stderr = w
+	done := make(chan string, 1)
+	go func() {
+		var b strings.Builder
+		io.Copy(&b, r)
+		done <- b.String()
+	}()
+	fn()
+	w.Close()
+	os.Stderr = saved
+	out := <-done
+	r.Close()
+	return out
 }
 
 // hickey-9 / torvalds-9: `facts --target T` selects a port_reads list. It used
@@ -845,7 +1029,7 @@ func TestFactsTargetSelectsListWithoutPruning(t *testing.T) {
 	if !strings.Contains(got, "(set ygg.*prune-init* false)") {
 		t.Errorf("a target without --prune-init must not ask the shaker to prune:\n%s", got)
 	}
-	reads, err := portReadsFor("go")
+	reads, _, err := portReadsFor("go")
 	if err != nil {
 		t.Fatal(err)
 	}

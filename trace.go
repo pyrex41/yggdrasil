@@ -271,21 +271,19 @@ func writeFactsTSV(path string, rows []string) error {
 // the trace file lands beside the artifact rather than in the caller's cwd.
 // Otherwise it is runCapture: stdin is the fixture's bytes or nothing, never
 // the parent's, and stderr passes through.
-func runArtifact(argv []string, stdinFile, dir string) (string, error) {
+func runArtifact(argv []string, programFile, stdinFile, dir string) (string, error) {
 	a := wrapExecutable(argv)
 	cmd := exec.Command(a[0], a[1:]...)
 	cmd.Dir = dir
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, os.Stderr
-	if stdinFile != "" {
-		f, err := os.Open(stdinFile)
-		if err != nil {
-			return "", fmt.Errorf("cannot read --stdin file: %w", err)
-		}
-		defer f.Close()
-		cmd.Stdin = f
+	in, closeIn, err := openRunStdin(programFile, stdinFile, nil)
+	if err != nil {
+		return "", err
 	}
-	err := cmd.Run()
+	defer closeIn()
+	cmd.Stdin = in
+	err = cmd.Run()
 	return out.String(), err
 }
 
@@ -403,28 +401,41 @@ func skipName(err error) string {
 	return ""
 }
 
-// evidencePossible refuses, up front, the one target/fixture combination on
-// which a trace cannot be evidence about anything.
+// evidencePossible refuses, up front, the target/fixture combinations on which
+// a trace cannot be evidence about anything.
 //
-// shen-go's cmd/kl reads its PROGRAM from os.Stdin and takes no file
-// argument, so klRunner has one descriptor for two jobs: it appends the
-// fixture's stdin bytes after the KL forms, the VM consumes them as further
-// toplevel forms, and the program itself reads EOF. tests/stdin-sum then
-// answers "bytes: 0 digest: 0" against a golden of "bytes: 15 digest: 12410",
-// and the transcript carries a recovered panic out of the VM. Harvesting a
-// called set from that run and printing OK is exactly the drift this file is
-// about: the run demonstrably did not do what the fixture asks.
+// There is one, and it is read off a DECLARED FACT rather than off a target's
+// name: a target whose builders.json entry says `stdin: appended-to-program`
+// has a runtime that reads its program from stdin (shen-go's cmd/kl does), so
+// one descriptor does two jobs. The fixture's stdin bytes arrive after the KL
+// forms, the runtime consumes them as further toplevel forms, and the program
+// itself reads EOF. tests/stdin-sum then answers "bytes: 0 digest: 0" against
+// a golden of "bytes: 15 digest: 12410", and the transcript carries a
+// recovered panic out of the VM. Harvesting a called set from that run and
+// printing OK is exactly the drift this file is about: the run demonstrably
+// did not do what the fixture asks.
 //
 // Declining the golden comparison and proceeding was the earlier answer and
 // was wrong -- it left the OK line and a green fixture test standing over a
 // wrong run. Delivering stdin separately needs a file argument in shen-go's
 // cmd/kl, which is another repository.
+//
+// Keying this on the fact is what lets a second such runtime be added as an
+// entry in builders.json and be refused here the day it is added, with no edit
+// to this file -- and what keeps the refusal from outliving its cause, since
+// deleting the fact deletes the skip.
 func evidencePossible(target, stdinFile string) error {
-	if target == klTarget && stdinFile != "" {
-		return &traceSkip{reason: "kl-runner-cannot-deliver-stdin"}
+	if stdinFact, _ := runFacts(target); stdinFact == stdinAppendedToProgram && stdinFile != "" {
+		return &traceSkip{reason: skipStdinAppended}
 	}
 	return nil
 }
+
+// skipStdinAppended is the NAME of that skip, on the sentinel line and in the
+// host-gated tests. It names the fact, not the target: the old spelling
+// (kl-runner-cannot-deliver-stdin) named a runner in this file that no longer
+// exists.
+const skipStdinAppended = "stdin-appended-to-program"
 
 // requireComplete is the end-of-run gate, a pure function of a parsed trace so
 // that the failure it exists to produce is testable without a stage-2 runtime.
@@ -479,36 +490,32 @@ func traceCheck(prog, outdir, target, stdinFile string, host []string, evalStyle
 		return nil, fmt.Errorf("traced shake: %w", err)
 	}
 
-	var runArgv []string
-	var err error
-	runStdin := stdinFile
-	if target == klTarget {
-		var feed string
-		runArgv, feed, err = klRunner(outdir, stdinFile)
-		if err != nil {
-			return nil, err
+	// Every target is built the same way, through builders.json. `kl` used
+	// to be the exception -- a runner in this file, reachable from this
+	// subcommand and nowhere else -- and what was peculiar about it is now
+	// declared on its entry instead (program_file, stdin, stdout).
+	runArgv, err := build(target, outdir, false)
+	if err != nil {
+		var unsupported capabilityError
+		if errors.As(err, &unsupported) {
+			return nil, nil
 		}
-		if runArgv == nil {
-			return nil, nil // no Go toolchain or no sibling shen-go
-		}
-		runStdin = feed // the VM reads its program, then the fixture bytes
-	} else {
-		runArgv, err = build(target, outdir, false)
-		if err != nil {
-			var unsupported capabilityError
-			if errors.As(err, &unsupported) {
-				return nil, nil
-			}
-			return nil, err
-		}
-		if runArgv == nil {
-			return nil, nil // a required tool is not on PATH
-		}
+		return nil, err
+	}
+	if runArgv == nil {
+		return nil, nil // a required tool is not on PATH
+	}
+	// Non-empty only for a runtime that reads its program from stdin, where
+	// it is fed before the fixture's bytes -- which is why the pair above is
+	// refused rather than run.
+	progFile, err := programFileFor(target, outdir)
+	if err != nil {
+		return nil, err
 	}
 
 	tracePath := filepath.Join(outdir, traceFileName)
 	os.Remove(tracePath)
-	stdout, runErr := runArtifact(runArgv, runStdin, outdir)
+	stdout, runErr := runArtifact(runArgv, progFile, stdinFile, outdir)
 	if runErr != nil {
 		return nil, fmt.Errorf("the traced %s artifact failed: %w", target, runErr)
 	}
@@ -597,14 +604,15 @@ type goldenResult struct {
 // trace-check and passes the parity gate against the same file, with nothing
 // to say which was authoritative.
 //
-// The kl runner is not a port and its "stdout" is not the program's: it is a
-// KLambda REPL transcript -- numbered prompts, echoed values, the VM's own
-// panics -- with the program's output embedded in it, so containment is the
-// strongest thing assertable there. That is the only softening, and it is a
-// fact about the transcript rather than about the run. The case the runner
-// genuinely cannot serve -- kl with a fixture stdin, where the VM eats the
-// bytes as toplevel forms and the program reads EOF -- never reaches here:
-// evidencePossible refuses it as a named skip before anything is shaken,
+// A target that DECLARES `stdout: repl-transcript` has a runtime whose stdout
+// is not the program's: shen-go's cmd/kl prints numbered prompts, echoes each
+// form's value and reports its own panics, with the program's output embedded
+// in that, so containment is the strongest thing assertable there. That is the
+// only softening, it is keyed on the declared fact rather than on a target's
+// name, and it is a fact about the transcript rather than about the run. The
+// case such a runtime genuinely cannot serve -- a fixture stdin, where the VM
+// eats the bytes as toplevel forms and the program reads EOF -- never reaches
+// here: evidencePossible refuses it as a named skip before anything is shaken,
 // because a trace of a run that answered the wrong thing is not evidence and
 // must not be reported as OK.
 //
@@ -618,13 +626,13 @@ func checkGolden(prog, target, stdout string) (goldenResult, error) {
 	}
 	got, wanted := canon(stdout), canon(string(want))
 	sentinel := "yggdrasil-trace-check: FAIL stdout=mismatch-vs-" + filepath.Base(path)
-	if target == klTarget {
+	if _, stdoutFact := runFacts(target); stdoutFact == stdoutTranscript {
 		if !strings.Contains(got, wanted) {
 			return goldenResult{path: path}, &traceFailure{sentinel: sentinel, detail: fmt.Errorf(
-				"the traced kl run's transcript does not contain %s:\n  want: %q\n  got:  %q",
-				path, wanted, got)}
+				"the traced %s run's transcript does not contain %s:\n  want: %q\n  got:  %q",
+				target, path, wanted, got)}
 		}
-		return goldenResult{path: path, checked: true, how: "contained in the kl transcript"}, nil
+		return goldenResult{path: path, checked: true, how: "contained in the " + target + " transcript"}, nil
 	}
 	if got != wanted {
 		return goldenResult{path: path}, &traceFailure{sentinel: sentinel, detail: fmt.Errorf(
@@ -677,103 +685,6 @@ func manifestFnNames(outdir string) ([]string, error) {
 		if name != "" {
 			out = append(out, name)
 		}
-	}
-	return out, nil
-}
-
-// ---- the built-in "kl" runner ------------------------------------------
-//
-// trace-check takes any target in builders.json, plus one that is not in it:
-// `kl`, the shaken KL run directly on shen-go's bare KLambda VM
-// (cmd/kl in the sibling checkout). It exists because it is the most direct
-// reading of the question this check asks. The claim under test is about the
-// KL the shake WRITES; a stage-2 builder is a second program that compiles
-// that KL, and when its own compiler image will not boot -- which shen-go's
-// yggdrasil-build has been observed to do, see the port caveat in
-// docs/analysis-rules.md -- the artifact still has a runtime that will
-// execute it verbatim. `kl` is therefore the fallback that keeps the check
-// runnable, and `--target go` remains the compositional case that also
-// checks the backend.
-//
-// The VM reads its program from stdin, so a fixture's stdin bytes are
-// appended after the driver forms and are read by the program from the same
-// descriptor.
-const klTarget = "kl"
-
-// klRunner builds the sibling shen-go's KL VM and writes the driver: the
-// shaken kernel, the initialiser call, then the user files in manifest
-// order -- the stage-2 builder contract, executed rather than compiled.
-func klRunner(outdir, stdinFile string) (argv []string, feed string, err error) {
-	builders, err := loadBuilders()
-	if err != nil {
-		return nil, "", err
-	}
-	b, ok := builders["go"]
-	if !ok {
-		return nil, "", errors.New(`the "kl" runner needs the go builder entry to locate the shen-go checkout`)
-	}
-	if _, err := exec.LookPath("go"); err != nil {
-		return nil, "", nil // no Go toolchain: SKIP
-	}
-	dir := siblingDir("go", b)
-	if fi, err := os.Stat(filepath.Join(dir, "cmd", "kl")); err != nil || !fi.IsDir() {
-		return nil, "", nil // no sibling shen-go: SKIP
-	}
-	bin := filepath.Join(outdir, "klvm")
-	cmd := exec.Command("go", "build", "-o", bin, "./cmd/kl")
-	cmd.Dir = dir
-	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
-	if err := cmd.Run(); err != nil {
-		return nil, "", fmt.Errorf("building the shen-go KL VM in %s: %w", dir, err)
-	}
-
-	var body bytes.Buffer
-	kern, err := os.ReadFile(filepath.Join(outdir, "kernel.kl"))
-	if err != nil {
-		return nil, "", err
-	}
-	body.Write(kern)
-	body.WriteString("\n(shen.initialise)\n")
-	users, err := manifestUserFiles(outdir)
-	if err != nil {
-		return nil, "", err
-	}
-	for _, u := range users {
-		src, err := os.ReadFile(filepath.Join(outdir, u))
-		if err != nil {
-			return nil, "", err
-		}
-		body.Write(src)
-		body.WriteString("\n")
-	}
-	if stdinFile != "" {
-		in, err := os.ReadFile(stdinFile)
-		if err != nil {
-			return nil, "", err
-		}
-		body.Write(in)
-	}
-	feed = filepath.Join(outdir, "_klvm_feed.kl")
-	if err := os.WriteFile(feed, body.Bytes(), 0o644); err != nil {
-		return nil, "", err
-	}
-	return []string{bin}, feed, nil
-}
-
-// manifestUserFiles reads the user= lines of the txt manifest, in order.
-func manifestUserFiles(outdir string) ([]string, error) {
-	b, err := os.ReadFile(filepath.Join(outdir, "yggdrasil.manifest.txt"))
-	if err != nil {
-		return nil, err
-	}
-	var out []string
-	for _, line := range strings.Split(string(b), "\n") {
-		if v, ok := strings.CutPrefix(strings.TrimRight(line, "\r"), "user="); ok && v != "" {
-			out = append(out, v)
-		}
-	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("no user= line in %s/yggdrasil.manifest.txt", outdir)
 	}
 	return out, nil
 }

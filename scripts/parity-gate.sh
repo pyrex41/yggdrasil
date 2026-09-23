@@ -61,10 +61,20 @@ done
 #   * if a probed gap starts PASSING the gate FAILS, demanding the line be
 #     deleted.  An exclusion that outlives its cause is the bug this whole
 #     script exists to catch.
-# Currently empty: the one entry that lived here, metaeval:js, was removed when
-# #23 fixed it -- and it was this script's own stale-gap check that demanded the
-# removal, which is the mechanism working as intended rather than a formality.
-KNOWN_GAPS=''
+# The one entry that lived here before, metaeval:js, was removed when #23 fixed
+# it -- and it was this script's own stale-gap check that demanded the removal,
+# which is the mechanism working as intended rather than a formality.
+#
+# metaeval:kl is here because `kl` joined the gate when it became a
+# builders.json entry (hickey-13): it runs the shaken KL on shen-go's bare
+# KLambda VM, with no stage-2 compiler in between. The eval-capable slice
+# metaeval needs takes the VM through the compiler at run time and it panics
+# part way -- the transcript reaches "eval list: 42" and then stops mid-line --
+# so the fixture's later output never appears. That is a shen-go VM limit, not
+# a shake finding: every other fixture passes on kl, and metaeval passes on the
+# `go` target, which compiles the same slice. Delete this line when the VM
+# stops panicking; the probe below will demand it.
+KNOWN_GAPS='metaeval:kl  shen-go cmd/kl panics part way through the eval-capable slice; the same slice passes on --target go'
 
 gap_reason() {  # gap_reason <fixture> <target> -> prints reason, or empty
     printf '%s\n' "$KNOWN_GAPS" | while IFS= read -r line; do

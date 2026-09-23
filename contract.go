@@ -19,10 +19,13 @@ package main
 //	           stops the fact from drifting. Nothing else earns this word.
 //	declared   the fact is stated, with or without a source, and no test
 //	           checks it. A port's declaration, taken on trust.
-//	unknown    the key is absent. Absence looks like absence: the report
-//	           prints the row rather than omitting it, because "we never
-//	           measured this" and "this port has none" are different claims
-//	           and only the first one is true here.
+//	unknown    the key is absent, OR it is present with the literal value
+//	           "unknown" (which is what builders.json's `_default.port_reads`
+//	           now holds). Absence looks like absence: the report prints the
+//	           row rather than omitting it, because "we never measured this"
+//	           and "this port has none" are different claims and only the
+//	           first one is true here. An unknown fact may still carry a
+//	           `_source` saying why it was never measured, and that prints.
 //
 // The report deliberately reads the raw JSON rather than the `builder` struct
 // for everything but `port_reads`, which has a second reader and therefore may
@@ -98,7 +101,8 @@ type contractRow struct {
 // points at the string that can.
 var contractLegend = []string{
 	"verified = checked_by names a test; read it for what the test catches and in which direction",
-	"declared = stated, nothing checks it; unknown = not declared",
+	"declared = stated, nothing checks it",
+	"unknown = not declared, or declared as the literal \"unknown\" -- nobody measured it; read the source for why",
 }
 
 func cmdContract(rest []string) int {
@@ -156,7 +160,7 @@ func cmdContract(rest []string) int {
 		} else if r.status != "unknown" {
 			fmt.Fprintf(out, "%-38s%s\n", "", "source:     none")
 		}
-		if r.status != "unknown" {
+		if r.status != "unknown" || r.checkedBy != "" {
 			checked := r.checkedBy
 			if !factChecked(checked) {
 				checked = "none"
@@ -182,7 +186,7 @@ func cmdContract(rest []string) int {
 // the target's own block OR in `_default`. Scanning only the target's block
 // would miss every fact stated once for everybody, which is the shape this
 // commit just gave the file: a new `_default` fact would be inherited by all
-// thirteen targets and reported by none of them.
+// fourteen targets and reported by none of them.
 func contractRows(block, defaults map[string]json.RawMessage, b, defaultsB builder) []contractRow {
 	var rows []contractRow
 	seen := map[string]bool{}
@@ -259,8 +263,23 @@ func contractFactRow(key string, block, defaults map[string]json.RawMessage, b, 
 			r.notes = append(r.notes, "note:       this target's own port_reads is an empty list, "+
 				"which effectivePortReads (prune.go) reads as declaring none -- the default applies")
 		}
-		eff := effectivePortReads(b, defaultsB)
-		if len(eff) == 0 {
+		eff, known := effectivePortReads(b, defaultsB)
+		if !known {
+			// UNKNOWN is a value here, not a missing row. The `_default`
+			// block says so in as many words ("unknown"), and its source
+			// says why, so both are printed: "we never measured this port"
+			// and "this port reads nothing natively" are different claims
+			// and only the first is being made.
+			r.inherited = !own
+			r.summary = portReadsUnknown + ": nobody has read this port's native global reads off its runtime"
+			if r.inherited {
+				src = defaults
+			}
+			r.source = jsonString(src[key+"_source"])
+			r.checkedBy = jsonString(src[key+"_checked_by"])
+			r.notes = append(r.notes, "consequence: --prune-init --target "+
+				"<this target> is refused (prune.go); a target-agnostic --prune-init prunes "+
+				"against the union over the targets that HAVE declared a list, and says so")
 			return r
 		}
 		r.inherited = !own
