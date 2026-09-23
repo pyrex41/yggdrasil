@@ -71,30 +71,79 @@ jobs:
         with:
           go-version: "1.27.x"
 
-      # Soufflé ships a .deb per release; prefer it, pinned, because a rule
-      # set that only evaluates on "whatever is latest" is not an oracle.
-      # Their apt repo is the fallback, for when the release asset naming
-      # changes under us (it has) or the runner image moves to a newer
-      # Ubuntu than the pinned .deb was built for.
+      # Soufflé ships a .deb per release; prefer it, pinned, because a rule set
+      # that only evaluates on "whatever is latest" is not an oracle.
+      #
+      # The pin is release 2.5, and the asset is chosen by the runner's own
+      # VERSION_ID. Two dead ends are recorded here so nobody re-walks them:
+      #
+      #   * 2.4.1 has no .deb for a live runner. Its only .deb is
+      #     x86_64-ubuntu-2004-souffle-2.4.1-Linux.deb; the 2204 name this job
+      #     used to ask for never existed, which is the 404 that ran here.
+      #   * The souffle-lang.github.io/ppa apt repo stopped at souffle 2.4
+      #     (Release file dated 2023-03-05) and every version in it Depends on
+      #     libffi7/libtinfo5-era libraries. ubuntu-latest is ubuntu-24.04,
+      #     which ships libffi8 and no libffi7, so apt can only answer "held
+      #     broken packages". The repo is not a fallback, it is a trap; it is
+      #     gone.
+      #
+      # 2.5 publishes both a 2204 and a 2404 .deb, so the case below covers the
+      # current image and the one before it. A runner on any other release
+      # fails LOUDLY here rather than installing something unpinned: adding a
+      # line to the case, with the sha512 from that release's sha512sum.txt, is
+      # the fix.
+      #
+      # The download is checked against the sha512 published in the release's
+      # own sha512sum.txt before it is installed. A pinned URL whose bytes
+      # changed underneath is not a pin.
       - name: install souffle
         env:
-          SOUFFLE_VERSION: "2.4.1"
+          SOUFFLE_VERSION: "2.5"
         run: |
           set -euo pipefail
-          deb="x86_64-ubuntu-2204-souffle-${SOUFFLE_VERSION}-Linux.deb"
+
+          . /etc/os-release
+          case "${VERSION_ID:-}" in
+            24.04)
+              deb="x86_64-ubuntu-2404-souffle-${SOUFFLE_VERSION}-Linux.deb"
+              sha512="6b86e554f6aa5abf8a8b55d8312ae37c0957c5bd6c9edeea89246db9406f645ec5e600b84fe6636b1c163da556f0da6c3d2dad46c1083413f2fcf4f95b9ac62c"
+              ;;
+            22.04)
+              deb="x86_64-ubuntu-2204-souffle-${SOUFFLE_VERSION}-Linux.deb"
+              sha512="c21e2f8153c140499f5b2aa30a148dddec7be5663e36071466cdc225a6682f9fe699b939241c7c28258ee96d1e2c2fe5585e9e8e6b74fb20172f06d2b40774da"
+              ;;
+            *)
+              echo "::error::no pinned souffle ${SOUFFLE_VERSION} .deb for ${PRETTY_NAME:-unknown runner} (VERSION_ID=${VERSION_ID:-unset}); add its asset and sha512 from https://github.com/souffle-lang/souffle/releases/tag/${SOUFFLE_VERSION}"
+              exit 1
+              ;;
+          esac
+
           url="https://github.com/souffle-lang/souffle/releases/download/${SOUFFLE_VERSION}/${deb}"
-          sudo apt-get update -qq
-          if curl -fsSL -o /tmp/souffle.deb "$url"; then
-            sudo apt-get install -y -qq /tmp/souffle.deb
-          else
-            echo "release asset $deb not available; falling back to the souffle apt repo"
-            sudo wget -q https://souffle-lang.github.io/ppa/souffle-key.public \
-              -O /usr/share/keyrings/souffle-archive-keyring.gpg
-            echo "deb [signed-by=/usr/share/keyrings/souffle-archive-keyring.gpg] https://souffle-lang.github.io/ppa/ubuntu/ stable main" \
-              | sudo tee /etc/apt/sources.list.d/souffle.list
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq souffle
+          echo "souffle ${SOUFFLE_VERSION} for ${PRETTY_NAME:-unknown}: $url"
+          if ! curl -fsSL --retry 3 --retry-delay 5 -o /tmp/souffle.deb "$url"; then
+            echo "::error::could not download the pinned souffle asset $deb from $url -- check the asset list at https://github.com/souffle-lang/souffle/releases/tag/${SOUFFLE_VERSION}"
+            exit 1
           fi
+
+          if ! echo "${sha512}  /tmp/souffle.deb" | sha512sum -c -; then
+            echo "::error::sha512 mismatch on $deb: the pinned asset's bytes changed, got $(sha512sum /tmp/souffle.deb | cut -d' ' -f1)"
+            exit 1
+          fi
+
+          sudo apt-get update -qq
+          # --no-install-recommends: the .deb's Depends (g++, mcpp, libffi8,
+          # libncurses5-dev, libsqlite3-dev, zlib1g-dev, python3) are all in
+          # noble and all the oracle needs; recommends are not.
+          if ! sudo apt-get install -y --no-install-recommends /tmp/souffle.deb; then
+            echo "::error::apt-get could not install $deb on ${PRETTY_NAME:-unknown runner} -- its Depends are unsatisfiable on this image"
+            exit 1
+          fi
+
+          if ! command -v souffle >/dev/null; then
+            echo "::error::$deb installed but no souffle on PATH"
+            exit 1
+          fi
+          echo "souffle installed: $(command -v souffle)"
           souffle --version
 
       # The stage-1 host, built the same way parity-gate.yml builds it, at the
