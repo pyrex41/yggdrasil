@@ -25,13 +25,16 @@ package main
 //   - `--prune-init --target T` where T resolves to unknown is REFUSED, by
 //     name, with the reason. --prune-init-unverified overrides it and prunes
 //     against the union below, loudly.
-//   - a target-agnostic `--prune-init` (no --target) uses the union over the
-//     targets that HAVE declared a list -- today `go` alone, five globals.
-//     That union is not a superset of what an unmeasured port reads, so the
-//     WARN wrapShakeExpr prints names both halves: which targets the union is
-//     over, and which targets it therefore says nothing about. The older
-//     claim, "the union over every builder is sound for any of them", was
-//     true only of the guess it was a union of.
+//   - a target-agnostic `--prune-init` (no --target) is refused too, while
+//     any target's reads are unknown. The union it would prune against is
+//     over the targets that HAVE declared a list -- today `go` alone, five
+//     globals -- and a shake with no --target is by definition a slice that
+//     may be built for one of the others. The older claim, "the union over
+//     every builder is sound for any of them", was true only of the guess it
+//     was a union of, and the union of the measurements is SMALLER, so it
+//     prunes more rather than less. The refusal names both halves: the
+//     targets the union is over, and the targets it says nothing about.
+//     --prune-init-unverified proceeds, with the same two halves as a WARN.
 //
 // Either way the flag is off by default: pruning changes the bytes of
 // kernel.kl, and docs/analysis-rules.md gives the parity gate, not this file,
@@ -177,12 +180,15 @@ func effectivePortReads(b, defaults builder) ([]string, bool) {
 // natively, and the failure is at run time, in the artifact, far from this
 // flag -- so it must be asked for explicitly, with --prune-init-unverified.
 //
-// A target-agnostic --prune-init (o.target == "") is not refused, and its WARN
-// says exactly what it pruned against: the union over the targets that have
-// declared a list, naming them, and naming the targets that union says nothing
-// about. The sentence this replaces -- "the union over every builder is sound
-// for any of them" -- was true of a union of guesses and is not true of a union
-// of measurements.
+// A target-agnostic --prune-init (o.target == "") is refused on the same
+// grounds while any target's reads are unknown, and this is the case that used
+// to be the recommended way out. The union it would use is over the targets
+// that have declared a list; a shake with no --target is a slice that may be
+// built for one of the others, so the union is sound for exactly the ports it
+// is over and for no one else. The refusal and the --prune-init-unverified
+// WARN both name the two halves. The sentence this replaces -- "the union over
+// every builder is sound for any of them" -- was true of a union of guesses;
+// the union of the measurements is smaller, so it prunes MORE.
 func wrapShakeExpr(expr string, o shakeOpts) (string, error) {
 	if !o.pruneInit && o.target == "" {
 		return expr, nil
@@ -202,9 +208,11 @@ func wrapShakeExpr(expr string, o shakeOpts) (string, error) {
 		if !o.allowUnverifiedPortReads {
 			return "", fmt.Errorf("--prune-init on target %s: %s, and pruning against it may drop a "+
 				"(set V Lit) that runtime reads natively.\n"+
-				"  Shake without --target (the union over the targets that HAVE declared a list: %s), "+
-				"drop --prune-init, or pass --prune-init-unverified to prune against %s anyway",
-				o.target, why, strings.Join(declaredPortReadsTargets(), ", "), describeReadsSource(known, o.target))
+				"  Name a target whose list is checked (%s), drop --prune-init, or pass "+
+				"--prune-init-unverified to prune against %s anyway.\n"+
+				"  Shaking without --target is not the way out: that union is over the same "+
+				"declared lists and is refused for the same reason",
+				o.target, why, strings.Join(verifiedPortReadsTargets(), ", "), describeReadsSource(known, o.target))
 		}
 		fmt.Fprintf(os.Stderr, "yggdrasil: WARN --prune-init on target %s prunes against %s; "+
 			"%s, so the artifact may read a global the initialiser no longer writes\n",
@@ -214,6 +222,18 @@ func wrapShakeExpr(expr string, o shakeOpts) (string, error) {
 		declared, unknown, err := portReadsCoverage()
 		if err != nil {
 			return "", err
+		}
+		if !o.allowUnverifiedPortReads {
+			return "", fmt.Errorf("--prune-init with no --target: the union it would prune against is "+
+				"over the targets that HAVE declared a port_reads list (%s, %d globals), and it says "+
+				"nothing about %s, which declare none.\n"+
+				"  A shake with no --target is by definition a slice that may be built for one of "+
+				"those, where pruning against this union can drop a (set V Lit) that runtime reads "+
+				"natively.\n"+
+				"  Name a verified target (--prune-init --target go), drop --prune-init, or pass "+
+				"--prune-init-unverified to prune against the union anyway.\n"+
+				"  `yggdrasil contract --target T` prints which T is which",
+				strings.Join(declared, ", "), len(reads), strings.Join(unknown, ", "))
 		}
 		fmt.Fprintf(os.Stderr, "yggdrasil: WARN --prune-init with no --target prunes against the UNION "+
 			"of the port_reads declared by: %s (%d globals).\n"+
@@ -250,6 +270,22 @@ func declaredPortReadsTargets() []string {
 		return []string{"none"}
 	}
 	return declared
+}
+
+// verifiedPortReadsTargets are the targets --prune-init accepts without the
+// escape hatch: a declared list with a checked_by naming a test. It is the
+// only suggestion a refusal can make that does not lead to another refusal.
+func verifiedPortReadsTargets() []string {
+	var out []string
+	for _, t := range declaredPortReadsTargets() {
+		if portReadsVerified(t) {
+			out = append(out, "--target "+t)
+		}
+	}
+	if len(out) == 0 {
+		return []string{"none today"}
+	}
+	return out
 }
 
 func targetLabel(target string) string {

@@ -234,9 +234,10 @@ type shakeOpts struct {
 	trace     bool   // --trace: weave the runtime call trace
 	pruneInit bool   // --prune-init: stage-4 dead-initialisation pruning
 	target    string // "" = no target: the union over all builders
-	// --prune-init-unverified: proceed even when the target's port_reads
-	// list in builders.json is unknown, or declared with nothing checking
-	// it, rather than a list read off that port's runtime. See
+	// --prune-init-unverified: proceed even where --prune-init is refused --
+	// a target whose port_reads in builders.json is unknown or declared
+	// with nothing checking it, and a target-agnostic shake, whose union is
+	// over the declared lists and so covers only the ports in it. See
 	// wrapShakeExpr.
 	allowUnverifiedPortReads bool
 }
@@ -1049,8 +1050,8 @@ func cmdStage(cmd string, rest []string) int {
 	web := fs.Bool("web", false, "with --target js: emit a browser-safe ES module (passes --web to ShenScript's builder)")
 	typecheck := fs.Bool("typecheck", false, "typecheck PROG under (tc +) on the host before shaking; failure aborts with no artifacts, success is recorded as typechecked= in the manifest")
 	trace := fs.Bool("trace", false, "weave runtime call tracing into the emitted KL: every defun records its entry and every (value V) its read, to ./"+traceFileName+" at run time (see yggdrasil trace-check)")
-	pruneFlag := fs.Bool("prune-init", false, "stage 4: drop toplevel (set V Lit) forms whose global nothing reads, using --target's port_reads from builders.json, or the union over the targets that have DECLARED one when no --target is given; recorded as pruned-init= in the manifest")
-	pruneUnverified := fs.Bool("prune-init-unverified", false, "allow --prune-init against a target whose builders.json port_reads is unknown (nobody measured that runtime) or declared with no test naming it; prints a WARN and prunes against the union over the targets that have declared a list")
+	pruneFlag := fs.Bool("prune-init", false, "stage 4: drop toplevel (set V Lit) forms whose global nothing reads, using --target's port_reads from builders.json; refused unless that target's list is checked, and refused with no --target too while any target's reads are unknown (see --prune-init-unverified); recorded as pruned-init= in the manifest")
+	pruneUnverified := fs.Bool("prune-init-unverified", false, "allow --prune-init where it is refused -- a target whose builders.json port_reads is unknown (nobody measured that runtime) or declared with no test naming it, or no --target at all; prints a WARN and prunes against the union over the targets that have declared a list")
 	noShake := fs.Bool("no-shake", false, "emit the FULL program (every kernel defun, the eval-capable initialiser, no trimming) instead of the shaken slice; the manifest records shaken=false. The reference build for scip-check")
 	// Allow flags after the PROG/OUTDIR positionals (Go's flag stops at the
 	// first non-flag token otherwise).
@@ -1712,7 +1713,7 @@ func cmdParity(rest []string) int {
 	timeFlag := fs.Bool("time", false, "report per-target wall-clock (advisory; never fails the gate)")
 	stdinFile := fs.String("stdin", "", "file fed to each artifact's stdin (both boots get the same bytes)")
 	pruneFlag := fs.Bool("prune-init", false, "stage 4: shake with dead-initialisation pruning on (the union over the ports that have DECLARED a port_reads list), then gate the pruned slice on every target")
-	pruneUnverified := fs.Bool("prune-init-unverified", false, "allow --prune-init against a single target whose builders.json port_reads is unknown or unchecked; prints a WARN and prunes against the union over the targets that have declared a list")
+	pruneUnverified := fs.Bool("prune-init-unverified", false, "allow --prune-init where it is refused -- a single target whose builders.json port_reads is unknown or unchecked, or no single --target at all; prints a WARN and prunes against the union over the targets that have declared a list")
 	if err := fs.Parse(reorderArgs(rest, "host", "eval-style", "target", "reference", "expect", "stdin")); err != nil {
 		return 2
 	}

@@ -838,10 +838,12 @@ cannot drift apart.
    - **every other target** declares no `port_reads` at all and inherits
      the `_default` block, whose value is the literal string `unknown`
      (hickey-14). `--prune-init --target T` on such a target is refused by
-     name; a `shake` with no `--target` prunes against the union over the
-     targets that *have* declared a list — today `go`'s five — and the
-     `WARN` names both the targets the union is over and the targets it
-     therefore says nothing about.
+     name, and so is a `shake` with no `--target` while any target is
+     unknown: the union it would use is over the targets that *have*
+     declared a list — today `go`'s five — so it is sound for those and
+     for no one else. Both refusals name the targets the union is over and
+     the targets it says nothing about; `--prune-init-unverified` prunes
+     against that union anyway, with the same two halves as a `WARN`.
 
      `_default` used to hold a conservative superset instead: `go`'s five
      plus every global the kernel's own defuns read in the full boot
@@ -902,19 +904,30 @@ cannot drift apart.
 
    The CLI no longer leaves that to a gate. `wrapShakeExpr` in `prune.go`
    **refuses** `--prune-init --target T` outright when `T`'s `port_reads`
-   is not backed by a named test (`portReadsVerified`), naming the three
-   ways out: shake without `--target` (the union over the targets that
-   have DECLARED a list, which the `WARN` names, along with the targets it
-   therefore says nothing about), drop the flag, or pass
-   `--prune-init-unverified` to prune against that union on the named
-   target anyway and take a warning on stderr. Only `go` passes today;
-   every other target inherits `_default`, whose `port_reads` is the
-   literal string `unknown` and whose `port_reads_checked_by` is `none`,
-   so the refusal for those says that nobody has measured that runtime
-   rather than that its list is unchecked -- different claims, and
-   different repairs. `TestPruneInitRefusesUnverifiedTarget` and
-   `TestTargetAgnosticPruneNamesWhatTheUnionIsOver` are what fail if that
-   stops being true.
+   is not backed by a named test (`portReadsVerified`), naming the ways
+   out: name a target whose list is checked (`--target go`, the only one
+   today), drop the flag, or pass `--prune-init-unverified` and take a
+   warning on stderr. Every other target inherits `_default`, whose
+   `port_reads` is the literal string `unknown` and whose
+   `port_reads_checked_by` is `none`, so the refusal for those says that
+   nobody has measured that runtime rather than that its list is
+   unchecked -- different claims, and different repairs.
+
+   **A shake with no `--target` is refused on the same grounds**, and this
+   is the case that used to be the recommended way out ("the union over
+   every builder is sound for any of them"). That sentence was true of a
+   union of guesses. The union of the *measurements* is over the targets
+   that have declared a list -- `go` alone, five globals -- and it is
+   smaller, so it prunes **more**; a shake with no `--target` is by
+   definition a slice that may be built for one of the ports it says
+   nothing about. The refusal names both halves -- the targets the union
+   is over, and the targets it does not cover -- and
+   `--prune-init-unverified` proceeds with the same two halves as a
+   `WARN`. `TestPruneInitRefusesUnverifiedTarget`,
+   `TestTargetAgnosticPruneNamesWhatTheUnionIsOver` and
+   `TestPruneRefusalIsOnlyOnPruning` are what fail if any of that stops being
+   true -- the last of them because `facts --target T`, which installs a
+   list and prunes nothing, must never be caught by either refusal.
 
    What is *not* checked is the pruned artifact itself. `trace-check`
    shakes with pruning **off**, so its `initwrite` is the unpruned

@@ -278,8 +278,8 @@ func contractFactRow(key string, block, defaults map[string]json.RawMessage, b, 
 			r.source = jsonString(src[key+"_source"])
 			r.checkedBy = jsonString(src[key+"_checked_by"])
 			r.notes = append(r.notes, "consequence: --prune-init --target "+
-				"<this target> is refused (prune.go); a target-agnostic --prune-init prunes "+
-				"against the union over the targets that HAVE declared a list, and says so")
+				"<this target> is refused (prune.go); so is a target-agnostic --prune-init, "+
+				"whose union is over the targets that HAVE declared a list")
 			return r
 		}
 		r.inherited = !own

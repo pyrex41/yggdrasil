@@ -207,12 +207,14 @@ pruning changes the bytes of `kernel.kl`, and pruning against a
 runtime reads natively. The CLI refuses `--prune-init --target T` outright
 unless `T`'s `port_reads` names a test in `builders.json`; only `go` does,
 and for every other target the answer is not an unchecked list but
-`unknown` — nobody has measured what that runtime reads. Shake without
-`--target` to prune against the union over the targets that **have**
-declared a list (today `go` alone; the `WARN` names them, and names the
-targets the union therefore says nothing about), or pass
-`--prune-init-unverified` to prune against that union on a named target
-anyway and take a warning. With the flag off the emitted `kernel.kl` is
+`unknown` — nobody has measured what that runtime reads. Shaking **without**
+`--target` is refused too while any target is unknown: the union it would
+prune against is over the targets that *have* declared a list (today `go`
+alone), so it is sound for those and for no one else, and a no-target slice
+is by definition one that may be built for a port nobody checked. Both
+refusals name the targets the union is over and the targets it says nothing
+about. `--prune-init-unverified` prunes against that union anyway and takes
+a warning. With the flag off the emitted `kernel.kl` is
 byte-identical to a pre-stage-4 shake's, save for the single
 `shen.initialise` line the later D8 ordering change permutes (see
 [docs/verification-guide.md](docs/verification-guide.md) §6).
@@ -232,10 +234,11 @@ which every unmeasured target inherited, so "nobody looked" and "somebody
 measured this" reached every consumer in the same shape.
 `yggdrasil contract --target T` now prints `port_reads  unknown` for such
 a target, with the source saying why and a line saying what it costs —
-`--prune-init` refuses that target by name. With no `--target` the union
-over the targets that **have** declared a list is used, and the tool says
-so rather than calling it sound for targets that are not in it; `--target
-go` uses `go`'s own, which is the only measured one.
+`--prune-init` refuses that target by name, and refuses a shake with no
+`--target` for the same reason — the union over the declared lists is sound
+for the targets in it and for no others. `--target go` uses `go`'s own,
+which is the only measured one, and is the only invocation the flag accepts
+unasked.
 
 Only a form that is exactly `(set V Lit)` for an atomic `Lit` is ever
 dropped. A form whose value is a call — `(set *property-vector* (vector

@@ -891,20 +891,22 @@ func TestPruneInitRefusesUnverifiedTarget(t *testing.T) {
 		t.Skip("every target's port_reads is verified; nothing to refuse")
 	}
 	const expr = `(yggdrasil.shake ["/p/prog.shen"] "/p/out")`
-	_, err = wrapShakeExpr(expr, shakeOpts{pruneInit: true, target: unverified})
-	if err == nil {
+	// Held in its own variable: the assertions below reach back into this
+	// refusal's text after other calls have returned their own errors.
+	_, refusal := wrapShakeExpr(expr, shakeOpts{pruneInit: true, target: unverified})
+	if refusal == nil {
 		t.Fatalf("--prune-init --target %s was accepted; nothing has measured its port_reads", unverified)
 	}
-	if !strings.Contains(err.Error(), unverified) {
-		t.Errorf("the refusal must name the target; got %q", err)
+	if !strings.Contains(refusal.Error(), unverified) {
+		t.Errorf("the refusal must name the target; got %q", refusal)
 	}
 	for _, want := range []string{"port_reads", "--prune-init-unverified"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("the refusal must mention %q; got %q", want, err)
+		if !strings.Contains(refusal.Error(), want) {
+			t.Errorf("the refusal must mention %q; got %q", want, refusal)
 		}
 	}
-	if _, known, _ := portReadsFor(unverified); !known && !strings.Contains(err.Error(), portReadsUnknown) {
-		t.Errorf("%s resolves to unknown and the refusal does not say the word: %q", unverified, err)
+	if _, known, _ := portReadsFor(unverified); !known && !strings.Contains(refusal.Error(), portReadsUnknown) {
+		t.Errorf("%s resolves to unknown and the refusal does not say the word: %q", unverified, refusal)
 	}
 
 	// The escape hatch proceeds, and still installs a list -- the union over
@@ -924,23 +926,36 @@ func TestPruneInitRefusesUnverifiedTarget(t *testing.T) {
 		t.Errorf("the escape hatch installed a different list than portReadsFor resolves:\n%s", got)
 	}
 
-	// A verified target is never refused, and neither is the target-agnostic
-	// union -- but the union is now over the targets that declared a list,
-	// not over every builder, so what it does NOT cover has to be said.
+	// A verified target is never refused. The target-agnostic union no longer
+	// is the way out -- see the next test.
 	if _, err := wrapShakeExpr(expr, shakeOpts{pruneInit: true, target: "go"}); err != nil {
 		t.Errorf("--prune-init --target go must be accepted: %v", err)
 	}
-	if _, err := wrapShakeExpr(expr, shakeOpts{pruneInit: true}); err != nil {
-		t.Errorf("--prune-init with no target must be accepted (it uses the union): %v", err)
+	// And the refusal must not send the reader down a path that is itself
+	// refused, which "shake without --target" now is: a message whose first
+	// suggestion produces a second refusal is how a user concludes the flag
+	// is broken rather than that the data is missing.
+	if _, noTarget := wrapShakeExpr(expr, shakeOpts{pruneInit: true}); noTarget != nil {
+		if strings.Contains(refusal.Error(), "Shake without --target (") {
+			t.Errorf("the refusal recommends shaking without --target, which is itself refused:\n%v", refusal)
+		}
+		if !strings.Contains(refusal.Error(), "--target go") {
+			t.Errorf("the refusal names no accepted way through; got %q", refusal)
+		}
 	}
 }
 
-// What a target-agnostic --prune-init prunes against, and what it says about
-// it. The union used to be over every builder's EFFECTIVE list, which included
-// the 35-name guess, so "sound for any of them" was true of the guess and of
-// nothing else. It is now over the DECLARED lists only, which is a smaller and
-// honest list -- and a smaller list prunes MORE, so the tool has to name the
-// targets it is therefore silent about rather than let the old sentence stand.
+// What a target-agnostic --prune-init prunes against, what it says about it,
+// and why it is REFUSED by default.
+//
+// The union used to be over every builder's EFFECTIVE list, which included the
+// 35-name guess, so "shake without --target: the union over every builder is
+// sound for any of them" was true of the guess and of nothing else. It is now
+// over the DECLARED lists only -- honest, and SMALLER, and a smaller list
+// prunes MORE. A shake with no --target is by definition a slice that may be
+// built for a port nobody measured, so the union is sound for exactly the
+// ports it is over and the flag must be asked for: this is the same refusal a
+// named unknown target gets, one level up.
 func TestTargetAgnosticPruneNamesWhatTheUnionIsOver(t *testing.T) {
 	declared, unknown, err := portReadsCoverage()
 	if err != nil {
@@ -958,11 +973,7 @@ func TestTargetAgnosticPruneNamesWhatTheUnionIsOver(t *testing.T) {
 	}
 	// Every name in the union comes from a target that declared it: an
 	// inherited guess reaching the union is the bug.
-	_, defaults, err := parseBuilders()
-	if err != nil {
-		t.Fatal(err)
-	}
-	builders, _, err := parseBuilders()
+	builders, defaults, err := parseBuilders()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -979,17 +990,63 @@ func TestTargetAgnosticPruneNamesWhatTheUnionIsOver(t *testing.T) {
 		}
 	}
 
-	// And the WARN says both halves out loud. Captured off stderr, because
-	// a message nobody can read is the same as no message.
+	const expr = `(yggdrasil.shake ["/p/prog.shen"] "/p/out")`
+	if len(unknown) == 0 {
+		t.Skip("every target declares a port_reads list; there is nothing left to refuse")
+	}
+
+	// Refused by default, and the refusal says both halves out loud.
+	_, err = wrapShakeExpr(expr, shakeOpts{pruneInit: true})
+	if err == nil {
+		t.Fatalf("--prune-init with no --target was accepted, though %d target(s) have declared "+
+			"no port_reads and a no-target slice may be built for one of them", len(unknown))
+	}
+	for _, want := range append(append([]string{"--prune-init-unverified"}, declared...), unknown...) {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not mention %q:\n%v", want, err)
+		}
+	}
+
+	// The flag proceeds, installs the union, and says the same two halves as
+	// a WARN. Captured off stderr, because a message nobody can read is the
+	// same as no message.
+	var got string
 	stderr := captureStderr(t, func() {
-		if _, err := wrapShakeExpr(`(yggdrasil.shake ["/p/prog.shen"] "/p/out")`,
-			shakeOpts{pruneInit: true}); err != nil {
-			t.Fatal(err)
+		var err error
+		got, err = wrapShakeExpr(expr, shakeOpts{pruneInit: true, allowUnverifiedPortReads: true})
+		if err != nil {
+			t.Fatalf("--prune-init-unverified with no --target must proceed: %v", err)
 		}
 	})
+	if !strings.Contains(got, "(set ygg.*prune-init* true)") {
+		t.Errorf("the escape hatch must still ask for pruning:\n%s", got)
+	}
+	if !strings.Contains(got, "(set ygg.*port-reads* ["+strings.Join(union, " ")+"])") {
+		t.Errorf("the escape hatch installed a different list than the union:\n%s", got)
+	}
 	for _, want := range append(append([]string{"WARN", "UNION"}, declared...), unknown...) {
 		if !strings.Contains(stderr, want) {
 			t.Errorf("the target-agnostic --prune-init WARN does not mention %q:\n%s", want, stderr)
+		}
+	}
+}
+
+// `facts` and `build --target T` without --prune-init are untouched by any of
+// this: they install a list and prune nothing, so there is nothing to refuse.
+// A refusal that leaked into them would break `yggdrasil facts` on twelve
+// targets for a flag those invocations never passed.
+func TestPruneRefusalIsOnlyOnPruning(t *testing.T) {
+	const expr = `(yggdrasil.facts ["/p/prog.shen"] "/p/out")`
+	if _, err := wrapShakeExpr(expr, shakeOpts{}); err != nil {
+		t.Errorf("the default shake was refused: %v", err)
+	}
+	builders, err := loadBuilders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name := range builders {
+		if _, err := wrapShakeExpr(expr, shakeOpts{target: name}); err != nil {
+			t.Errorf("facts --target %s prunes nothing and must not be refused: %v", name, err)
 		}
 	}
 }

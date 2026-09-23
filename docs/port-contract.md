@@ -77,14 +77,17 @@ everywhere downstream (hickey-14):
   on such a target is **refused**, naming the target and saying that
   nobody has read what its runtime reads natively. `--prune-init-unverified`
   overrides it and prunes against the union below, with a `WARN`.
-* **a target-agnostic `--prune-init`** (no `--target`) prunes against the
-  union over the targets that **have** declared a list -- today `go`
-  alone, five globals -- and prints a `WARN` naming both halves: the
-  targets the union is over, and the targets it therefore says nothing
-  about. The older claim, "the union over every builder is sound for any
-  of them", was true of a union of guesses and is not true of a union of
-  measurements. A slice pruned this way and built for an unmeasured port
-  may read a global the initialiser no longer writes.
+* **a target-agnostic `--prune-init`** (no `--target`) is **refused** on
+  the same grounds while any target is unknown. The union it would prune
+  against is over the targets that **have** declared a list -- today `go`
+  alone, five globals -- and a shake with no `--target` is by definition a
+  slice that may be built for one of the others, where a global the
+  initialiser no longer writes is a run-time failure far from this flag.
+  The older claim, "the union over every builder is sound for any of
+  them", was true of a union of guesses; the union of the measurements is
+  *smaller*, so it prunes more. The refusal names both halves -- the
+  targets the union is over, and the targets it says nothing about -- and
+  `--prune-init-unverified` proceeds with the same two halves as a `WARN`.
 * **`yggdrasil contract --target T`** prints
   `level1  port_reads  unknown  unknown: nobody has read this port's native
   global reads off its runtime`, with the `_default` source under it and a
@@ -387,7 +390,7 @@ level1  port_reads         unknown    unknown: nobody has read this port's nativ
                                       inherited: builders.json _default (this target declares none of its own)
                                       source:     none: nobody has read this port's native global reads off its runtime. The previous value here was a conservative guess ...
                                       checked_by: none
-                                      consequence: --prune-init --target <this target> is refused (prune.go); a target-agnostic --prune-init prunes against the union over the targets that HAVE declared a list, and says so
+                                      consequence: --prune-init --target <this target> is refused (prune.go); so is a target-agnostic --prune-init, whose union is over the targets that HAVE declared a list
 ```
 
 and on `kl`, whose two run facts are the whole of what used to be a

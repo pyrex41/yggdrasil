@@ -186,8 +186,15 @@ pruning is off by default precisely because *this* gate, per target, is what
 says it is safe to turn on. A target whose `builders.json` `port_reads` list
 is missing an entry produces an artifact with a global left unbound, which
 shows up here as a run failure or a `vs-truth DIFFER`, and nowhere earlier.
-With one `--target T` the shake uses `T`'s own `port_reads`; with several, or
-none, it uses the union of every target's, which is the conservative list.
+With one `--target T` the shake uses `T`'s own `port_reads`, and is **refused**
+unless that list names a test (`--target go` is the only one today). With
+several targets, or none, the shake has no single list and would fall back to
+the union over the targets that have declared one -- which is sound for those
+and for no others -- so it is refused too, and `--prune-init-unverified` is
+what proceeds, with a `WARN` naming the targets the union is over and the
+targets it says nothing about. That is deliberate: this gate is what decides
+whether pruning is safe on a port, so it must not quietly prune against a list
+nobody read off that port.
 
 No target defaults it on yet. Only `go`'s `port_reads` has been verified
 against a runtime, and the `go` builder did not boot on the machine stage 4
