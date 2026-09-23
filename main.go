@@ -827,7 +827,7 @@ func main() { os.Exit(run(os.Args[1:])) }
 
 func run(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: yggdrasil <shake|build|run|check|why|facts|trace-check|parity|scip-check|contract|targets> ...")
+		fmt.Fprintln(os.Stderr, "usage: yggdrasil <shake|build|run|check|why|facts|trace-check|parity|lower|lower-check|scip-check|contract|targets> ...")
 		return 2
 	}
 	cmd, rest := args[0], args[1:]
@@ -860,6 +860,10 @@ func run(args []string) int {
 		return cmdTraceCheck(rest)
 	case "parity":
 		return cmdParity(rest)
+	case "lower":
+		return cmdLower(rest)
+	case "lower-check":
+		return cmdLowerCheck(rest)
 	case "scip-check":
 		return cmdScipCheck(rest)
 	case "contract":
