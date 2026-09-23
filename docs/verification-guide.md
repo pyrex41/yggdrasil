@@ -684,7 +684,9 @@ and `dispatch` are proposed keys with no data and no consumer
 (`port-contract.md`); `kl` is a special-cased runner counted in places as
 a runtime (`analysis-rules.md`, "Targets, and a port caveat"); and
 shen-go's natives are installed *after* `shen.initialise`, which is the
-port's to change, not Yggdrasil's (`lowering.md`, "The measurement").
+port's to change, not Yggdrasil's, and which is why `yggdrasil lower` refuses
+on every target that exists today (`lowering.md`, "The gate, and why it
+refuses everywhere today").
 
 ### Is this the smallest possible artifact?
 
@@ -733,6 +735,10 @@ extensional equivalence. Yggdrasil's checks certify the *removal* of code;
 they say nothing about a rewrite. A KL-level optimiser would need its own
 rule set, its own oracle, and its own trace check, and the machinery in
 this guide is the template for building them, not a substitute.
+`docs/optimisation.md` writes down the one structural property such a pass
+owes the shake -- the kernel functions reachable after the pass are a subset
+of those reachable before, checked by shaking twice and comparing footprints
+-- and why a pass then one shake suffices, with no fixpoint loop.
 
 ## 13. Reproducing everything
 
