@@ -170,7 +170,7 @@ func TestTraceCheckRules(t *testing.T) {
 	if _, err := facts(prog, factsDir, host, "sub", true); err != nil {
 		t.Fatalf("facts: %v", err)
 	}
-	reach := kernelDefuns(t, filepath.Join(shakeDir, "kernel.kl"))
+	reach := kernelDefunSet(t, filepath.Join(shakeDir, "kernel.kl"))
 
 	// A trace that entered only footprint functions, plus the user defun and
 	// a weaver helper -- neither of which is a kernel call-graph row, so
@@ -254,7 +254,7 @@ func TestTraceCheckFixtures(t *testing.T) {
 			name := target + "/" + strings.TrimSuffix(filepath.Base(c.prog), ".shen")
 			t.Run(name, func(t *testing.T) {
 				res, err := traceCheck(c.prog, t.TempDir(), target,
-					defaultStdin(c.prog), host, "sub")
+					defaultStdin(c.prog), host, "sub", shakeOpts{})
 				if name := skipName(err); name != "" {
 					// A named skip, never a silent pass: the kl
 					// runner cannot deliver a fixture stdin, so on
@@ -435,7 +435,7 @@ func TestTraceCheckComplete(t *testing.T) {
 	if !contains(traceTargets(t, host), "go") {
 		t.Skip("the go stage-2 builder is not usable here")
 	}
-	res, err := traceCheck("tests/fib.shen", t.TempDir(), "go", "", host, "sub")
+	res, err := traceCheck("tests/fib.shen", t.TempDir(), "go", "", host, "sub", shakeOpts{})
 	if err != nil {
 		t.Fatalf("trace-check: %v", err)
 	}
@@ -500,7 +500,7 @@ func TestTraceCheckTruncated(t *testing.T) {
 		t.Fatalf("facts: %v", err)
 	}
 	var footprint []string
-	for f := range kernelDefuns(t, filepath.Join(shakeDir, "kernel.kl")) {
+	for f := range kernelDefunSet(t, filepath.Join(shakeDir, "kernel.kl")) {
 		footprint = append(footprint, f)
 	}
 	writeFactsTSV(filepath.Join(factsDir, "readglobal.facts"), []string{"*stoutput*"})
@@ -561,7 +561,7 @@ func TestTraceCheckPrefix(t *testing.T) {
 		t.Fatalf("facts: %v", err)
 	}
 	var footprint []string
-	for f := range kernelDefuns(t, filepath.Join(shakeDir, "kernel.kl")) {
+	for f := range kernelDefunSet(t, filepath.Join(shakeDir, "kernel.kl")) {
 		footprint = append(footprint, f)
 	}
 	sort.Strings(footprint)
@@ -573,7 +573,7 @@ func TestTraceCheckPrefix(t *testing.T) {
 	meta := &traceFacts{complete: true, called: called,
 		reads: []string{"*stoutput*"}, program: []string{"fib"}, lines: 49076}
 	writeFactsTSV(filepath.Join(factsDir, "called.facts"), called)
-	if err := writeTraceMeta(factsDir, meta); err != nil {
+	if err := writeTraceMeta(factsDir, meta, meta.called); err != nil {
 		t.Fatal(err)
 	}
 	got, err := traceCheckHost(prog, factsDir, host, "sub")
@@ -607,7 +607,7 @@ func TestTraceCheckPrefix(t *testing.T) {
 	// A writer that says the trace it read never ended must not be believed
 	// about anything else either.
 	writeFactsTSV(filepath.Join(factsDir, "called.facts"), called)
-	if err := writeTraceMeta(factsDir, &traceFacts{called: called, lines: 1}); err != nil {
+	if err := writeTraceMeta(factsDir, &traceFacts{called: called, lines: 1}, called); err != nil {
 		t.Fatal(err)
 	}
 	got, err = traceCheckHost(prog, factsDir, host, "sub")
@@ -622,7 +622,7 @@ func TestTraceCheckPrefix(t *testing.T) {
 	// guard is satisfied. It is a loss detector, not a forgery detector,
 	// and the comment above yggdrasil.trace-check says exactly that.
 	writeFactsTSV(filepath.Join(factsDir, "called.facts"), cut)
-	if err := writeTraceMeta(factsDir, &traceFacts{complete: true, called: cut, lines: 1}); err != nil {
+	if err := writeTraceMeta(factsDir, &traceFacts{complete: true, called: cut, lines: 1}, cut); err != nil {
 		t.Fatal(err)
 	}
 	got, err = traceCheckHost(prog, factsDir, host, "sub")
@@ -640,7 +640,7 @@ func TestWriteTraceMeta(t *testing.T) {
 	dir := t.TempDir()
 	tf := &traceFacts{complete: true, called: []string{"a", "b"}, reads: []string{"*x*"},
 		program: []string{"b"}, lines: 7}
-	if err := writeTraceMeta(dir, tf); err != nil {
+	if err := writeTraceMeta(dir, tf, tf.called); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(filepath.Join(dir, traceMetaName))
@@ -651,7 +651,7 @@ func TestWriteTraceMeta(t *testing.T) {
 	if string(b) != want {
 		t.Errorf("trace.meta =\n%q\nwant\n%q", b, want)
 	}
-	if err := writeTraceMeta(dir, &traceFacts{}); err != nil {
+	if err := writeTraceMeta(dir, &traceFacts{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	b, _ = os.ReadFile(filepath.Join(dir, traceMetaName))
@@ -862,6 +862,390 @@ func TestPhaseDegenerate(t *testing.T) {
 	for _, want := range []string{"DEGENERATE", "kl", "called-program=0", "calledprogram.facts"} {
 		if !strings.Contains(w, want) {
 			t.Errorf("the degenerate warning does not mention %q:\n%s", want, w)
+		}
+	}
+}
+
+// ---- (A) the pruned artifact, torvalds-12 ------------------------------
+//
+// Until these, nothing here ever looked at a PRUNED artifact: trace-check
+// shook with pruning off, so the trace's readGlobal relation could not see a
+// global whose initialiser --prune-init had removed, and the only runtime
+// evidence stage 4 had was one fib stdout comparison on one target.
+
+// TestPrunedReadViolations is the rule as a pure function: the three sets in,
+// the FAIL set out, no host and no runtime. The negative case below is the
+// same rule driven by a real artifact; this one pins the algebra, and in
+// particular that port_reads is an escape hatch rather than decoration.
+func TestPrunedReadViolations(t *testing.T) {
+	pruned := []string{"shen.*tc*", "*home-directory*", "shen.*spy*"}
+	ports := []string{"*home-directory*", "*stoutput*"}
+	cases := []struct {
+		name  string
+		reads []string
+		want  []string
+	}{
+		{"a read of a pruned global nobody declares", []string{"shen.*tc*"}, []string{"shen.*tc*"}},
+		{"a read of a pruned global the port declares", []string{"*home-directory*"}, nil},
+		{"a read of a global that was never pruned", []string{"*stoutput*", "*hush*"}, nil},
+		{"both, sorted and deduplicated",
+			[]string{"shen.*spy*", "shen.*tc*", "shen.*tc*", "*home-directory*"},
+			[]string{"shen.*spy*", "shen.*tc*"}},
+		{"nothing read at all", nil, nil},
+	}
+	for _, c := range cases {
+		got := prunedReadViolations(c.reads, pruned, ports)
+		if !equalStrings(got, c.want) {
+			t.Errorf("%s: prunedReadViolations = %v, want %v", c.name, got, c.want)
+		}
+	}
+	// Nothing pruned is the default shake, and it can never produce a
+	// violation however much the run reads.
+	if got := prunedReadViolations([]string{"*hush*", "shen.*tc*"}, nil, nil); len(got) != 0 {
+		t.Errorf("an unpruned build produced violations: %v", got)
+	}
+}
+
+// TestPrunedGlobalsIsTheDifference: "the shake pruned this" is read off two
+// artifacts, not declared. The manifest records a count; the names come from
+// diffing the two initialisers, so a build that pruned nothing yields nothing
+// and anything the two share cancels.
+func TestPrunedGlobalsIsTheDifference(t *testing.T) {
+	unpruned := []string{"*hush*", "shen.*tc*", "*version*", "shen.*spy*"}
+	kept := []string{"*hush*", "*version*"}
+	if got := prunedGlobals(unpruned, kept); !equalStrings(got, []string{"shen.*spy*", "shen.*tc*"}) {
+		t.Errorf("prunedGlobals = %v, want the two dropped globals", got)
+	}
+	if got := prunedGlobals(unpruned, unpruned); len(got) != 0 {
+		t.Errorf("a build that pruned nothing reported %v", got)
+	}
+}
+
+// TestPrunePortReadsTarget: `kl` is not a builder, it is shen-go's bare
+// KLambda VM, so its native reads are the go entry's. Without this the
+// pruned check on --target kl would be refused as an unknown target.
+func TestPrunePortReadsTarget(t *testing.T) {
+	if got := prunePortReadsTarget(klTarget); got != "go" {
+		t.Errorf("prunePortReadsTarget(kl) = %q, want go", got)
+	}
+	for _, tgt := range []string{"go", "lua", "js"} {
+		if got := prunePortReadsTarget(tgt); got != tgt {
+			t.Errorf("prunePortReadsTarget(%q) = %q, want itself", tgt, got)
+		}
+	}
+	// The mapping has to name a target builders.json actually has, or the
+	// check would fail for a reason that is not the run's.
+	if _, err := portReadsFor(prunePortReadsTarget(klTarget)); err != nil {
+		t.Errorf("the kl mapping does not name a real builder: %v", err)
+	}
+}
+
+// TestTraceCheckPrunedFixtures: the positive half, end to end on a real
+// pruned artifact. fib prunes 28 of the initialiser's globals and reads none
+// of them, which is the claim stage 4 makes and had no runtime evidence for.
+func TestTraceCheckPrunedFixtures(t *testing.T) {
+	host := checkHost(t)
+	targets := traceTargets(t, host)
+	if !contains(targets, "go") {
+		t.Skip("the go stage-2 builder is not usable here; --prune-init needs a target whose port_reads are verified")
+	}
+	res, err := traceCheck("tests/fib.shen", t.TempDir(), "go", "", host, "sub",
+		shakeOpts{pruneInit: true})
+	if err != nil {
+		t.Fatalf("trace-check --prune-init: %v", err)
+	}
+	if res == nil {
+		t.Skip("go is not runnable here")
+	}
+	if !res.ok {
+		t.Fatalf("the pruned fib artifact did not pass: %s", res.sentinel)
+	}
+	if len(res.pruned) == 0 {
+		t.Fatal("--prune-init pruned nothing, so the check had nothing to check: " +
+			"the two reference builds are identical and the negative case cannot fail either")
+	}
+	if len(res.prunedRead) != 0 {
+		t.Errorf("fib read pruned globals: %v", res.prunedRead)
+	}
+	if !res.complete {
+		t.Error("the trace of the pruned artifact has no end-of-run record")
+	}
+	if res.golden.how != "matches" {
+		t.Errorf("the pruned artifact's stdout was not compared: %s", res.golden.how)
+	}
+	t.Logf("fib pruned %d globals, read %d of them outside port_reads: %s",
+		len(res.pruned), len(res.prunedRead), res.sentinel)
+}
+
+// TestTraceCheckPrunedReadFails is the negative half, and the whole of
+// torvalds-12 in one test.
+//
+// tests/computed-read.shen builds the name shen.*tc* out of a string, so there
+// is no symbol for rawsym to keep alive and no readsIn or reads row:
+// --prune-init deletes (set shen.*tc* false) from the initialiser, and the
+// artifact reads the global anyway. The run is CORRECT -- it writes the global
+// itself first, and its stdout matches the golden -- so nothing but the trace
+// can see this.
+//
+// The two halves of the test are the finding: without --prune-init the same
+// program on the same target reports OK, because the host half's uncoveredRead
+// rule takes `initwrite` from the UNPRUNED analysis and still believes the
+// initialiser writes shen.*tc*.
+func TestTraceCheckPrunedReadFails(t *testing.T) {
+	host := checkHost(t)
+	targets := traceTargets(t, host)
+	if !contains(targets, "go") {
+		t.Skip("the go stage-2 builder is not usable here")
+	}
+	const prog = "tests/computed-read.shen"
+
+	// Unpruned: the check that existed before this commit, on the artifact
+	// that is about to fail. It passes, and that is the defect.
+	clean, err := traceCheck(prog, t.TempDir(), "go", "", host, "sub", shakeOpts{})
+	if err != nil {
+		t.Fatalf("trace-check (no pruning): %v", err)
+	}
+	if clean == nil {
+		t.Skip("go is not runnable here")
+	}
+	if !clean.ok {
+		t.Fatalf("the UNPRUNED artifact already fails (%s), so the pruned failure below "+
+			"would not be evidence about pruning", clean.sentinel)
+	}
+
+	res, err := traceCheck(prog, t.TempDir(), "go", "", host, "sub", shakeOpts{pruneInit: true})
+	if err == nil {
+		t.Fatalf("the pruned artifact passed: it reads shen.*tc* at run time and the shake "+
+			"deleted the (set shen.*tc* false) that initialises it (pruned %d globals)",
+			len(res.pruned))
+	}
+	if name := skipName(err); name != "" {
+		t.Skipf("no evidence obtainable here: %s", name)
+	}
+	line := failSentinel(err)
+	if line == "" {
+		t.Fatalf("the failure was not reported on the sentinel line, so no consumer that "+
+			"greps for the verdict can see it: %v", err)
+	}
+	if !strings.Contains(line, "pruned-read=") || !strings.Contains(line, "shen.*tc*") {
+		t.Errorf("the sentinel does not name the global: %s", line)
+	}
+	if res == nil || !contains(res.prunedRead, "shen.*tc*") {
+		t.Errorf("the result does not carry the violation: %+v", res)
+	}
+	if res != nil && !contains(res.pruned, "shen.*tc*") {
+		t.Errorf("shen.*tc* is not in the pruned set, so the failure came from somewhere else: %v", res.pruned)
+	}
+	t.Logf("pruned artifact: %s", line)
+}
+
+// ---- (B) the containment check that can fail ---------------------------
+
+// TestOutsideReach pins the predicate, including the two exclusions that stop
+// it from failing on things reach never claimed: a user defun and the weaver's
+// own helpers are not kernel rows.
+func TestOutsideReach(t *testing.T) {
+	kernel := []string{"shen.app", "shen.printF", "pr"}
+	reach := []string{"shen.app", "pr"}
+	cases := []struct {
+		name   string
+		called []string
+		want   []string
+	}{
+		{"a kernel defun outside the slice", []string{"shen.printF"}, []string{"shen.printF"}},
+		{"only names the slice has", []string{"pr", "shen.app"}, nil},
+		{"a user defun is not a kernel row", []string{"fib", "main"}, nil},
+		{"the weaver's helpers are not kernel rows", []string{"ygg.traced", "shen.initialise"}, nil},
+		{"deduplicated and sorted",
+			[]string{"shen.printF", "shen.printF", "pr"}, []string{"shen.printF"}},
+	}
+	for _, c := range cases {
+		if got := outsideReach(c.called, kernel, reach); !equalStrings(got, c.want) {
+			t.Errorf("%s: outsideReach = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestShakeExprFullTraced: the full traced artifact is its own named mode. The
+// refusal of --trace with --no-shake is still a refusal -- nothing gets the
+// woven full program by setting the two booleans that were never meant to
+// compose -- and the mode that does want it says so.
+func TestShakeExprFullTraced(t *testing.T) {
+	got, err := shakeExpr("/p/prog.shen", "/p/out", shakeOpts{traceFull: true})
+	if err != nil {
+		t.Fatalf("traceFull was refused: %v", err)
+	}
+	if !strings.Contains(got, "yggdrasil.shake-full-traced") {
+		t.Errorf("traceFull did not choose the woven full entry point: %s", got)
+	}
+	if _, err := shakeExpr("/p/prog.shen", "/p/out", shakeOpts{full: true, trace: true}); err == nil {
+		t.Error("--no-shake with --trace is no longer refused: the new mode removed the guard " +
+			"instead of standing beside it")
+	}
+	for _, o := range []shakeOpts{{traceFull: true, full: true}, {traceFull: true, trace: true}} {
+		if _, err := shakeExpr("/p/prog.shen", "/p/out", o); err == nil {
+			t.Errorf("%+v was accepted: traceFull must not be reachable by piling flags on", o)
+		}
+	}
+}
+
+// TestTraceCheckFullContains is the positive half of hickey-1's stronger form:
+// the FULL fib artifact runs, and everything its PROGRAM phase entered is in
+// the slice's reach. The boot phase is not, by a wide margin, and that is
+// reported rather than failed -- a full artifact's boot IS the eval-capable
+// initialiser the shake threw away.
+func TestTraceCheckFullContains(t *testing.T) {
+	host := checkHost(t)
+	targets := traceTargets(t, host)
+	if !contains(targets, "go") {
+		t.Skip("--full needs a stage-2 builder that can build the whole kernel; go is not usable here")
+	}
+	res, err := traceCheck("tests/fib.shen", t.TempDir(), "go", "", host, "sub",
+		shakeOpts{traceFull: true})
+	if err != nil {
+		t.Fatalf("trace-check --full: %v", err)
+	}
+	if res == nil {
+		t.Skip("go is not runnable here")
+	}
+	if !res.ok {
+		t.Fatalf("the full fib run left the slice's reach in the program phase: %s (%v)",
+			res.sentinel, res.programOutside)
+	}
+	if len(res.programOutside) != 0 {
+		t.Errorf("program-phase calls outside reach: %v", res.programOutside)
+	}
+	// The check is only worth anything if the artifact really does hold more
+	// than the slice: with kernel == reach every call is inside by
+	// construction, which is the defect --full exists to fix.
+	if len(res.bootOutside) == 0 {
+		t.Error("the full artifact's boot entered nothing outside the slice, so this build is " +
+			"not the full program and the containment check could not have failed")
+	}
+	if len(res.program) == 0 {
+		t.Error("no program-phase calls at all: the phase instrument, not the containment, is what ran")
+	}
+	t.Logf("full fib: reach=%d program=%d outside-reach=%d boot-outside-reach=%d (%s)",
+		len(res.reach), len(res.program), len(res.programOutside), len(res.bootOutside), res.sentinel)
+}
+
+// TestTraceCheckFullUncovered is the negative half: the containment check
+// FAILS, naming the function, on a program that reaches a kernel defun the
+// shake dropped.
+//
+// tests/computed-call.shen resolves shen.printF through (intern "shen.printF")
+// and the kernel's lambda table, so no syntactic analysis can see the call.
+// The SLICE cannot demonstrate it -- shen.printF is not in the artifact and
+// trim-top restricts the lambda-table literal to the footprint, so the call is
+// an error there rather than a record, which is exactly hickey-1's point.
+// TestTraceCheckSliceCannotSeeIt is that control.
+func TestTraceCheckFullUncovered(t *testing.T) {
+	host := checkHost(t)
+	targets := traceTargets(t, host)
+	if !contains(targets, "go") {
+		t.Skip("--full needs a stage-2 builder that can build the whole kernel; go is not usable here")
+	}
+	const prog = "tests/computed-call.shen"
+
+	res, err := traceCheck(prog, t.TempDir(), "go", "", host, "sub", shakeOpts{traceFull: true})
+	if name := skipName(err); name != "" {
+		t.Skipf("no evidence obtainable here: %s", name)
+	}
+	if err != nil && res == nil {
+		t.Fatalf("trace-check --full: %v", err)
+	}
+	if res == nil {
+		t.Skip("go is not runnable here")
+	}
+	if res.ok {
+		t.Fatalf("the full run of a program that calls shen.printF by a computed name passed: %s",
+			res.sentinel)
+	}
+	if !strings.Contains(res.sentinel, "shen.printF") {
+		t.Errorf("the verdict does not name the function: %s", res.sentinel)
+	}
+	if !contains(res.programOutside, "shen.printF") {
+		t.Errorf("the program-phase containment set does not carry it: %v", res.programOutside)
+	}
+	// The run itself was correct: this is not a crash being reported as a
+	// containment failure.
+	if res.golden.how != "matches" {
+		t.Errorf("the run's stdout was not the golden (%s), so the failure may be the run's, "+
+			"not the footprint's", res.golden.how)
+	}
+	t.Logf("full computed-call: %s (reach=%d, boot-outside=%d)",
+		res.sentinel, len(res.reach), len(res.bootOutside))
+}
+
+// TestTraceCheckSliceCannotSeeIt is the control for the test above, and the
+// reason --full has to exist at all. On the SHAKEN artifact the same program
+// does not fail the containment check -- it cannot even produce a clean run,
+// because the name it computes is not in the slice. An empty uncoveredCall
+// there is a fact about the artifact, not about the rules.
+func TestTraceCheckSliceCannotSeeIt(t *testing.T) {
+	host := checkHost(t)
+	targets := traceTargets(t, host)
+	if !contains(targets, "go") {
+		t.Skip("the go stage-2 builder is not usable here")
+	}
+	res, err := traceCheck("tests/computed-call.shen", t.TempDir(), "go", "", host, "sub", shakeOpts{})
+	if err == nil && res != nil && res.ok {
+		t.Fatal("the shaken slice ran a program that calls a kernel defun outside its footprint " +
+			"and reported OK: either the shake now keeps shen.printF, in which case this fixture " +
+			"no longer tests anything, or containment is broken")
+	}
+	if res != nil && !res.ok {
+		t.Logf("the slice reported a failure of its own: %s", res.sentinel)
+		return
+	}
+	t.Logf("the slice could not produce a run at all, which is hickey-1 exactly: %v", err)
+}
+
+// TestPhaseBoundaryIsTheFirstProgramForm: the phase flip is woven into the
+// user files, at the first toplevel form that is not a definition -- not at
+// the end of shen.initialise, where it used to be.
+//
+// The two points coincide on a shaken artifact and do not on a full one:
+// installing the user's own defuns is initialisation, and a port with the whole
+// kernel behind it does that through the kernel's arity table
+// (shen.store-arity and five more), which on fib was the first 424 records of
+// the "program" phase, every one of them outside the slice's reach. A
+// containment check reading those as the program leaving its footprint fails
+// for the wrong reason, which is only one step better than one that cannot fail.
+func TestPhaseBoundaryIsTheFirstProgramForm(t *testing.T) {
+	host := checkHost(t)
+	dir := t.TempDir()
+	if _, err := shake("tests/fib.shen", dir, host, "sub", true, shakeOpts{trace: true}); err != nil {
+		t.Fatalf("traced shake: %v", err)
+	}
+	const flip = "(set ygg.*trace-phase* 112)"
+	user, err := os.ReadFile(filepath.Join(dir, "fib.kl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(user)
+	i := strings.Index(body, flip)
+	if i < 0 {
+		t.Fatalf("the user KL carries no phase flip:\n%s", body)
+	}
+	if n := strings.Count(body, flip); n != 1 {
+		t.Errorf("the flip is woven %d times, so the boundary is not a boundary", n)
+	}
+	// Before it: definitions only. After it: the program.
+	if j := strings.Index(body, "(defun "); j > i {
+		t.Error("a defun is emitted after the phase flip, so its installation would be tagged program")
+	}
+	if !strings.Contains(body[i:], "(pr ") {
+		t.Errorf("the program's own toplevel form is not after the flip:\n%s", body[i:])
+	}
+	kernel, err := os.ReadFile(filepath.Join(dir, "kernel.kl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(kernel), "\n") {
+		if strings.HasPrefix(line, "(defun shen.initialise ") && strings.Contains(line, flip) {
+			t.Error("the initialiser still flips the phase: the boundary would be its return, " +
+				"and the port's installation of the user defuns would land in the program phase")
 		}
 	}
 }

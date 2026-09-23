@@ -19,7 +19,6 @@ package main
 // Host-gated like check_test.go: every case boots a real stage-1 host.
 
 import (
-	"bufio"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,39 +27,22 @@ import (
 	"testing"
 )
 
-// kernelDefuns reads the defun names out of a shaken kernel.kl, dropping the
-// synthesised initialiser. write-kl-file emits one form per line starting at
-// column 0, so a prefix match is exact here.
-func kernelDefuns(t *testing.T, path string) map[string]bool {
+// kernelDefunSet is trace.go's kernelDefuns as a set, with the test's own
+// failure reporting. The parse itself lives in trace.go because the
+// containment check `trace-check --full` runs needs the same list at run
+// time, and two readers of kernel.kl that could disagree about what a defun
+// is would be two definitions of `reach`.
+func kernelDefunSet(t *testing.T, path string) map[string]bool {
 	t.Helper()
-	f, err := os.Open(path)
+	names, err := kernelDefuns(path)
 	if err != nil {
 		t.Fatalf("reading %s: %v", path, err)
 	}
-	defer f.Close()
-	names := map[string]bool{}
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 1<<20), 1<<24)
-	for sc.Scan() {
-		line := sc.Text()
-		if !strings.HasPrefix(line, "(defun ") {
-			continue
-		}
-		rest := line[len("(defun "):]
-		if i := strings.IndexAny(rest, " ()"); i >= 0 {
-			rest = rest[:i]
-		}
-		if rest != "" && rest != "shen.initialise" {
-			names[rest] = true
-		}
+	out := map[string]bool{}
+	for _, n := range names {
+		out[n] = true
 	}
-	if err := sc.Err(); err != nil {
-		t.Fatalf("scanning %s: %v", path, err)
-	}
-	if len(names) == 0 {
-		t.Fatalf("%s has no defuns", path)
-	}
-	return names
+	return out
 }
 
 // relWithRefeval evaluates analysis.dl's rules with the Python reference
@@ -184,7 +166,7 @@ func TestAnalysisOracleMatchesShake(t *testing.T) {
 			if _, err := facts(prog, factsDir, host, "sub", true); err != nil {
 				t.Fatalf("facts: %v", err)
 			}
-			want := kernelDefuns(t, filepath.Join(shakeDir, "kernel.kl"))
+			want := kernelDefunSet(t, filepath.Join(shakeDir, "kernel.kl"))
 
 			py := relWithRefeval(t, factsDir, "reach")
 			if extra, missing := diffSets(py, want); len(extra)+len(missing) > 0 {

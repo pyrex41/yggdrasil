@@ -30,12 +30,27 @@ package main
 // `reach` computed from a DIFFERENT program than the one that ran, which is
 // the case trace_test.go's TestTraceCheckRules exercises.
 //
+// TWO MODES THAT DO MAKE IT FAIL, both below in this file:
+//
+//   - --full traces the FULL program and checks its PROGRAM PHASE against
+//     the SLICE's reach. The full artifact holds the defuns the shake
+//     dropped, so the name resolves and the call is recorded instead of
+//     crashing. TestTraceCheckFullUncovered is the failure;
+//     TestTraceCheckSliceCannotSeeIt is the control that the slice cannot
+//     produce it.
+//   - --prune-init traces the artifact as --prune-init would SHIP it and
+//     fails when the run reads a global whose (set V _) the shake deleted and
+//     the target's port_reads does not declare. Until it existed nothing here
+//     ever looked at a pruned artifact. TestTraceCheckPrunedReadFails is the
+//     failure, and asserts in the same test that the DEFAULT mode still
+//     reports OK on the same program -- which is the finding.
+//
 // What the instrument does produce, which is what the report line says out
 // loud rather than implying the sentence above:
 //
 //   - coverage. Which kernel defuns and globals a real run on a real target
-//     entered, split into the boot (shen.initialise) phase and the program
-//     phase -- a fib run is 49,076 records of which 20,000 are the property
+//     entered, split into the boot (initialisation) phase and the program
+//     phase -- a fib run is ~49,000 records of which 20,000 are the property
 //     vector's initialiser, so "the program called X" is otherwise
 //     unanswerable. reach strictly containing called is expected: that is
 //     imprecision, reported, never failed.
@@ -59,6 +74,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -76,9 +93,24 @@ import (
 // dominated by machinery the sliced artifact does not contain.
 // --prune-init composes with either, and with --trace deliberately: the
 // weaver runs after pruning, so a trace describes the artifact as shipped.
+//
+// o.traceFull is the one thing that wants the full program woven, and it is
+// NOT that refused pair: it is `yggdrasil trace-check --full`, which asks a
+// different question from either flag. Tracing A to compare it against A's
+// own footprint is still not a question anyone asked. Tracing A to compare
+// its PROGRAM PHASE against the SLICE's reach is: the full artifact has the
+// defuns the shake dropped, so a program that reaches one records the call
+// instead of dying on an undefined function, and the containment check can
+// therefore fail. The refusal above stands for the flag pair; this mode is
+// named, reached only from cmdTraceCheck, and answers for itself.
 func shakeExpr(prog, outdir string, o shakeOpts) (string, error) {
 	fn := "yggdrasil.shake"
 	switch {
+	case o.traceFull && (o.full || o.trace):
+		return "", errors.New("internal error: shakeOpts.traceFull is a mode of its own and " +
+			"must not be combined with full or trace")
+	case o.traceFull:
+		fn = "yggdrasil.shake-full-traced"
 	case o.full && o.trace:
 		return "", errors.New("--trace and --no-shake cannot be used together: " +
 			"--no-shake emits the full program as scip-check's reference, and the trace " +
@@ -96,10 +128,20 @@ func shakeExpr(prog, outdir string, o shakeOpts) (string, error) {
 // yggdrasil.shen) and recorded in the manifest as trace-file=.
 const traceFileName = "yggdrasil.trace"
 
-// The phase column of a trace record. `b` is everything shen.initialise
-// does, `p` everything after it returns: without the split a fib run reads
-// as 49,076 records of which 20,000 are shen.fillvector out of the property
-// vector's initialiser, and "the program called X" is unanswerable.
+// The phase column of a trace record. `b` is INITIALISATION -- the kernel's
+// initialiser and the loading of the user's own definitions -- and `p` is the
+// user's program proper, from its first toplevel form that is not a
+// definition. Without the split a fib run reads as ~49,000 records of which
+// 20,000 are shen.fillvector out of the property vector's initialiser, and
+// "the program called X" is unanswerable.
+//
+// The boundary is woven into the user files (ygg.trace-phase-flip) and NOT at
+// the end of shen.initialise, where it used to be. The two coincide on a
+// shaken artifact and do not on a full one: a port with the whole kernel
+// behind it installs the user's defuns through the kernel's own arity table,
+// which on the full fib artifact was the first 424 records of what the old
+// boundary called the program phase, every one of them outside the slice's
+// reach and every one of them initialisation.
 const (
 	phaseBoot    = "b"
 	phaseProgram = "p"
@@ -117,7 +159,7 @@ type traceFacts struct {
 	// complete reports the e<TAB>end record. It is the ONLY thing that
 	// distinguishes a finished run from a trace cut short -- by a crash, by
 	// an early exit, or by a port that buffered the tail and never flushed
-	// it. Without it a one-line trace and a 49,076-line one are the same
+	// it. Without it a one-line trace and a 49,000-line one are the same
 	// document, which is how a truncated called.facts used to read as OK.
 	complete bool
 }
@@ -200,12 +242,15 @@ func parseTrace(path string) (*traceFacts, error) {
 // phaseDegenerate reports the one combination of phase counts that cannot
 // describe a run: the trace ENDED (so the last user toplevel form executed),
 // every record carried a phase column, records were tagged boot -- and not
-// one was tagged program. The flip to `p` is the last thing the woven
-// shen.initialise body does, so this says the flip never executed while the
-// program nonetheless ran to its end. That is the instrument failing, not the
-// program calling nothing, and it is exactly what shen-go's KLambda VM does
-// on the `kl` target: it abandons the initialiser's continuation, the program
-// runs anyway, and every record in the file is tagged b.
+// one was tagged program. The flip to `p` is a toplevel form woven in front
+// of the user program's first non-definition form, and the end record comes
+// after every user form, so this says the flip never executed while a later
+// form nonetheless did. That is the instrument failing, not the program
+// calling nothing. It is what shen-go's KLambda VM used to do on the `kl`
+// target when the flip lived at the end of shen.initialise, whose
+// continuation that VM abandons; whether the current boundary still reads
+// degenerate there is what TestTraceCheckFixtures reports rather than
+// assumes.
 //
 // A trace with no phase column at all (an older shaker) is NOT degenerate: it
 // is unphased, tf.unknown says so, and nothing pretends otherwise.
@@ -238,10 +283,15 @@ func degenerateWarning(target string) string {
 // Deliberately not a rule input: analysis/analysis.dl and factRelations know
 // nothing about it, and the trace rules read only called.facts and
 // readglobal.facts.
-func writeTraceMeta(factsDir string, tf *traceFacts) error {
+// called is the rows actually written to called.facts, which is tf.called in
+// every mode but --full (where the relation is the program phase plus
+// shen.initialise -- see traceCheck). The declared count has to be the count
+// of the file it describes, or the host half's prefix detector fires on a
+// difference this side introduced.
+func writeTraceMeta(factsDir string, tf *traceFacts, called []string) error {
 	var b bytes.Buffer
 	fmt.Fprintf(&b, "complete\t%v\n", tf.complete)
-	fmt.Fprintf(&b, "called\t%d\n", len(tf.called))
+	fmt.Fprintf(&b, "called\t%d\n", len(called))
 	fmt.Fprintf(&b, "readglobal\t%d\n", len(tf.reads))
 	fmt.Fprintf(&b, "program\t%d\n", len(tf.program))
 	fmt.Fprintf(&b, "records\t%d\n", tf.lines)
@@ -353,6 +403,23 @@ type traceCheckResult struct {
 	stdout      string       // the artifact's stdout
 	golden      goldenResult // what the comparison against tests/<name>.expected did
 	factsDir    string
+
+	// --prune-init (A). pruned is the globals whose (set V _) the shake
+	// dropped, read off the two artifacts; prunedRead is the subset the run
+	// actually read and the port does not declare, which is the FAIL set.
+	// Both are nil in the default mode, where nothing was pruned and the
+	// question is not asked.
+	pruneMode  bool
+	pruned     []string
+	prunedRead []string
+
+	// --full (B). reach is the SLICE's footprint; programOutside is the
+	// program-phase kernel calls outside it, which is the FAIL set;
+	// bootOutside is the boot-phase ones, reported and never failed.
+	fullMode       bool
+	reach          []string
+	programOutside []string
+	bootOutside    []string
 }
 
 // traceFailure is a check that FAILED, as against a check that could not run.
@@ -448,7 +515,18 @@ func requireComplete(tf *traceFacts, path, target string) error {
 // host-gated test can drive it directly. A missing toolchain returns a nil
 // result and a nil error: SKIP, never FAIL, exactly as build() and the parity
 // gate treat it.
-func traceCheck(prog, outdir, target, stdinFile string, host []string, evalStyle string) (*traceCheckResult, error) {
+//
+// o carries the two modes this command has beyond the default, as a value
+// rather than as package state: o.pruneInit (with o.allowUnverifiedPortReads)
+// traces the artifact as --prune-init would ship it and adds the pruned-read
+// check; o.traceFull traces the FULL program and checks its program phase
+// against the slice's reach. They answer different questions about different
+// artifacts and are refused together.
+func traceCheck(prog, outdir, target, stdinFile string, host []string, evalStyle string, o shakeOpts) (*traceCheckResult, error) {
+	if o.pruneInit && o.traceFull {
+		return nil, errors.New("--prune-init and --full cannot be used together: --full emits the " +
+			"unshaken program, which prunes nothing, so there would be no pruned initialiser to check")
+	}
 	// Before anything is built: can a run on this target/fixture pair be
 	// evidence at all? A named skip here, not an OK over a run whose
 	// stdout nobody could compare.
@@ -472,11 +550,61 @@ func traceCheck(prog, outdir, target, stdinFile string, host []string, evalStyle
 		return nil, fmt.Errorf("fact dump: %w", err)
 	}
 
-	// The traced shake is a shake with trace set, not a global flipped
-	// around the call: there is nothing to restore, so no error path and no
-	// panic between here and the next line can leave tracing on.
-	if _, err := shake(prog, outdir, host, evalStyle, true, shakeOpts{trace: true}); err != nil {
-		return nil, fmt.Errorf("traced shake: %w", err)
+	// The reference builds. In the default mode there is one: the traced
+	// shake, a shake with trace set rather than a global flipped around the
+	// call, so no error path between here and the next line can leave
+	// tracing on.
+	//
+	// Each mode adds a SECOND build, and in both cases it is the artifact
+	// the check needs a name list out of rather than a run of:
+	//
+	//   --prune-init: the same program, traced, NOT pruned. Diffing its
+	//     initialiser against the pruned one's is what says which globals
+	//     were pruned; the manifest records only a count.
+	//   --full: the same program, shaken, untraced. Its defun list is the
+	//     SLICE's reach, which is what the full run's program phase has to
+	//     be contained in.
+	var pruned, reach []string
+	switch {
+	case o.pruneInit:
+		base := filepath.Join(outdir, "_unpruned")
+		if _, err := shake(prog, base, host, evalStyle, true, shakeOpts{trace: true}); err != nil {
+			return nil, fmt.Errorf("unpruned reference shake: %w", err)
+		}
+		po := shakeOpts{
+			trace:                    true,
+			pruneInit:                true,
+			target:                   prunePortReadsTarget(target),
+			allowUnverifiedPortReads: o.allowUnverifiedPortReads,
+		}
+		if _, err := shake(prog, outdir, host, evalStyle, true, po); err != nil {
+			return nil, fmt.Errorf("pruned traced shake: %w", err)
+		}
+		unprunedSets, err := initialiserSets(filepath.Join(base, "kernel.kl"))
+		if err != nil {
+			return nil, err
+		}
+		prunedSets, err := initialiserSets(filepath.Join(outdir, "kernel.kl"))
+		if err != nil {
+			return nil, err
+		}
+		pruned = prunedGlobals(unprunedSets, prunedSets)
+	case o.traceFull:
+		slice := filepath.Join(outdir, "_slice")
+		if _, err := shake(prog, slice, host, evalStyle, true); err != nil {
+			return nil, fmt.Errorf("slice reference shake: %w", err)
+		}
+		var err error
+		if reach, err = kernelDefuns(filepath.Join(slice, "kernel.kl")); err != nil {
+			return nil, err
+		}
+		if _, err := shake(prog, outdir, host, evalStyle, true, shakeOpts{traceFull: true}); err != nil {
+			return nil, fmt.Errorf("full traced shake: %w", err)
+		}
+	default:
+		if _, err := shake(prog, outdir, host, evalStyle, true, shakeOpts{trace: true}); err != nil {
+			return nil, fmt.Errorf("traced shake: %w", err)
+		}
 	}
 
 	var runArgv []string
@@ -532,7 +660,30 @@ func traceCheck(prog, outdir, target, stdinFile string, host []string, evalStyle
 		return nil, err
 	}
 
-	if err := writeFactsTSV(filepath.Join(factsDir, "called.facts"), tf.called); err != nil {
+	// What goes into called.facts, which is the relation the host half runs
+	// uncoveredCall over.
+	//
+	// Default and --prune-init: the whole run, both phases. The artifact is
+	// the slice, so every name in it is one reach derived.
+	//
+	// --full: the PROGRAM phase only, plus shen.initialise. The artifact is
+	// the unshaken program and its boot is the eval-capable initialiser the
+	// shake threw away, so feeding the boot in would report the whole of
+	// stage 1 as uncovered -- the boot is reported separately instead, and
+	// never failed. shen.initialise is added back because the host half
+	// refuses a relation that does not contain it (its absence is how a
+	// truncated called.facts is caught) and the run did enter it; it is not
+	// a kernel row, so `kernel(F)` keeps it out of uncoveredCall either way.
+	calledRows := tf.called
+	if o.traceFull {
+		if tf.phaseDegenerate() {
+			return nil, &traceSkip{reason: "phase-instrument-degenerate-on-" + target}
+		}
+		calledRows = append(append([]string{}, tf.program...), "shen.initialise")
+		sort.Strings(calledRows)
+		calledRows = dedup(calledRows)
+	}
+	if err := writeFactsTSV(filepath.Join(factsDir, "called.facts"), calledRows); err != nil {
 		return nil, err
 	}
 	if err := writeFactsTSV(filepath.Join(factsDir, "readglobal.facts"), tf.reads); err != nil {
@@ -554,7 +705,7 @@ func traceCheck(prog, outdir, target, stdinFile string, host []string, evalStyle
 	}
 	// Last, so that a facts dir carrying a declared count is one whose fact
 	// files were all written.
-	if err := writeTraceMeta(factsDir, tf); err != nil {
+	if err := writeTraceMeta(factsDir, tf, calledRows); err != nil {
 		return nil, err
 	}
 
@@ -576,8 +727,54 @@ func traceCheck(prog, outdir, target, stdinFile string, host []string, evalStyle
 		stdout:      stdout,
 		golden:      gold,
 		factsDir:    factsDir,
+		pruneMode:   o.pruneInit,
+		fullMode:    o.traceFull,
+		pruned:      pruned,
+		reach:       reach,
 	}
 	res.neverEntered, res.neverEnteredErr = neverEntered(outdir, tf.called)
+
+	if o.pruneInit {
+		reads, err := portReadsFor(prunePortReadsTarget(target))
+		if err != nil {
+			return nil, err
+		}
+		res.prunedRead = prunedReadViolations(tf.reads, pruned, reads)
+		if len(res.prunedRead) > 0 {
+			res.ok = false
+			res.sentinel = "yggdrasil-trace-check: FAIL pruned-read=" + strings.Join(res.prunedRead, ",")
+			return res, &traceFailure{sentinel: res.sentinel, detail: fmt.Errorf(
+				"the %s run read %d global(s) whose toplevel (set V _) --prune-init deleted, and %s's "+
+					"port_reads in builders.json does not declare them as native reads: %s\n"+
+					"  %d of the initialiser's globals were pruned in all. Nothing initialises these in the "+
+					"shipped artifact, so the read sees whatever the runtime left there -- add them to that "+
+					"target's port_reads if the port really does write them, or stop pruning for this program",
+				target, len(res.prunedRead), prunePortReadsTarget(target),
+				strings.Join(res.prunedRead, ", "), len(pruned))}
+		}
+	}
+
+	if o.traceFull {
+		kernel, err := kernelDefuns(filepath.Join(outdir, "kernel.kl")) // the FULL artifact
+		if err != nil {
+			return nil, err
+		}
+		res.programOutside = outsideReach(tf.program, kernel, reach)
+		res.bootOutside = outsideReach(tf.boot, kernel, reach)
+		// The host half is the authority on the verdict -- its `reach` comes
+		// from the rules, not from counting defuns in a file -- so a
+		// disagreement is the instrument failing and says so under its own
+		// name rather than being quietly resolved in favour of either side.
+		if len(res.programOutside) > 0 && res.ok {
+			res.ok = false
+			res.sentinel = "yggdrasil-trace-check: FAIL uncovered-program=" + strings.Join(res.programOutside, ",")
+			return res, &traceFailure{sentinel: res.sentinel, detail: fmt.Errorf(
+				"the full %s artifact entered %s during the PROGRAM phase, and the slice this program "+
+					"shakes to (%d defuns) does not contain them; the host half nonetheless reported %q, so "+
+					"the two readings of reach disagree",
+				target, strings.Join(res.programOutside, ", "), len(reach), sentinel)}
+		}
+	}
 	return res, nil
 }
 
@@ -659,6 +856,212 @@ func neverEntered(outdir string, called []string) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// ---- (A) the check that reads a PRUNED artifact ------------------------
+//
+// torvalds-12: nothing here used to look at a pruned artifact at all.
+// trace-check shook with pruning off, and the host half's uncoveredRead
+//
+//	uncoveredRead(V) :- readGlobal(V), !initwrite(V), !defunwrite(V),
+//	                    !portGlobal(V).
+//
+// takes `initwrite` from the UNPRUNED trim-top output, so a global whose
+// (set V Lit) --prune-init deleted is still an initwrite as far as that rule
+// can see, and reading it at run time reads as fine. The only runtime
+// evidence stage 4 had was one fib stdout comparison on one target.
+//
+// `trace-check --prune-init` shakes the artifact the way it would ship,
+// traces THAT, and adds
+//
+//	prunedRead(V) :- readGlobal(V), pruned(V), !portRead(V).
+//
+// `pruned` is read off the two artifacts rather than declared: the same
+// program is shaken twice, once with pruning and once without, and the
+// globals whose (set V _) is in the initialiser of the second and not of the
+// first ARE the pruned ones. Nothing has to be trusted to say so, and the
+// manifest's pruned-init=N is a count, not a list.
+//
+// `portRead` is builders.json's port_reads for the target the artifact ran
+// on -- the escape hatch for a global the port's runtime reads natively,
+// which is the whole reason pruning is gated on that list.
+//
+// The rule has teeth exactly where the shake's read extractors and the
+// weaver disagree about what a read is, which is why ygg.trace-values now
+// instruments a COMPUTED global name too: (value (intern "shen.*tc*"))
+// leaves no symbol for rawsym to keep alive, so stage 4 prunes the
+// initialiser for it, and until the weaver recorded it there was no artifact
+// that could show the read happening. tests/computed-read.shen is that case
+// and TestTraceCheckPrunedReadFails is that test.
+
+// klSetForm matches a toplevel (set V ...) in emitted KL. write-kl-file puts
+// each toplevel form on its own line, so the synthesised initialiser is one
+// line and its sets are found by scanning that line.
+var klSetForm = regexp.MustCompile(`\(set ([^ ()]+) `)
+
+// klDefunLine matches the head of an emitted (defun NAME ...) line.
+var klDefunLine = regexp.MustCompile(`^\(defun ([^ ()]+) `)
+
+// initialiserSets returns the globals the synthesised shen.initialise writes,
+// in emission order, for the build in dir.
+//
+// The weaver's own (set ygg.*trace-phase* ...) is dropped: it is the
+// instrument, not the program's initialisation, and a caller diffing a
+// traced build against a traced build would otherwise be comparing it with
+// itself for no reason.
+func initialiserSets(kernelKL string) ([]string, error) {
+	b, err := os.ReadFile(kernelKL)
+	if err != nil {
+		return nil, err
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if !strings.HasPrefix(line, "(defun shen.initialise ") {
+			continue
+		}
+		var out []string
+		for _, m := range klSetForm.FindAllStringSubmatch(line, -1) {
+			if strings.HasPrefix(m[1], "ygg.") {
+				continue
+			}
+			out = append(out, m[1])
+		}
+		if len(out) == 0 {
+			return nil, fmt.Errorf("%s: the initialiser sets nothing", kernelKL)
+		}
+		return out, nil
+	}
+	return nil, fmt.Errorf("%s has no shen.initialise", kernelKL)
+}
+
+// kernelDefuns returns the defun names of a build's kernel.kl: every kernel
+// defun the artifact contains, plus the synthesised shen.initialise and, in a
+// traced build, the weaver's ygg.* helpers. Both of those are stripped, so
+// what comes back is the kernel relation for a full build and `reach` for a
+// shaken one -- docs/analysis-rules.md's identity, and the one
+// TestReachIsTheDefunList pins.
+func kernelDefuns(kernelKL string) ([]string, error) {
+	b, err := os.ReadFile(kernelKL)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, line := range strings.Split(string(b), "\n") {
+		m := klDefunLine.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		if m[1] == "shen.initialise" || strings.HasPrefix(m[1], "ygg.") {
+			continue
+		}
+		out = append(out, m[1])
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%s has no defuns", kernelKL)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// prunedGlobals is the set difference that defines "the shake pruned this":
+// a global the unpruned initialiser writes and the pruned one does not.
+// Both lists come from real artifacts of the SAME program, so anything the
+// two builds share -- the weaver's forms included -- cancels.
+func prunedGlobals(unpruned, pruned []string) []string {
+	keep := stringSet(pruned)
+	var out []string
+	for _, v := range unpruned {
+		if !keep[v] {
+			out = append(out, v)
+		}
+	}
+	sort.Strings(out)
+	return dedup(out)
+}
+
+// prunePortReadsTarget maps a trace-check --target onto the builders.json
+// entry whose port_reads describe the runtime the artifact actually ran on.
+// Every target is its own entry but one: `kl` is not a builder, it is
+// shen-go's bare KLambda VM -- the same Go runtime the `go` builder links and
+// the same native reads -- so it borrows the go entry's list rather than
+// being refused as an unknown target.
+func prunePortReadsTarget(target string) string {
+	if target == klTarget {
+		return "go"
+	}
+	return target
+}
+
+// prunedReadViolations is the rule, as a pure function of three sets so the
+// failure it exists to produce is testable without a stage-2 runtime:
+// globals the run read, whose initialiser the shake pruned, that the port
+// does not declare as a native read.
+func prunedReadViolations(reads, pruned, portReads []string) []string {
+	gone, declared := stringSet(pruned), stringSet(portReads)
+	var out []string
+	for _, v := range reads {
+		if gone[v] && !declared[v] {
+			out = append(out, v)
+		}
+	}
+	sort.Strings(out)
+	return dedup(out)
+}
+
+// ---- (B) the containment check that can fail ---------------------------
+//
+// hickey-1, in its stronger form. `called ⊆ reach` on a SLICE cannot fail:
+// the artifact contains exactly the footprint, so a call to a kernel defun
+// outside it is an undefined-function crash and there is no run to read
+// facts from. uncoveredCall is empty by construction, and its emptiness is
+// not evidence.
+//
+// `trace-check --full` traces the FULL program -- every kernel defun,
+// woven -- and checks the program phase of THAT run against the reach of the
+// SLICE the same source would have been shaken to. Now the name resolves,
+// the call is recorded, and a program that reaches outside the slice is
+// caught instead of dying. tests/computed-call.shen reaches shen.abs through
+// (intern "shen.abs"), which no syntactic analysis can see, and
+// TestTraceCheckFullUncovered is the test that fails when the claim is false.
+//
+// The boot phase is reported and never failed. A full artifact's boot IS the
+// eval-capable initialiser the shake threw away, so it legitimately enters
+// hundreds of defuns outside the slice; failing on those would be failing on
+// the one thing --no-shake exists to keep.
+
+// outsideReach is the containment predicate: names this run entered that are
+// kernel defuns and are not in the slice's reach. User defuns and the
+// weaver's helpers are not kernel rows, so they are not something reach could
+// have derived and are excluded -- the same exclusion `kernel(F)` makes in
+// the host half's uncoveredCall rule.
+func outsideReach(called, kernel, reach []string) []string {
+	isKernel, reached := stringSet(kernel), stringSet(reach)
+	var out []string
+	for _, f := range called {
+		if isKernel[f] && !reached[f] {
+			out = append(out, f)
+		}
+	}
+	sort.Strings(out)
+	return dedup(out)
+}
+
+func stringSet(xs []string) map[string]bool {
+	m := make(map[string]bool, len(xs))
+	for _, x := range xs {
+		m[x] = true
+	}
+	return m
+}
+
+// dedup collapses runs of equal strings in an already-sorted slice.
+func dedup(xs []string) []string {
+	out := xs[:0]
+	for i, x := range xs {
+		if i == 0 || xs[i-1] != x {
+			out = append(out, x)
+		}
+	}
+	return out
 }
 
 // manifestFnNames reads the fn=<name> <arity> lines of the txt manifest.
@@ -796,11 +1199,14 @@ func cmdTraceCheck(rest []string) int {
 	evalStyle := fs.String("eval-style", "sub", "how the host evaluates the shake expr (sub | positional)")
 	target := fs.String("target", "", "stage-2 target to build and run the traced artifact on")
 	stdinFile := fs.String("stdin", "", "file fed to the artifact's stdin (default: tests/<name>.stdin when it exists)")
+	pruneFlag := fs.Bool("prune-init", false, "trace the artifact as --prune-init would ship it, and FAIL when the run reads a global whose toplevel (set V _) the shake deleted and --target's builders.json port_reads does not declare")
+	pruneUnverified := fs.Bool("prune-init-unverified", false, "allow --prune-init against a target whose builders.json port_reads list is the conservative placeholder rather than one read off that port's runtime; prints a WARN and prunes anyway")
+	fullFlag := fs.Bool("full", false, "trace the FULL program (every kernel defun, woven) and check its PROGRAM-phase calls against the reach of the slice the same source shakes to; boot-phase calls outside the slice are reported, never failed")
 	if err := fs.Parse(reorderArgs(rest, "host", "eval-style", "target", "stdin")); err != nil {
 		return 2
 	}
 	if fs.NArg() < 2 {
-		fmt.Fprintln(os.Stderr, "usage: yggdrasil trace-check PROG OUTDIR --target T [--stdin FILE]")
+		fmt.Fprintln(os.Stderr, "usage: yggdrasil trace-check PROG OUTDIR --target T [--stdin FILE] [--prune-init [--prune-init-unverified]] [--full]")
 		return 2
 	}
 	prog, outdir := fs.Arg(0), fs.Arg(1)
@@ -820,7 +1226,15 @@ func cmdTraceCheck(rest []string) int {
 		in = defaultStdin(prog)
 	}
 	start := time.Now()
-	res, err := traceCheck(prog, outdir, *target, in, host, *evalStyle)
+	// The mode, as a value passed down, never as package state: a check that
+	// prunes and a check that does not differ by the artifact they build, and
+	// that difference has to be readable at the call site.
+	opts := shakeOpts{
+		pruneInit:                *pruneFlag,
+		allowUnverifiedPortReads: *pruneUnverified,
+		traceFull:                *fullFlag,
+	}
+	res, err := traceCheck(prog, outdir, *target, in, host, *evalStyle, opts)
 	if err != nil {
 		// A check that could not be run as evidence is a SKIP with a
 		// name, on the sentinel line and at the skip exit code -- never a
@@ -873,12 +1287,26 @@ func cmdTraceCheck(rest []string) int {
 	default:
 		fmt.Println("  user defuns never entered on this input: none")
 	}
+	if res.pruneMode {
+		fmt.Printf("  pruned-init: %d global(s) lost their (set V _); read at run time and not in %s's port_reads: %d\n",
+			len(res.pruned), prunePortReadsTarget(*target), len(res.prunedRead))
+	}
+	if res.fullMode {
+		fmt.Printf("  full: slice reach=%d, program-phase kernel calls outside it=%d, boot-phase=%d\n",
+			len(res.reach), len(res.programOutside), len(res.bootOutside))
+	}
 	// Last line, and the one hickey-1 is about: what an empty uncoveredCall
 	// on this target does and does not establish. The file header says it at
 	// length; the tool has to say it where the number is read.
-	fmt.Println("  scope: coverage, not soundness -- on a port that runs the slice and only " +
-		"the slice, uncoveredCall is empty by construction (a call outside reach is an " +
-		"undefined-function crash, not a record).")
+	if res.fullMode {
+		fmt.Println("  scope: the artifact holds every kernel defun, so a program-phase call outside " +
+			"the slice's reach is RECORDED rather than being an undefined-function crash -- this " +
+			"containment number can fail. The boot phase is the unshaken initialiser and is reported only.")
+	} else {
+		fmt.Println("  scope: coverage, not soundness -- on a port that runs the slice and only " +
+			"the slice, uncoveredCall is empty by construction (a call outside reach is an " +
+			"undefined-function crash, not a record). Run --full for the containment check that can fail.")
+	}
 	if !res.ok {
 		return 1
 	}
