@@ -388,11 +388,7 @@ func TestScipCheckFixtures(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go is not on PATH")
 	}
-	bin := filepath.Join(t.TempDir(), "yggdrasil")
-	build := exec.Command("go", "build", "-o", bin, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("building the CLI: %v\n%s", err, out)
-	}
+	bin := buildCLI(t)
 	for _, fixture := range []string{"fib", "hello"} {
 		t.Run(fixture, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), fixture)

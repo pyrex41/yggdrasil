@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -330,7 +331,20 @@ func lowerCLI(t *testing.T) string {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go is not on PATH; cannot build the CLI")
 	}
-	bin := filepath.Join(t.TempDir(), "yggdrasil")
+	return buildCLI(t)
+}
+
+// buildCLI compiles this package into a fresh temp dir and returns the
+// binary's path. Windows will not exec a file without its .exe suffix, so
+// the name carries one there; every test that shells out to the CLI goes
+// through here rather than naming the binary itself.
+func buildCLI(t *testing.T) string {
+	t.Helper()
+	name := "yggdrasil"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	bin := filepath.Join(t.TempDir(), name)
 	cmd := exec.Command("go", "build", "-o", bin, ".")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("building the CLI: %v\n%s", err, out)
