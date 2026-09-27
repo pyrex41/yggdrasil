@@ -156,11 +156,20 @@
 
 (define ygg.expand-one
   F Stack _ -> (ygg.load-fail "cycle" F)  where (element? F Stack)
+  F Stack _ -> (ygg.load-fail "same-basename" F)  where (ygg.basename-seen? F Stack)
   F _ Acc -> (ygg.load-fail "loaded-twice" F)  where (element? F Acc)
+  F _ Acc -> (ygg.load-fail "same-basename" F)  where (ygg.basename-seen? F Acc)
   F Stack Acc -> (let Dir  (ygg.dirname F)
                       Deps (map (/. S (ygg.resolve-path Dir S))
                                 (ygg.leading-loads (read-file F)))
                    [F | (ygg.expand-h Deps [F | Stack] Acc)]))
+
+\\ Paths such as a.shen and ./a.shen name the same output .kl.  Check that
+\\ collision before descending: otherwise a (load "./a.shen") cycle grows
+\\ the path on every recursion and never reaches the exact-path cycle check.
+(define ygg.basename-seen?
+  F Files -> (element? (truncate-filename F "")
+                      (map (/. P (truncate-filename P "")) Files)))
 
 (define ygg.leading-loads
   [[load S] | Forms] -> [S | (ygg.leading-loads Forms)]  where (string? S)

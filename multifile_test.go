@@ -118,6 +118,9 @@ func TestMultiFileRefusals(t *testing.T) {
 			"main.shen": "(load \"b.shen\")\n",
 			"b.shen":    "(load \"main.shen\")\n",
 		}, "FAIL load cycle"},
+		{"alias-cycle", map[string]string{
+			"main.shen": "(load \"./main.shen\")\n",
+		}, "FAIL load same-basename"},
 		{"basename", map[string]string{
 			"main.shen": "(load \"x/u.shen\")\n(load \"y/u.shen\")\n",
 			"x/u.shen":  "(define xu -> 1)\n",
