@@ -197,7 +197,7 @@ The expression is always the same; only the launcher syntax differs. Write
 |---|---|---|
 | shen-cl | `shen eval -q -l yggdrasil.shen -e SHAKE` | reference host, and the fastest |
 | shen-go | `shen eval -q -l yggdrasil.shen -e SHAKE` | the CLI's fallback host when shen-cl is missing |
-| shen-lua | `bin/shen yggdrasil.shen -e SHAKE` | omit `-q` (see below) |
+| shen-lua | `bin/shen yggdrasil.shen -e SHAKE` | checkout or LuaRocks `0.11.0-1` launcher; omit `-q` (see below) |
 | shen-rust | `shen-rust eval -l yggdrasil.shen -e SHAKE` | omit `-q`. Runs the deep call-graph walk on a 1 GB-stack thread |
 | shen-erl | `shen-erl eval -q -l yggdrasil.shen -e SHAKE` | |
 | ShenScript | `node bin/shen.js eval -l yggdrasil.shen -e SHAKE` | slowest host, roughly 25 s |
@@ -213,7 +213,8 @@ default: it only adds a load-echo line to stdout, never to the artifacts.
 
 The CLI writes this invocation for you. `--host "<launcher>"` overrides the
 launcher, and `--eval-style` says how the host takes the expression: `sub` (the
-default) or `positional` for shen-lua.
+default) or `positional` for shen-lua. Use an absolute path for the LuaRocks
+launcher, since the CLI runs it from a temporary shake directory.
 
 ## Environment variables
 

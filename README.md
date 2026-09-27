@@ -26,6 +26,17 @@ checkout; set `YGGDRASIL_HOST` to any Shen launcher to override. Stage 2 needs
 the target port as a sibling checkout (`../shen-go`, `../shen-lua`, and so on)
 or a `YGGDRASIL_SHEN_<PORT>_DIR` variable pointing at one.
 
+The published Shen-lua `0.11.0-1` source rock can run stage 1 with Lua 5.1:
+
+```bash
+luarocks --lua-version=5.1 install shen 0.11.0-1
+yggdrasil shake prog.shen out/ --host "$(command -v shen)" --eval-style positional
+```
+
+The rock includes the launcher and kernel, but not Shen-lua's
+`bin/yggdrasil-build.lua`. Building the `lua` target still needs the Shen-lua
+source checkout.
+
 ## Use
 
 ```bash
