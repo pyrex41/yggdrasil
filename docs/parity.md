@@ -126,6 +126,7 @@ fixture, which is the point of keeping them small:
 | `metaeval` | three lines of `42` | `needs-eval=true`; keeps the reader |
 | `stdin-sum` | `bytes: 15` / `digest: 12410` | an **eval-free CLI**: reads stdin with `read-byte`, never `read` |
 | `parity` | `tests/parity.expected` | content-addressed memo |
+| `tla-election` | `tests/tla-election.expected` | a realistic program: the tla.shen model checker (about 100 user functions, closures, absvectors, higher-order use) on a leader-election spec, loaded as **three files** |
 
 `scripts/parity-gate.sh` runs all of them:
 

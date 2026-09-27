@@ -108,6 +108,104 @@
                   Close (close Sink)
                   To))
 
+\\ ========================= multi-file programs ==========================
+\\ A program may be several files: a library and a spec, say.  The entry
+\\ file names the others the way a Shen user already would, with
+\\ (load "lib.shen") forms at its head, and the shake hoists them.  Each
+\\ LEADING toplevel (load S) whose S is a literal string becomes a user
+\\ file of its own, ahead of the file that loaded it, recursively and in
+\\ order; the load form itself is dropped from that file's KL.  The result
+\\ is an ordinary multi-file shake: one .kl per file, `user=` lines in load
+\\ order, which every builder already runs in manifest order.
+\\
+\\ Hoisting is what keeps such a program eval-free: `load` is an eval entry
+\\ point (it reads and evaluates a file at run time), and a hoisted load is
+\\ no longer in the KL for eval-free? to see.  Only a leading literal load
+\\ is hoisted.  (load S) after any other form, or with a computed S, stays
+\\ in the KL and makes the program eval-capable, exactly as before: its
+\\ position among the other forms is an ordering the shake would otherwise
+\\ have to prove it preserves.
+\\
+\\ A relative S is resolved against the directory of the file that loads
+\\ it, not the host's *home-directory*, so a program shakes the same from
+\\ any working directory.  What the artifact does NOT reproduce is load's
+\\ REPL echo: on a host, (load F) prints each form's value and a run-time
+\\ line; the artifact runs F's forms and prints only what they print.
+\\
+\\ Two shapes are refused, with a FAIL sentinel and no artifacts: a file
+\\ reached twice (a diamond or a cycle - the host would load it twice, or
+\\ forever, and the shake emits each file once), and two files with the
+\\ same basename (their .kl files would overwrite each other in OUTDIR).
+
+(define ygg.bootstrap-files
+  Files -> (map (fn bootstrap) (ygg.expand-files Files)))
+
+(define ygg.read-user-kl
+  KLFiles -> (map (/. F (ygg.strip-loads (read-file F))) KLFiles))
+
+(define ygg.expand-files
+  Files -> (let Out (reverse (ygg.expand-h Files [] []))
+                Check (ygg.check-basenames Out [])
+             Out))
+
+\\ Acc is every file emitted so far, newest first; Stack the files whose
+\\ loads are being expanded, for the cycle case.
+(define ygg.expand-h
+  [] _ Acc -> Acc
+  [F | Fs] Stack Acc -> (ygg.expand-h Fs Stack (ygg.expand-one F Stack Acc)))
+
+(define ygg.expand-one
+  F Stack _ -> (ygg.load-fail "cycle" F)  where (element? F Stack)
+  F _ Acc -> (ygg.load-fail "loaded-twice" F)  where (element? F Acc)
+  F Stack Acc -> (let Dir  (ygg.dirname F)
+                      Deps (map (/. S (ygg.resolve-path Dir S))
+                                (ygg.leading-loads (read-file F)))
+                   [F | (ygg.expand-h Deps [F | Stack] Acc)]))
+
+(define ygg.leading-loads
+  [[load S] | Forms] -> [S | (ygg.leading-loads Forms)]  where (string? S)
+  _ -> [])
+
+(define ygg.strip-loads
+  [[load S] | Forms] -> (ygg.strip-loads Forms)  where (string? S)
+  Forms -> Forms)
+
+(define ygg.check-basenames
+  [] _ -> done
+  [F | Fs] Seen -> (let B (truncate-filename F "")
+                     (if (element? B Seen)
+                         (ygg.load-fail "same-basename" F)
+                         (ygg.check-basenames Fs [B | Seen]))))
+
+(define ygg.load-fail
+  What F -> (do (pr (make-string "yggdrasil-shake: FAIL load ~A file=~A~%" What F)
+                    (stoutput))
+                (simple-error (make-string "load: ~A: ~A" What F))))
+
+\\ The directory part of a path, separator included ("" for a bare name).
+\\ Both separators count, so a Windows host's absolute paths resolve too.
+(define ygg.dirname
+  File -> (ygg.dirname-h File "" ""))
+
+(define ygg.dirname-h
+  "" _ Dir -> Dir
+  (@s C Ss) Cur Dir -> (ygg.dirname-h Ss "" (cn Dir (cn Cur C)))
+                       where (ygg.separator? C)
+  (@s C Ss) Cur Dir -> (ygg.dirname-h Ss (cn Cur C) Dir))
+
+(define ygg.separator?
+  C -> (or (= C "/") (= C (n->string 92))))
+
+(define ygg.resolve-path
+  _ S -> S  where (ygg.absolute-path? S)
+  Dir S -> (cn Dir S))
+
+(define ygg.absolute-path?
+  "" -> false
+  (@s C _) -> true  where (ygg.separator? C)
+  (@s _ ":" _) -> true
+  _ -> false)
+
 \\ ========================= the shared prelude ===========================
 \\ Four entry points - the shake itself and the footprints, facts and
 \\ trace-check reports - all open with the SAME analysis: read the kernel
@@ -139,8 +237,8 @@
                 Unlimit  (set *maximum-print-sequence-size* 1000000000)
                 Kernel   (kernel-code)
                 Graph    (call-graph Kernel)
-                KLFiles  (map (fn bootstrap) Files)
-                RawKL    (map (fn read-file) KLFiles)
+                KLFiles  (ygg.bootstrap-files Files)
+                RawKL    (ygg.read-user-kl KLFiles)
                 RawFs    (function-calls RawKL)
                 EvalFree (eval-free? RawFs)
                 KL       (strip-user-declares RawKL EvalFree)
@@ -2205,8 +2303,8 @@
            Unlimit   (set *maximum-print-sequence-size* 1000000000)
            Kernel    (kernel-code)
            Graph     (call-graph Kernel)
-           KLFiles   (map (fn bootstrap) Files)
-           RawKL     (map (fn read-file) KLFiles)
+           KLFiles   (ygg.bootstrap-files Files)
+           RawKL     (ygg.read-user-kl KLFiles)
            RawFs     (function-calls RawKL)
            EvalFree  (eval-free? RawFs)
            EvalBy    (ygg.filter (/. F (element? F (value *eval-entry-points*))) RawFs)
@@ -3040,8 +3138,8 @@
   Files Dir -> (let MaxPrint  (value *maximum-print-sequence-size*)
                     Unlimit   (set *maximum-print-sequence-size* 1000000000)
                     Kernel    (kernel-code)
-                    KLFiles   (map (fn bootstrap) Files)
-                    KL        (map (fn read-file) KLFiles)
+                    KLFiles   (ygg.bootstrap-files Files)
+                    KL        (ygg.read-user-kl KLFiles)
                     Tops      (toplevel-forms Kernel)
                     Foot      (defun-names Kernel)
                     FootCode  (footcode Foot Kernel)

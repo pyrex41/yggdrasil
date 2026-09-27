@@ -106,6 +106,51 @@ covers the other half of this: how a program that reads stdin can stay eval-free
 by reading bytes rather than S-expressions, since `read` is an eval entry point,
 and the two traps that catches people.
 
+## Multi-file programs
+
+A program can be more than one file. The entry file names the others the
+way a Shen user already would, with `(load "file.shen")` at its head:
+
+```shen
+(load "lib/tla.shen")
+(load "lib/election.shen")
+
+(tla.report (tla.check (election.init) (fn election.next) [...]))
+```
+
+The shake hoists each **leading** toplevel `(load S)` whose `S` is a literal
+string: the loaded file becomes a user file of its own, ahead of the file
+that loaded it, recursively and in load order, and the `load` form leaves
+the KL. `OUTDIR` then holds one `.kl` per file and the manifest one `user=`
+line per file, which is the multi-file shape every builder already runs.
+Hoisting is what keeps such a program eval-free: `load` is an eval entry
+point, and a hoisted load is no longer in the KL for the eval test to see.
+`tests/tla-election.shen` is the fixture: three files, `needs-eval=false`,
+gated on every target with a golden.
+
+What is and is not hoisted:
+
+- A relative path resolves against the directory of the file that loads it,
+  not the host's `*home-directory*`, so the shake does not depend on the
+  working directory it runs from.
+- A `load` after any other toplevel form, or with a computed path, is left
+  alone. It stays in the KL and makes the program eval-capable, as it always
+  did: where it sits among the other forms is an ordering the shake would
+  otherwise have to prove it preserves.
+- A file reached twice (a diamond, or a cycle) is refused with
+  `yggdrasil-shake: FAIL load loaded-twice` / `FAIL load cycle`. The host
+  would load it twice, or forever; the shake emits each file once, and
+  would silently differ.
+- Two files with the same basename are refused with `FAIL load same-basename`,
+  since their `.kl` files would overwrite each other in `OUTDIR`.
+
+One behaviour is deliberately not reproduced: on a host, `(load F)` echoes
+each form's value and a `run time:` line. The artifact runs `F`'s forms and
+prints only what they print.
+
+Concatenating the files by hand still works and shakes to the same slice;
+hoisting just makes it unnecessary.
+
 ## Type declarations
 
 `(declare F Type)` is build-time-only, like `(datatype ...)`, and an eval-free
