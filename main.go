@@ -43,6 +43,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -840,8 +841,28 @@ func webPreflight(outdir string) error {
 		"  Manifest: %s", filepath.Join(outdir, "yggdrasil.manifest.txt"))
 	if hits := evalCallsInUserKL(outdir); len(hits) > 0 {
 		msg += fmt.Sprintf("\n  Reaching eval from your code: %s", strings.Join(hits, ", "))
+		if onlyReaderEntryPoints(hits) {
+			msg += "\n  Every one of those only reads. If what the program reads is data, declare it with a\n" +
+				"  toplevel (set yggdrasil.*read-data* true) and the shake keeps the reader without eval\n" +
+				"  (docs/eval-free-cli.md, \"Reading S-expressions as data\")."
+		}
 	}
 	return errors.New(msg)
+}
+
+// readerEntryPoints mirrors *reader-entry-points* in yggdrasil.shen: the eval
+// entry points that only read, and that a (set yggdrasil.*read-data* true)
+// declaration takes out of the eval test. Like evalEntryPoints, it is only
+// used to explain a failure.
+var readerEntryPoints = []string{"read", "read-from-string", "lineread"}
+
+func onlyReaderEntryPoints(hits []string) bool {
+	for _, h := range hits {
+		if !slices.Contains(readerEntryPoints, h) {
+			return false
+		}
+	}
+	return len(hits) > 0
 }
 
 // evalCallsInUserKL scans the shaken user KL (everything but kernel.kl) for
@@ -1488,6 +1509,7 @@ var factRelations = []string{
 	"readsIn", "reads", "writes", "portReads",
 	"defwrite", "fcall", "formcalls", "formwrite", "succ",
 	"defunwrite", "called", "readglobal",
+	"readentry", "datadecl", "datacut", "datacutprim", "formmentionsrd",
 }
 
 func cmdFacts(rest []string) int {

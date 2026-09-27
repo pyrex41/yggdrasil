@@ -96,6 +96,24 @@ func TestWebPreflight(t *testing.T) {
 	if strings.Contains(err.Error(), "eval-kl") {
 		t.Errorf("preflight blamed kernel.kl:\n%s", err)
 	}
+	// A program that really evaluates must not be told to declare its reads
+	// data: the declaration would be inert, and the advice wrong.
+	if strings.Contains(err.Error(), "yggdrasil.*read-data*") {
+		t.Errorf("preflight offered the read-data declaration to a program that evaluates:\n%s", err)
+	}
+
+	// eval-capable only because it reads: the message names the declaration
+	// that would make it eval-free (#27).
+	reader := t.TempDir()
+	write(reader, "yggdrasil.manifest.txt", "needs-eval=true\nreaches=eval\n")
+	write(reader, "r.kl", "(defun r (V1) (read V1))\n")
+	err = webPreflight(reader)
+	if err == nil {
+		t.Fatal("needs-eval=true must fail the --web preflight")
+	}
+	if !strings.Contains(err.Error(), "(set yggdrasil.*read-data* true)") {
+		t.Errorf("preflight on a reader-only program should name the read-data declaration:\n%s", err)
+	}
 
 	// No manifest at all: stay quiet and let the stage-2 builder report.
 	if err := webPreflight(t.TempDir()); err != nil {

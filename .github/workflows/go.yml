@@ -30,14 +30,14 @@ env:
   # Tests that legitimately skip when no Shen host is present.  Measured on
   # this branch with
   #   unset YGGDRASIL_HOST; go test ./... -count=1 -v 2>&1 | grep -c '^--- SKIP'
-  # in a checkout with no sibling shen-go, which is what this job has -> 45,
-  # re-measured 2026-09-23 against a `git archive HEAD` with YGGDRASIL_HOST,
+  # in a checkout with no sibling shen-go, which is what this job has -> 51,
+  # re-measured 2026-09-27 (45 on 2026-09-23) against a `git archive HEAD` with YGGDRASIL_HOST,
   # BIFROST_SHEN_CL and YGGDRASIL_SHEN_GO_DIR unset and no sibling shen-cl or
   # shen-go beside it.  (It was 21 before the eight fix branches merged, 33
   # after, and 43 at ac551d7; this prose said 39 while the constant said 43,
   # which is the drift an enumeration is meant to prevent and did not.  Each
   # new entry below is marked with the branch that brought it.)  The
-  # forty-five are:
+  # fifty-one are:
   #   analysis_test.go  TestAnalysisOracleMatchesShake TestFactsDoesNotChangeTheShake
   #   check_test.go     TestCheckTypedOK TestCheckTypedBadFailsButShakes
   #                     TestCheckUnsignedDefineFails
@@ -51,6 +51,9 @@ env:
   #                     TestInitOrderSameFormAndFreezeShake (T1)
   #                     TestInitOrderLaterWriteStillRefused (T1)
   #   manifest_test.go  TestManifestKeySetsMatch
+  #   multifile_test.go TestMultiFileLoadsAreHoisted
+  #                     TestMultiFileUnhoistedLoadStaysEvalCapable
+  #                     TestMultiFileRefusals (#29, multi-file programs)
   #   parity_test.go    TestRunCaptureHelper (helper subprocess, defined at
   #                     parity_test.go:78 and skipping at :80; it skips WITH a
   #                     host too -- it is re-executed by its parent test)
@@ -77,6 +80,12 @@ env:
   #                     other test that does.  Nothing else moved: the skip
   #                     set is otherwise identical to ac551d7's, name for
   #                     name.
+  #   readdata_test.go  TestReadDataModeIsDecidedByDeclarationAndEntryPoints
+  #                     TestReadDataSliceReadsWhatTheFullKernelReads
+  #                     TestReadDataSliceRefusesFormsThatEvaluate (#27,
+  #                     read-data mode) -- these six moved the count from 45
+  #                     to 51; all boot a stage-1 host, and the last two also
+  #                     build for the `go` target.
   #   scip_test.go      TestScipCheckFixtures
   #   trace_test.go     TestTraceIsOptional TestTraceCheckRules TestTraceCheckFixtures
   #                     TestTraceCheckComplete (T2) TestTraceCheckTruncated (T2)
@@ -103,7 +112,7 @@ env:
   # each add a host-gated test therefore needs the count re-measured and the
   # enumeration above re-written; that is the intended cost, and it is what
   # this integration paid.)
-  NO_HOST_EXPECTED_SKIPS: "45"
+  NO_HOST_EXPECTED_SKIPS: "51"
   # macos-latest and windows-latest may skip MORE than that, for reasons that
   # have nothing to do with a host: portable_test.go:138 skips without python3
   # and portable_test.go:382 skips without node.  Both are present on the

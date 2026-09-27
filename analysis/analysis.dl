@@ -135,6 +135,25 @@
 //     TestFootprintOrderIsKernelLoadOrder checks the definition on every
 //     fixture that shakes. Ordering is a value; membership is the rules'.
 
+
+// D16. Read-data mode (#27). The reader family (`read`, `read-from-string`,
+//     `lineread`) is an eval entry point on S42 because the kernel's reader
+//     can evaluate by itself, through shen.unpackage, shen.process-def,
+//     shen.process-synonyms, shen.process-datatype and
+//     shen.update-lambdatable. A program that declares its reads are data,
+//     with a toplevel (set yggdrasil.*read-data* true), and mentions no
+//     other entry point, is shaken in a third mode: eval-free stripping,
+//     except that the *macros* registration stays, and those five defuns
+//     (plus `input` and shen.input-h+, reached only through macro
+//     expansions that NAME them) are replaced at write time by bodies that
+//     raise a named error and call no kernel defun. The rules follow the
+//     code: `readentry` and `datadecl` decide the mode, `datacut` rows lose
+//     their edges in it, `formmentionsrd` is the third reading of the init
+//     forms (D4), and `datacutprim` carries the replacements' primitives.
+//     `datadecl` is always exactly one row, 1 or 0, because the shake's own
+//     engine refuses a negation over a relation with no facts. The numbering
+//     skips from D8 to D16 here because D9-D15 are recorded next to the
+//     stage-2 and stage-4 rules they describe, further down.
 // ============================== facts ==================================
 
 .decl kernel(f:symbol)                       // F is a kernel defun (a call-graph row head)
@@ -213,6 +232,18 @@
 .decl readGlobal(v:symbol)                   // the run evaluated (value V)
 .input readGlobal(filename="readglobal.facts")
 
+// Read-data mode (D16).
+.decl readentry(s:symbol)                    // S is in *reader-entry-points* (a subset of entry)
+.input readentry
+.decl datadecl(x:number)                     // 1 if the user KL declares (set yggdrasil.*read-data* true), else 0
+.input datadecl
+.decl datacut(f:symbol)                      // kernel defun F is replaced in read-data mode
+.input datacut
+.decl datacutprim(f:symbol, p:symbol)        // primitive P occurs in F's read-data replacement
+.input datacutprim
+.decl formmentionsrd(n:number, g:symbol)     // called-fns of form N after read-data prepare-tops (D4, D16)
+.input formmentionsrd
+
 // ================================ mode =================================
 // eval-free? tests the user KL's symbols against *eval-entry-points*. One
 // hit is enough; evalcapable names every hit, which is what the
@@ -221,7 +252,8 @@
 
 .decl evalcapable(s:symbol)
 .output evalcapable
-evalcapable(S) :- rawsym(S), entry(S).
+evalcapable(S) :- rawsym(S), entry(S), !readentry(S).
+evalcapable(S) :- rawsym(S), readentry(S), datadecl(0).
 
 // anyeval/evalfree are the boolean the rest of the rules branch on. They are
 // one-column so that the negation below is over a ground atom.
@@ -231,22 +263,35 @@ anyeval(1) :- evalcapable(_).
 .decl evalfree(x:number)
 evalfree(1) :- !anyeval(1).
 
+// Read-data mode (D16): eval-free BECAUSE the reads were declared data.
+// plainfree is the eval-free mode proper.
+.decl readsdata(x:number)
+.output readsdata
+readsdata(1) :- evalfree(1), datadecl(1), rawsym(S), readentry(S).
+
+.decl plainfree(x:number)
+plainfree(1) :- evalfree(1), !readsdata(1).
+
 // =============================== edges =================================
 // One edge per kernel-defined symbol leaf of a body, in any position (D1),
-// minus shen.f-error's whole row when the program is eval-free (D3).
+// minus shen.f-error's whole row when the program is eval-free (D3), and
+// the read-data cuts' rows in read-data mode (D16).
 
 .decl edge(f:symbol, g:symbol)
-edge(F, G) :- callpos(F, G), kernel(G), F != "shen.f-error".
-edge(F, G) :- argpos(F, G, _), kernel(G), F != "shen.f-error".
+edge(F, G) :- callpos(F, G), kernel(G), F != "shen.f-error", !datacut(F).
+edge(F, G) :- argpos(F, G, _), kernel(G), F != "shen.f-error", !datacut(F).
 edge("shen.f-error", G) :- callpos("shen.f-error", G), kernel(G), anyeval(1).
 edge("shen.f-error", G) :- argpos("shen.f-error", G, _), kernel(G), anyeval(1).
+edge(F, G) :- callpos(F, G), kernel(G), datacut(F), !readsdata(1).
+edge(F, G) :- argpos(F, G, _), kernel(G), datacut(F), !readsdata(1).
 
 // =============================== seeds =================================
 // The kernel's own toplevel init forms seed the floor; the user KL seeds the
 // rest. Both readings of each are in the facts; the mode picks one (D4, D5).
 
 .decl floorseed(g:symbol)
-floorseed(G) :- formmentionsef(_, G), kernel(G), evalfree(1).
+floorseed(G) :- formmentionsef(_, G), kernel(G), plainfree(1).
+floorseed(G) :- formmentionsrd(_, G), kernel(G), readsdata(1).
 floorseed(G) :- formmentions(_, G), kernel(G), anyeval(1).
 
 .decl seed(g:symbol)
@@ -275,7 +320,10 @@ floor(G) :- floor(F), edge(F, G).
 // rewrite-f-error), the synthesised initialiser, and the user KL.
 
 .decl usedprim(p:symbol)
-usedprim(P) :- prim(P), reach(F), mentionsprim(F, P), F != "shen.f-error".
+usedprim(P) :- prim(P), reach(F), mentionsprim(F, P), F != "shen.f-error", !datacut(F).
+usedprim(P) :- prim(P), reach(F), mentionsprim(F, P), datacut(F), !readsdata(1).
+// In read-data mode the cuts' replacement bodies are what is emitted (D16).
+usedprim(P) :- reach(F), datacutprim(F, P), readsdata(1).
 usedprim(P) :- prim(P), reach("shen.f-error"), mentionsprim("shen.f-error", P), anyeval(1).
 // rewrite-f-error swaps the eval-free shen.f-error body for
 // (simple-error (cn (str V) "...")), so those two primitives replace its own.

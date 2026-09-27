@@ -17,9 +17,10 @@ is a bug in one of them; the Go oracle test runs Soufflé when it is on PATH
 and this otherwise, and CI runs Soufflé.
 
 The rules are transcribed from analysis.dl clause for clause, in the same
-order, with the same deviation numbering (D1-D10) -- read that file first.
-Stratification is by hand rather than computed: the only negation is
-`evalfree :- !anyeval`, and `anyeval` is derived from facts alone, so
+order, with the same deviation numbering (D1-D16) -- read that file first.
+Stratification is by hand rather than computed: the mode's negations
+(`evalfree :- !anyeval`, `plainfree :- !readsdata`, and the negated EDB
+relations `readentry` and `datacut`) are all decided from facts alone, so
 evaluating the mode first and everything else after is a valid stratum
 order.
 """
@@ -28,7 +29,7 @@ import os
 import sys
 
 # Relations read from FACTSDIR, with their arity. A missing file is an empty
-# relation, not an error: the dump writes all twenty-eight, but a hand-built
+# relation, not an error: the dump writes all thirty-four, but a hand-built
 # fact directory that omits one should still evaluate.
 INPUTS = {
     "kernel": 1,
@@ -68,6 +69,12 @@ INPUTS = {
     "defunwrite": 1,
     "called": 1,
     "readGlobal": 1,
+    # Read-data mode (D16).
+    "readentry": 1,
+    "datadecl": 1,
+    "datacut": 1,
+    "datacutprim": 2,
+    "formmentionsrd": 2,
 }
 
 # Relations whose fact file is not named after the relation.
@@ -135,11 +142,22 @@ def evaluate(db):
     usersym = one("usersym")
     initprim = one("initprim")
 
+    readentry = one("readentry")
+    datadecl = one("datadecl")
+    datacut = one("datacut")
+
     # ---- mode -------------------------------------------------------
-    # evalcapable(S) :- rawsym(S), entry(S).
-    evalcapable = rawsym & entry
+    # evalcapable(S) :- rawsym(S), entry(S), !readentry(S).
+    # evalcapable(S) :- rawsym(S), readentry(S), datadecl(0).
+    evalcapable = (rawsym & entry) - readentry
+    if "0" in datadecl:
+        evalcapable |= rawsym & readentry
     anyeval = bool(evalcapable)
     evalfree = not anyeval
+    # readsdata(1) :- evalfree(1), datadecl(1), rawsym(S), readentry(S).
+    # plainfree(1) :- evalfree(1), !readsdata(1).
+    readsdata = evalfree and "1" in datadecl and bool(rawsym & readentry)
+    plainfree = evalfree and not readsdata
 
     # ---- edges (D1, D3) ---------------------------------------------
     # callpos and argpos both yield edges; shen.f-error's whole row is
@@ -149,16 +167,29 @@ def evaluate(db):
         if g in kernel:
             succ.setdefault(f, set()).add(g)
 
+    # D16: the read-data cuts' rows likewise, in read-data mode.
+    def keeps_row(f):
+        if f == F_ERROR:
+            return anyeval
+        if f in datacut:
+            return not readsdata
+        return True
+
     for f, g in db["callpos"]:
-        if f != F_ERROR or anyeval:
+        if keeps_row(f):
             add_edge(f, g)
     for f, g, _c in db["argpos"]:
-        if f != F_ERROR or anyeval:
+        if keeps_row(f):
             add_edge(f, g)
     # D2: datasym derives no edge. Deliberately not iterated.
 
     # ---- seeds (D4, D5) ---------------------------------------------
-    mentions = "formmentions" if anyeval else "formmentionsef"
+    if anyeval:
+        mentions = "formmentions"
+    elif readsdata:
+        mentions = "formmentionsrd"
+    else:
+        mentions = "formmentionsef"
     floorseed = {g for _n, g in db[mentions]} & kernel
     userseed = (rawsym if anyeval else usersym) & kernel
     seed = floorseed | userseed
@@ -174,7 +205,11 @@ def evaluate(db):
             continue
         if f == F_ERROR and evalfree:
             continue
+        if f in datacut and readsdata:
+            continue
         usedprim.add(p)
+    if readsdata:
+        usedprim |= {p for f, p in db["datacutprim"] if f in reach}
     if F_ERROR in reach and evalfree:
         # rewrite-f-error's replacement body
         usedprim.update(("simple-error", "cn"))
@@ -302,6 +337,7 @@ def evaluate(db):
 
     return {
         "evalcapable": {(s,) for s in evalcapable},
+        "readsdata": {("1",)} if readsdata else set(),
         "reach": {(g,) for g in reach},
         "floor": {(g,) for g in floor},
         "usedprim": {(p,) for p in usedprim},

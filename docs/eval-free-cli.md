@@ -46,7 +46,11 @@ binds 310 functions and exits, never reading stdin. That is easy to mistake for
 success: it builds, links, exits 0, and is much smaller. It just does not do
 anything.
 
-## The way out: read bytes, not forms
+There are two ways out: declare that what the program reads is data (see
+[Reading S-expressions as data](#reading-s-expressions-as-data) below), or
+read bytes rather than forms.
+
+## Reading bytes, not forms
 
 `read-byte` is a primitive. It needs no reader, so it is not an eval entry
 point. Slurp bytes and parse them with your own grammar:
@@ -88,11 +92,10 @@ tower, some are float64-only. A digest that overflows 2^53 will disagree across
 targets and the parity gate will (correctly) fail it. The fixture uses
 `sum of byte * 1-based index`, which stays small for any realistic input.
 
-## What is still missing
+## Reading S-expressions as data
 
-There is no way to keep a `read`-based driver *and* an eval-free shake, and
-on the S42 kernel that is not an artefact of the analysis. `read` reaches
-`eval` by a real call chain:
+`read` is an eval entry point on the S42 kernel for a real reason, not an
+artefact of the analysis. The reader evaluates code by itself:
 
 ```
 read -> shen.read-loop -> shen.try-parse -> shen.process-sexprs
@@ -100,10 +103,74 @@ read -> shen.read-loop -> shen.try-parse -> shen.process-sexprs
 ```
 
 `shen.unpackage` evaluates the exceptions expression of every
-`(package Name Exceptions ...)` form the reader returns, so a program that
-calls `read` on arbitrary input can evaluate code, and the shake keeps the
-compiler because the kernel's reader can call it. A reader that returned
-package forms unevaluated would be a kernel change. Until then a program that
-must consume S-expressions from stdin either accepts `needs-eval=true` or
-brings its own reader over `read-byte`. Tracked, with the measurement, in
+`(package Name Exceptions ...)` form the reader returns, and there are four
+more paths like it: macroexpansion compiles a `(defmacro ...)`, a
+`(synonyms ...)` or a `(datatype ...)` form it reads, and reading a
+`(define F ...)` for a new `F` registers `F`'s arity and evaluates an eta
+wrapper for it. So a program that calls `read` on arbitrary input can
+evaluate code, and the shake keeps the compiler.
+
+A program whose reads are *data* (a config, a query, a serialised term) can
+say so, with one toplevel form in any of its files:
+
+```shen
+(set yggdrasil.*read-data* true)
+
+(define read-all
+  S Acc -> (let F (read S)
+             (if (= F end) (reverse Acc) (read-all S [F | Acc]))))
+```
+
+On a Shen host the declaration just sets a global. To the shake it means:
+when the program mentions no eval entry point other than `read`,
+`read-from-string` and `lineread`, shake it in **read-data** mode:
+
+- everything the eval-free mode strips is stripped, except the macro table:
+  macroexpansion is part of what `read` returns, so it stays;
+- the five kernel functions above are replaced by versions that raise a
+  named error instead of evaluating (`shen.unpackage` keeps its first clause,
+  which unpacks a `(package null ...)` form without evaluating anything);
+- the arity table and the `shen` package's external symbols are kept whole
+  instead of trimmed to the footprint, because the reader's
+  `shen.process-applications` reads both to decide how to curry what it
+  parsed. The one name dropped from them is `eval-kl`, so that
+  `cannot-reach=eval` stays a syntactic fact about the emitted KL.
+
+The manifest says `needs-eval=false`, `cannot-reach=eval` and
+`read-data=true`. `tests/read-data.shen` reads its stdin this way and shakes
+to 355 kernel defuns, against 551 for the same program without the
+declaration, and `--web` builds it.
+
+What the declaration promises, and what holds you to it:
+
+- **Where the full kernel's reader evaluates nothing, the slice reads the
+  same value.** `TestReadDataSliceReadsWhatTheFullKernelReads` builds the
+  fixture twice, shaken and with `--no-shake` (every kernel defun, nothing
+  stripped), runs both on the same stdin and requires identical output,
+  which is also the committed golden. Macroexpansion (`(+ 1 2 3)` reads as
+  `[+ 1 [+ 2 3]]`) and currying (`(port 80)` reads as `[[fn port] 80]`) come
+  out the same.
+- **Where it would evaluate, the slice refuses by name.** Reading
+  `(defmacro ...)` in the fixture's artifact stops the program with
+  `yggdrasil read-data: read a (defmacro ...) form; defining a macro
+  evaluates it, and this slice cannot evaluate`, and likewise for the other
+  four. The refusal is by form, not by path: a `(datatype ...)` with no
+  rules is refused although the kernel would happen to evaluate nothing
+  for it. `TestReadDataSliceRefusesFormsThatEvaluate` pins each one.
+- **A read value that reaches `eval` is still eval-capable.** The
+  declaration only takes the reader family out of the eval test. A program
+  that also mentions `eval`, `load`, `input` or any other entry point is
+  eval-capable whatever it declares. `tests/read-data-eval.shen` declares
+  and then evaluates what it reads, and must shake `needs-eval=true`.
+
+One deviation from the full kernel is left, and it is deliberate: because
+`eval-kl` is dropped from the kept tables, a form that applies `eval-kl`
+reads curried as an unknown function would, where the full kernel leaves it
+as a call.
+
+Without the declaration nothing changes: `read` is an eval entry point, and
+a program that must consume S-expressions either declares them data,
+accepts `needs-eval=true`, or brings its own reader over `read-byte` as
+above. The clean fix is still in the kernel, a reader that returns package
+forms unevaluated. Tracked in
 [#27](https://github.com/pyrex41/yggdrasil/issues/27).

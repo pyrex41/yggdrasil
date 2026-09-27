@@ -106,6 +106,17 @@ covers the other half of this: how a program that reads stdin can stay eval-free
 by reading bytes rather than S-expressions, since `read` is an eval entry point,
 and the two traps that catches people.
 
+There is a third mode, **read-data**, for a program that declares with a
+toplevel `(set yggdrasil.*read-data* true)` that what it reads is data and
+mentions no eval entry point but `read`, `read-from-string` and `lineread`.
+It strips like the eval-free mode but keeps the macro table, replaces the
+five kernel functions through which the S42 reader itself evaluates
+(`shen.unpackage`, `shen.process-def`, `shen.process-synonyms`,
+`shen.process-datatype`, `shen.update-lambdatable`) with named errors, and
+keeps the arity table and the `shen` external-symbol list whole but for
+`eval-kl`, because the reader reads them. What it promises and how that is
+tested is in [`docs/eval-free-cli.md`](eval-free-cli.md#reading-s-expressions-as-data).
+
 ## Multi-file programs
 
 A program can be more than one file. The entry file names the others the
@@ -183,6 +194,7 @@ recognise, which is what makes every key below contract-safe to add.
 | `init-order=` | `checked` or `checked-weak`, see below |
 | `computed-names=` | `none`, or a comma-separated list of the user defuns (or `top` for a file's toplevel forms) that contain an `intern`, or a `(value X)` / `(set X _)` whose `X` is not a literal symbol |
 | `pruned-init=` | how many toplevel forms the synthesised initialiser dropped as dead |
+| `read-data=true` | written only for a read-data shake (above): the reader is in the slice, `eval` is not, and a read that would evaluate raises a named error |
 | `shaken=false` | written only by `--no-shake`; its absence means the ordinary shaken slice |
 | `traced=true`, `trace-file=` | written only by `--trace` |
 
