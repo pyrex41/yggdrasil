@@ -80,6 +80,15 @@ Mode.
 evalcapable :- usersym(S), entry(S).
 ```
 
+Since #27 there is a third mode. A program that declares
+`(set yggdrasil.*read-data* true)` and whose only entry points are the reader
+family is shaken read-data: the reader family leaves the entry test, a
+handful of kernel defuns through which the S42 reader itself evaluates lose
+their edges (they are replaced by named errors at write time), and the init
+forms are read a third way, with the macro table kept. The rules for it are
+deviation D16 in [`analysis/analysis.dl`](../analysis/analysis.dl), and the
+promise it makes is in [`docs/eval-free-cli.md`](eval-free-cli.md#reading-s-expressions-as-data).
+
 Edges. The last clause is what the four hand-written exceptions in
 `called-fns` say today: a symbol in a data literal is an edge only when the
 program can evaluate code, because only then can the kernel turn a name

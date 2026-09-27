@@ -106,6 +106,62 @@ covers the other half of this: how a program that reads stdin can stay eval-free
 by reading bytes rather than S-expressions, since `read` is an eval entry point,
 and the two traps that catches people.
 
+There is a third mode, **read-data**, for a program that declares with a
+toplevel `(set yggdrasil.*read-data* true)` that what it reads is data and
+mentions no eval entry point but `read`, `read-from-string` and `lineread`.
+It strips like the eval-free mode but keeps the macro table, replaces the
+five kernel functions through which the S42 reader itself evaluates
+(`shen.unpackage`, `shen.process-def`, `shen.process-synonyms`,
+`shen.process-datatype`, `shen.update-lambdatable`) with named errors, and
+keeps the arity table and the `shen` external-symbol list whole but for
+`eval-kl`, because the reader reads them. What it promises and how that is
+tested is in [`docs/eval-free-cli.md`](eval-free-cli.md#reading-s-expressions-as-data).
+
+## Multi-file programs
+
+A program can be more than one file. The entry file names the others the
+way a Shen user already would, with `(load "file.shen")` at its head:
+
+```shen
+(load "lib/tla.shen")
+(load "lib/election.shen")
+
+(tla.report (tla.check (election.init) (fn election.next) [...]))
+```
+
+The shake hoists each **leading** toplevel `(load S)` whose `S` is a literal
+string: the loaded file becomes a user file of its own, ahead of the file
+that loaded it, recursively and in load order, and the `load` form leaves
+the KL. `OUTDIR` then holds one `.kl` per file and the manifest one `user=`
+line per file, which is the multi-file shape every builder already runs.
+Hoisting is what keeps such a program eval-free: `load` is an eval entry
+point, and a hoisted load is no longer in the KL for the eval test to see.
+`tests/tla-election.shen` is the fixture: three files, `needs-eval=false`,
+gated on every target with a golden.
+
+What is and is not hoisted:
+
+- A relative path resolves against the directory of the file that loads it,
+  not the host's `*home-directory*`, so the shake does not depend on the
+  working directory it runs from.
+- A `load` after any other toplevel form, or with a computed path, is left
+  alone. It stays in the KL and makes the program eval-capable, as it always
+  did: where it sits among the other forms is an ordering the shake would
+  otherwise have to prove it preserves.
+- A file reached twice (a diamond, or a cycle) is refused with
+  `yggdrasil-shake: FAIL load loaded-twice` / `FAIL load cycle`. The host
+  would load it twice, or forever; the shake emits each file once, and
+  would silently differ.
+- Two files with the same basename are refused with `FAIL load same-basename`,
+  since their `.kl` files would overwrite each other in `OUTDIR`.
+
+One behaviour is deliberately not reproduced: on a host, `(load F)` echoes
+each form's value and a `run time:` line. The artifact runs `F`'s forms and
+prints only what they print.
+
+Concatenating the files by hand still works and shakes to the same slice;
+hoisting just makes it unnecessary.
+
 ## Type declarations
 
 `(declare F Type)` is build-time-only, like `(datatype ...)`, and an eval-free
@@ -138,6 +194,7 @@ recognise, which is what makes every key below contract-safe to add.
 | `init-order=` | `checked` or `checked-weak`, see below |
 | `computed-names=` | `none`, or a comma-separated list of the user defuns (or `top` for a file's toplevel forms) that contain an `intern`, or a `(value X)` / `(set X _)` whose `X` is not a literal symbol |
 | `pruned-init=` | how many toplevel forms the synthesised initialiser dropped as dead |
+| `read-data=true` | written only for a read-data shake (above): the reader is in the slice, `eval` is not, and a read that would evaluate raises a named error |
 | `shaken=false` | written only by `--no-shake`; its absence means the ordinary shaken slice |
 | `traced=true`, `trace-file=` | written only by `--trace` |
 

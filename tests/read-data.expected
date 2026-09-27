@@ -1,0 +1,11 @@
+[[[[fn service] web] [[fn port] 8080]] [[fn replicas] 3]]
+[[[[fn service] db] [[fn port] 5432]] [[fn replicas] 1]]
+[cons alpha [cons beta gamma]]
+[+ 1 [+ 2 3]]
+[let X 1 [let Y 2 X]]
+[append [cons a []] [cons b []]]
+"a string"
+[[fn inner] 7]
+forms: 8
+sum: 13532
+from string: [[[fn port] 80] [cons a [cons b []]]]

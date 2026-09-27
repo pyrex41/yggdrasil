@@ -197,6 +197,7 @@ jobs:
 
             mode=eval-free
             [ -s "$work/out/evalcapable.csv" ] && mode=eval-capable
+            [ -s "$work/out/readsdata.csv" ] && mode=read-data
 
             if ! diff -u "$work/want.txt" "$work/got-souffle.txt" > "$work/diff-souffle.txt"; then
               echo "::error::$name ($mode): souffle reach != kernel.kl defuns"
@@ -213,8 +214,11 @@ jobs:
           done
           echo "checked $checked fixtures"
           # A run that checked nothing -- or quietly fewer than tests/ holds --
-          # is not a pass. tests/ carries 17 .shen fixtures at d1d1e23, one of
-          # which (init-order-bad) is refused by design, so 16 is the floor.
-          # Adding a fixture may raise it; losing one must be loud.
-          [ "$checked" -ge 16 ] || { echo "::error::only $checked fixtures checked, expected at least 16"; fail=1; }
+          # is not a pass. tests/ carries 25 .shen fixtures since the
+          # multi-file and read-data fixtures (tla-election, read-data,
+          # read-data-eval) landed, one of which (init-order-bad) is refused
+          # by design, so 24 is the floor. (It said 16, from d1d1e23's 17,
+          # while tests/ grew to 22.) Adding a fixture may raise it; losing
+          # one must be loud.
+          [ "$checked" -ge 24 ] || { echo "::error::only $checked fixtures checked, expected at least 24"; fail=1; }
           exit "$fail"

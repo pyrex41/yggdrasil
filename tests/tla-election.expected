@@ -1,0 +1,18 @@
+38 states, 57 transitions, depth 4
+OK
+38 states, 57 transitions, depth 4
+FAIL: liveness has-leader
+  0  init  [[follower follower follower] [[] [] []]]
+  1  [start a]  [[candidate follower follower] [[a] [] []]]
+  2  [start b]  [[candidate candidate follower] [[a] [b] []]]
+  3  [start c]  [[candidate candidate candidate] [[a] [b] [c]]]
+       (stays here forever: no action is enabled)
+190 states, 372 transitions, depth 6
+FAIL: invariant one-leader
+  0  init  [[follower follower follower] [[] [] []]]
+  1  [start a]  [[candidate follower follower] [[a] [] []]]
+  2  [start b]  [[candidate candidate follower] [[a] [b] []]]
+  3  [vote a b]  [[candidate candidate follower] [[a b] [b] []]]
+  4  [vote b a]  [[candidate candidate follower] [[a b] [a b] []]]
+  5  [win a]  [[leader candidate follower] [[a b] [a b] []]]
+  6  [win b]  [[leader leader follower] [[a b] [a b] []]]

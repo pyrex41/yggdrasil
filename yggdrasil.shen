@@ -108,6 +108,113 @@
                   Close (close Sink)
                   To))
 
+\\ ========================= multi-file programs ==========================
+\\ A program may be several files: a library and a spec, say.  The entry
+\\ file names the others the way a Shen user already would, with
+\\ (load "lib.shen") forms at its head, and the shake hoists them.  Each
+\\ LEADING toplevel (load S) whose S is a literal string becomes a user
+\\ file of its own, ahead of the file that loaded it, recursively and in
+\\ order; the load form itself is dropped from that file's KL.  The result
+\\ is an ordinary multi-file shake: one .kl per file, `user=` lines in load
+\\ order, which every builder already runs in manifest order.
+\\
+\\ Hoisting is what keeps such a program eval-free: `load` is an eval entry
+\\ point (it reads and evaluates a file at run time), and a hoisted load is
+\\ no longer in the KL for eval-free? to see.  Only a leading literal load
+\\ is hoisted.  (load S) after any other form, or with a computed S, stays
+\\ in the KL and makes the program eval-capable, exactly as before: its
+\\ position among the other forms is an ordering the shake would otherwise
+\\ have to prove it preserves.
+\\
+\\ A relative S is resolved against the directory of the file that loads
+\\ it, not the host's *home-directory*, so a program shakes the same from
+\\ any working directory.  What the artifact does NOT reproduce is load's
+\\ REPL echo: on a host, (load F) prints each form's value and a run-time
+\\ line; the artifact runs F's forms and prints only what they print.
+\\
+\\ Two shapes are refused, with a FAIL sentinel and no artifacts: a file
+\\ reached twice (a diamond or a cycle - the host would load it twice, or
+\\ forever, and the shake emits each file once), and two files with the
+\\ same basename (their .kl files would overwrite each other in OUTDIR).
+
+(define ygg.bootstrap-files
+  Files -> (map (fn bootstrap) (ygg.expand-files Files)))
+
+(define ygg.read-user-kl
+  KLFiles -> (map (/. F (ygg.strip-loads (read-file F))) KLFiles))
+
+(define ygg.expand-files
+  Files -> (let Out (reverse (ygg.expand-h Files [] []))
+                Check (ygg.check-basenames Out [])
+             Out))
+
+\\ Acc is every file emitted so far, newest first; Stack the files whose
+\\ loads are being expanded, for the cycle case.
+(define ygg.expand-h
+  [] _ Acc -> Acc
+  [F | Fs] Stack Acc -> (ygg.expand-h Fs Stack (ygg.expand-one F Stack Acc)))
+
+(define ygg.expand-one
+  F Stack _ -> (ygg.load-fail "cycle" F)  where (element? F Stack)
+  F Stack _ -> (ygg.load-fail "same-basename" F)  where (ygg.basename-seen? F Stack)
+  F _ Acc -> (ygg.load-fail "loaded-twice" F)  where (element? F Acc)
+  F _ Acc -> (ygg.load-fail "same-basename" F)  where (ygg.basename-seen? F Acc)
+  F Stack Acc -> (let Dir  (ygg.dirname F)
+                      Deps (map (/. S (ygg.resolve-path Dir S))
+                                (ygg.leading-loads (read-file F)))
+                   [F | (ygg.expand-h Deps [F | Stack] Acc)]))
+
+\\ Paths such as a.shen and ./a.shen name the same output .kl.  Check that
+\\ collision before descending: otherwise a (load "./a.shen") cycle grows
+\\ the path on every recursion and never reaches the exact-path cycle check.
+(define ygg.basename-seen?
+  F Files -> (element? (truncate-filename F "")
+                      (map (/. P (truncate-filename P "")) Files)))
+
+(define ygg.leading-loads
+  [[load S] | Forms] -> [S | (ygg.leading-loads Forms)]  where (string? S)
+  _ -> [])
+
+(define ygg.strip-loads
+  [[load S] | Forms] -> (ygg.strip-loads Forms)  where (string? S)
+  Forms -> Forms)
+
+(define ygg.check-basenames
+  [] _ -> done
+  [F | Fs] Seen -> (let B (truncate-filename F "")
+                     (if (element? B Seen)
+                         (ygg.load-fail "same-basename" F)
+                         (ygg.check-basenames Fs [B | Seen]))))
+
+(define ygg.load-fail
+  What F -> (do (pr (make-string "yggdrasil-shake: FAIL load ~A file=~A~%" What F)
+                    (stoutput))
+                (simple-error (make-string "load: ~A: ~A" What F))))
+
+\\ The directory part of a path, separator included ("" for a bare name).
+\\ Both separators count, so a Windows host's absolute paths resolve too.
+(define ygg.dirname
+  File -> (ygg.dirname-h File "" ""))
+
+(define ygg.dirname-h
+  "" _ Dir -> Dir
+  (@s C Ss) Cur Dir -> (ygg.dirname-h Ss "" (cn Dir (cn Cur C)))
+                       where (ygg.separator? C)
+  (@s C Ss) Cur Dir -> (ygg.dirname-h Ss (cn Cur C) Dir))
+
+(define ygg.separator?
+  C -> (or (= C "/") (= C (n->string 92))))
+
+(define ygg.resolve-path
+  _ S -> S  where (ygg.absolute-path? S)
+  Dir S -> (cn Dir S))
+
+(define ygg.absolute-path?
+  "" -> false
+  (@s C _) -> true  where (ygg.separator? C)
+  (@s _ ":" _) -> true
+  _ -> false)
+
 \\ ========================= the shared prelude ===========================
 \\ Four entry points - the shake itself and the footprints, facts and
 \\ trace-check reports - all open with the SAME analysis: read the kernel
@@ -139,18 +246,20 @@
                 Unlimit  (set *maximum-print-sequence-size* 1000000000)
                 Kernel   (kernel-code)
                 Graph    (call-graph Kernel)
-                KLFiles  (map (fn bootstrap) Files)
-                RawKL    (map (fn read-file) KLFiles)
+                KLFiles  (ygg.bootstrap-files Files)
+                RawKL    (ygg.read-user-kl KLFiles)
                 RawFs    (function-calls RawKL)
-                EvalFree (eval-free? RawFs)
-                KL       (strip-user-declares RawKL EvalFree)
+                Strip    (ygg.strip-mode RawKL RawFs)
+                EvalFree (not (= Strip false))
+                KL       (strip-user-declares RawKL Strip)
                 AllTops  (toplevel-forms Kernel)
-                Tops     (prepare-tops AllTops EvalFree)
+                Tops     (prepare-tops AllTops Strip)
                 Seeds    (append (mapcan (fn called-fns) Tops) (function-calls KL))
-                Run      (ygg.shake-rules-run Kernel Graph AllTops KL RawFs)
+                Run      (ygg.shake-rules-run Kernel Graph AllTops KL RawFs RawKL)
                 Foot     (ygg.rule-footprint Seeds Graph)
                 [[maxprint MaxPrint] [kernel Kernel] [graph Graph]
                  [klfiles KLFiles] [rawfs RawFs] [evalfree EvalFree]
+                 [strip Strip] [rawkl RawKL]
                  [kl KL] [alltops AllTops] [tops Tops] [seeds Seeds]
                  [foot Foot]]))
 
@@ -165,6 +274,8 @@
 (define ygg.pl-klfiles  P -> (ygg.pl klfiles P))
 (define ygg.pl-rawfs    P -> (ygg.pl rawfs P))
 (define ygg.pl-evalfree P -> (ygg.pl evalfree P))
+(define ygg.pl-strip    P -> (ygg.pl strip P))
+(define ygg.pl-rawkl    P -> (ygg.pl rawkl P))
 (define ygg.pl-kl       P -> (ygg.pl kl P))
 (define ygg.pl-alltops  P -> (ygg.pl alltops P))
 (define ygg.pl-tops     P -> (ygg.pl tops P))
@@ -182,16 +293,16 @@
                     Kernel     (ygg.pl-kernel P)
                     KLFiles    (ygg.pl-klfiles P)
                     RawFs      (ygg.pl-rawfs P)
-                    EvalFree   (ygg.pl-evalfree P)
+                    Strip      (ygg.pl-strip P)
                     KL         (ygg.pl-kl P)
                     Tops       (ygg.pl-tops P)
                     Foot       (ygg.pl-foot P)
                     CNames     (ygg.computed-names)
                     Warn       (ygg.cn-warn CNames)
-                    FootCode   (map (/. D (rewrite-f-error D EvalFree))
+                    FootCode   (map (/. D (rewrite-f-error D Strip))
                                     (footcode Foot Kernel))
                     Arities    (arity-literal Tops)
-                    TopsOut    (map (/. T (trim-top T Foot EvalFree Arities)) Tops)
+                    TopsOut    (map (/. T (trim-top T Foot Strip Arities)) Tops)
                     \\ reach is read out of the database BEFORE the
                     \\ init-order check: that check closes a rule set of
                     \\ its own, and ygg.dl-run starts from an empty
@@ -214,7 +325,7 @@
                     WriteK     (write-kl-file (@s Dir "/kernel.kl") OutCode)
                     UserOut    (write-user-files KLFiles UserKL Dir)
                     WriteM     (write-manifest Dir UserOut UserKL Prims CNames
-                                               NPruned InitOrder2)
+                                               NPruned InitOrder2 Strip)
                     Restore    (ygg.pl-restore P)
                     done))
 
@@ -252,14 +363,131 @@
 (define eval-free?
   UserFs -> (not (intersect? UserFs (value *eval-entry-points*))))
 
+\\ ============================ read-data mode ============================
+\\ `read` parses; what makes a program eval-capable is evaluating what it
+\\ parsed.  But on S42 the kernel's reader itself can evaluate: every form
+\\ it returns goes through shen.unpackage&macroexpand, and four paths out
+\\ of that reach `eval` by real calls, not by over-approximation (#27):
+\\
+\\   shen.unpackage          (package Name Exceptions ...) evaluates
+\\                           Exceptions before recording the symbols
+\\   shen.process-def        a (defmacro ...) form is compiled and loaded
+\\   shen.process-synonyms   (synonyms ...) recompiles shen.demod
+\\   shen.process-datatype   (datatype ...) compiles its rules to Prolog
+\\
+\\ so `read` on arbitrary input is eval-capable, and eval-free? is right to
+\\ say so.  A program that reads DATA - a config, a query, a serialised
+\\ term - can declare it, with a toplevel form in any of its files:
+\\
+\\   (set yggdrasil.*read-data* true)
+\\
+\\ which on any Shen host just sets a global.  When the declaration is
+\\ present and the only eval entry points the program mentions are the
+\\ reader family below, the shake takes a third mode, read-data:
+\\
+\\  * everything the eval-free mode strips is stripped, EXCEPT the *macros*
+\\    registration: macroexpansion is part of what `read` returns, so the
+\\    macro table the full kernel reads with is kept;
+\\  * the four defuns above are replaced by versions that raise a named
+\\    error instead of evaluating (shen.unpackage keeps its first clause,
+\\    which unpacks a (package null ...) form without evaluating anything);
+\\  * the arity table and the shen package's external-symbol list are
+\\    kept whole rather than trimmed to the footprint, because the reader's
+\\    shen.process-applications reads both (arity, shen.undefined-f?) to
+\\    decide how to curry what it parsed, and a trimmed table would curry
+\\    differently from the full kernel.
+\\
+\\ Three more defuns are replaced the same way, for a different reason.
+\\ shen.update-lambdatable calls eval-kl for real: reading a (define F ...)
+\\ form registers F's arity and, for a new F of arity >= 1, evaluates an
+\\ eta wrapper for it (shen.find-arities -> shen.store-arity).  `input` and
+\\ shen.input-h+ are reached only because shen.macros and
+\\ shen.process-input+ name them while BUILDING the expansions of (input)
+\\ and (input+ T) - data the graph cannot tell from a call - and the
+\\ program itself cannot mention either without being eval-capable; if
+\\ anything does apply them in a read-data slice, it errors by name.
+\\ Finally, the kept-whole tables drop exactly one name, eval-kl, so that
+\\ `cannot-reach=eval` stays a syntactic fact about the emitted KL: a form
+\\ applying eval-kl reads curried as an unknown function would, where the
+\\ full kernel would leave it as a call.
+\\
+\\ The obligation this carries: on every input for which the full kernel's
+\\ reader would not reach `eval`, the slice's reader returns the same
+\\ value; on an input that would (a package form with exceptions, a
+\\ defmacro, synonyms or datatype form, or a define of a new function,
+\\ anywhere macroexpansion reaches it), the slice raises an error naming
+\\ the form rather than evaluating it.  The refusal is by form, not by
+\\ path: a (datatype ...) with no rules is refused too, although the
+\\ kernel would happen to evaluate nothing for it.  A program that also
+\\ mentions eval, load, input or any other entry point outside the reader
+\\ family is eval-capable whatever it declares, and the declaration is
+\\ inert.
+
+(set *reader-entry-points* [read read-from-string lineread])
+
+(define ygg.read-data-declared?
+  KL -> (element? [set yggdrasil.*read-data* true] (mapcan (/. Forms Forms) KL)))
+
+\\ The strip mode, one value for every consumer: false (eval-capable, keep
+\\ everything), true (eval-free) or data (read-data, above).
+(define ygg.strip-mode
+  RawKL RawFs -> (let Others (ygg.filter (/. E (not (element? E (value *reader-entry-points*))))
+                                         (value *eval-entry-points*))
+                   (cond ((eval-free? RawFs) true)
+                         ((and (ygg.read-data-declared? RawKL)
+                               (not (intersect? RawFs Others)))
+                          data)
+                         (true false))))
+
+(define ygg.mode-name
+  false -> "eval-capable"
+  true  -> "eval-free"
+  data  -> "read-data")
+
+\\ The replacement bodies, keyed by name.  Arities are the kernel's own.
+(set *read-data-cuts*
+  [[shen.unpackage
+    [defun shen.unpackage [V]
+      [cond [[and [cons? V]
+                  [and [= package [hd V]]
+                       [and [cons? [tl V]]
+                            [and [= null [hd [tl V]]] [cons? [tl [tl V]]]]]]]
+             [tl [tl [tl V]]]]
+            [true [simple-error "yggdrasil read-data: read a (package Name Exceptions ...) form; unpacking it evaluates Exceptions, and this slice cannot evaluate"]]]]]
+   [shen.process-def
+    [defun shen.process-def [V1 V2]
+      [simple-error "yggdrasil read-data: read a (defmacro ...) form; defining a macro evaluates it, and this slice cannot evaluate"]]]
+   [shen.process-synonyms
+    [defun shen.process-synonyms [V]
+      [simple-error "yggdrasil read-data: read a (synonyms ...) form; declaring synonyms evaluates code, and this slice cannot evaluate"]]]
+   [shen.process-datatype
+    [defun shen.process-datatype [V1 V2]
+      [simple-error "yggdrasil read-data: read a (datatype ...) form; compiling a datatype evaluates code, and this slice cannot evaluate"]]]
+   [shen.update-lambdatable
+    [defun shen.update-lambdatable [V1 V2]
+      [simple-error [cn "yggdrasil read-data: read a (define ...) form for a new function "
+                        [cn [str V1] "; registering it evaluates an eta wrapper, and this slice cannot evaluate"]]]]]
+   [input
+    [defun input [V]
+      [simple-error "yggdrasil read-data: input evaluates what it reads, and this slice cannot evaluate"]]]
+   [shen.input-h+
+    [defun shen.input-h+ [V1 V2]
+      [simple-error "yggdrasil read-data: input+ evaluates what it reads, and this slice cannot evaluate"]]]])
+
+(define ygg.read-data-cut-names
+  -> (map (fn hd) (value *read-data-cuts*)))
+
+(define ygg.read-data-cut?
+  F -> (element? F (ygg.read-data-cut-names)))
+
 (define intersect?
   [] _ -> false
   [X | Xs] Ys -> (or (element? X Ys) (intersect? Xs Ys)))
 
 (define prepare-tops
   Tops false -> Tops
-  Tops true  -> (ygg.filter (/. T (not (declare-form? T)))
-                            (map (fn strip-eval-top) Tops)))
+  Tops Strip -> (ygg.filter (/. T (not (declare-form? T)))
+                            (map (/. T (strip-eval-top T Strip)) Tops)))
 
 (define declare-form?
   [declare | _] -> true
@@ -286,13 +514,13 @@
 \\ actually turns the typechecker on is never eval-free and never stripped.
 (define strip-user-declares
   KL false -> KL
-  KL true  -> (map (/. Forms (ygg.filter (/. F (not (declare-form? F))) Forms))
+  KL _     -> (map (/. Forms (ygg.filter (/. F (not (declare-form? F))) Forms))
                    KL))
 
 (define strip-eval-top
-  [set *macros* _] -> [set *macros* []]
-  [shen.build-lambda-table _] -> [ygg.lambdatable-placeholder]
-  T -> T)
+  [set *macros* _] true -> [set *macros* []]
+  [shen.build-lambda-table _] _ -> [ygg.lambdatable-placeholder]
+  T _ -> T)
 
 \\ Eval-free programs cannot re-enter the macro expander, so the pattern
 \\ -failure row loses its edges (its body would otherwise drag the
@@ -302,9 +530,24 @@
   [[shen.f-error | _] | Rows] -> [[shen.f-error] | Rows]
   [Row | Rows] -> [Row | (strip-f-error-row Rows)])
 
-\\ ... and the defun itself is replaced by a plain error at write time.
+\\ The graph the worklist engines walk, for a strip mode: f-error's row
+\\ emptied in both stripped modes, and the read-data cuts' rows emptied in
+\\ read-data mode (their replacements call no kernel defun).
+(define ygg.strip-graph
+  Graph false -> Graph
+  Graph true  -> (strip-f-error-row Graph)
+  Graph data  -> (map (fn ygg.strip-cut-row) (strip-f-error-row Graph)))
+
+(define ygg.strip-cut-row
+  [F | _] -> [F]  where (ygg.read-data-cut? F)
+  Row -> Row)
+
+\\ ... and the defun itself is replaced by a plain error at write time, as
+\\ are the read-data cuts in read-data mode.
 (define rewrite-f-error
-  [defun shen.f-error | _] true -> (value *static-f-error*)
+  [defun shen.f-error | _] Strip -> (value *static-f-error*)  where (not (= Strip false))
+  [defun F | _] data -> (hd (tl (assoc F (value *read-data-cuts*))))
+                        where (ygg.read-data-cut? F)
   D _ -> D)
 
 \\ In an eval-stripped program the pattern-failure handler must not offer
@@ -1022,18 +1265,26 @@
 
 (set *shake-rules*
   (ygg.dl-varify
-   [\\ mode
-    [[[evalcapable s] [rawsym s] [entry s]]
+   [\\ mode (D16: the reader family is an entry point unless declared data)
+    [[[evalcapable s] [rawsym s] [entry s] [not [readentry s]]]
+     [[evalcapable s] [rawsym s] [readentry s] [datadecl 0]]
      [[anyeval 1]     [evalcapable s]]]
     [[[evalfree 1]    [not [anyeval 1]]]]
+    [[[readsdata 1]   [evalfree 1] [datadecl 1] [rawsym s] [readentry s]]]
+    [[[plainfree 1]   [evalfree 1] [not [readsdata 1]]]]
     \\ edges (D1: position-insensitive; D2: datasym derives nothing;
-    \\        D3: shen.f-error's whole row is mode-gated)
-    [[[edge f g]              [callpos f g] [kernel g] [ne f shen.f-error]]
-     [[edge f g]              [argpos f g c] [kernel g] [ne f shen.f-error]]
+    \\        D3: shen.f-error's whole row is mode-gated;
+    \\        D16: so are the read-data cuts' rows)
+    [[[edge f g]              [callpos f g] [kernel g] [ne f shen.f-error] [not [datacut f]]]
+     [[edge f g]              [argpos f g c] [kernel g] [ne f shen.f-error] [not [datacut f]]]
      [[edge shen.f-error g]   [callpos shen.f-error g] [kernel g] [anyeval 1]]
-     [[edge shen.f-error g]   [argpos shen.f-error g c] [kernel g] [anyeval 1]]]
-    \\ seeds (D4, D5: both readings are facts, the mode picks one)
-    [[[floorseed g] [formmentionsef n g] [kernel g] [evalfree 1]]
+     [[edge shen.f-error g]   [argpos shen.f-error g c] [kernel g] [anyeval 1]]
+     [[edge f g]              [callpos f g] [kernel g] [datacut f] [not [readsdata 1]]]
+     [[edge f g]              [argpos f g c] [kernel g] [datacut f] [not [readsdata 1]]]]
+    \\ seeds (D4, D5: both readings are facts, the mode picks one; D16 adds
+    \\        a third reading of the init forms, for read-data)
+    [[[floorseed g] [formmentionsef n g] [kernel g] [plainfree 1]]
+     [[floorseed g] [formmentionsrd n g] [kernel g] [readsdata 1]]
      [[floorseed g] [formmentions n g]   [kernel g] [anyeval 1]]
      [[seed g]      [floorseed g]]
      [[seed g]      [usersym g] [kernel g] [evalfree 1]]
@@ -1056,21 +1307,31 @@
 \\ entry/rawsym facts.
 
 (define ygg.shake-edb
-  Kernel Graph AllTops KL RawFs
+  Kernel Graph AllTops KL RawFs RawKL
    -> (append (map (/. R [kernel (row-head R)]) Graph)
       (append (ygg.cls-defuns Kernel)
       (append (map (/. R [formmentions | R]) (ygg.mention-rows AllTops 1 false))
       (append (map (/. R [formmentionsef | R]) (ygg.mention-rows AllTops 1 true))
+      (append (map (/. R [formmentionsrd | R]) (ygg.mention-rows AllTops 1 data))
       (append (map (/. S [usersym S]) (ygg.remove-dups (function-calls KL)))
       (append (map (/. S [rawsym S]) (ygg.remove-dups RawFs))
       (append (map (/. S [entry S]) (value *eval-entry-points*))
-              (ygg.cn-facts KL)))))))))
+      (append (map (/. S [readentry S]) (value *reader-entry-points*))
+      (append [[datadecl (ygg.datadecl RawKL)]]
+      (append (map (/. F [datacut F]) (ygg.read-data-cut-names))
+              (ygg.cn-facts KL)))))))))))))
+
+\\ datadecl is always exactly one row, 1 or 0, rather than present-or-
+\\ absent: the engine refuses a [not P] on a relation with no facts (a
+\\ typo, not a negation), so the rules test datadecl(0) instead.
+(define ygg.datadecl
+  RawKL -> (if (ygg.read-data-declared? RawKL) 1 0))
 
 \\ Run the rules.  Leaves the database standing so the callers below can
 \\ read reach, floor and computedName out of it.
 (define ygg.shake-rules-run
-  Kernel Graph AllTops KL RawFs
-   -> (ygg.dl-run (ygg.shake-edb Kernel Graph AllTops KL RawFs)
+  Kernel Graph AllTops KL RawFs RawKL
+   -> (ygg.dl-run (ygg.shake-edb Kernel Graph AllTops KL RawFs RawKL)
                   (value *shake-rules*)))
 
 \\ The rules decide WHICH kernel defuns are in the footprint.  The ORDER of
@@ -1210,15 +1471,15 @@
 (define yggdrasil.footprints
   Files -> (let P        (ygg.pipeline Files)
                 Graph    (ygg.pl-graph P)
-                EvalFree (ygg.pl-evalfree P)
+                Strip    (ygg.pl-strip P)
                 Seeds    (ygg.pl-seeds P)
                 Rules    (ygg.pl-foot P)
-                Graph2   (if EvalFree (strip-f-error-row Graph) Graph)
+                Graph2   (ygg.strip-graph Graph Strip)
                 Work     (reach Seeds [] Graph2)
                 Wars     (ygg.warshall-leg Seeds Graph2 Rules)
                 Report   (pr (make-string
                               "yggdrasil-footprints: mode=~A rules=~A worklist=~A warshall=~A agree=~A~%"
-                              (if EvalFree "eval-free" "eval-capable")
+                              (ygg.mode-name Strip)
                               (ygg.len Rules) (ygg.len Work)
                               (if (= Wars skipped)
                                   "skipped"
@@ -1384,7 +1645,13 @@
       [shen.initialise-arity-table (trim-arity-pairs Lit (keep-set Foot))]
   [put P shen.external-symbols Lit V] Foot true _ ->
       [put P shen.external-symbols (trim-sym-list Lit (keep-set Foot)) V]
-  [ygg.lambdatable-placeholder] Foot true Arities ->
+  \\ read-data: the reader reads both tables, so they stay whole but for
+  \\ eval-kl (see "read-data mode").
+  [shen.initialise-arity-table Lit] Foot data _ ->
+      [shen.initialise-arity-table (ygg.drop-arity-pair eval-kl Lit)]
+  [put P shen.external-symbols Lit V] Foot data _ ->
+      [put P shen.external-symbols (ygg.drop-sym eval-kl Lit) V]
+  [ygg.lambdatable-placeholder] Foot Strip Arities ->
       [set shen.*lambdatable* (consify (lambdatable-entries Foot Arities))]
   T _ _ _ -> T)
 
@@ -1459,6 +1726,16 @@
           [cons Name [cons Arity (trim-arity-pairs Rest Keep)]]
           (trim-arity-pairs Rest Keep))
   X _ -> X)
+
+(define ygg.drop-arity-pair
+  Drop [cons Drop [cons _ Rest]] -> (ygg.drop-arity-pair Drop Rest)
+  Drop [cons Name [cons Arity Rest]] -> [cons Name [cons Arity (ygg.drop-arity-pair Drop Rest)]]
+  _ X -> X)
+
+(define ygg.drop-sym
+  Drop [cons Drop Rest] -> (ygg.drop-sym Drop Rest)
+  Drop [cons Name Rest] -> [cons Name (ygg.drop-sym Drop Rest)]
+  _ X -> X)
 
 (define trim-sym-list
   [cons Name Rest] Keep -> (if (element? Name Keep)
@@ -1580,7 +1857,7 @@
 (set *global-primitives*   [*stinput* *stoutput*])
 
 (define write-manifest
-  Dir UserFiles UserKL Prims CNames NPruned InitOrder ->
+  Dir UserFiles UserKL Prims CNames NPruned InitOrder Strip ->
      (let NeedsEval (element? eval-kl Prims)
           Computed  (ygg.cn-report CNames)
           Fns       (user-arities UserKL)
@@ -1590,8 +1867,8 @@
                                                (element? P Optional)))) Prims)
           Reaches   (reaches-caps Prims)
           Cannot    (cannot-reach-caps Prims)
-          Sexp (write-manifest-sexp Dir UserFiles Fns Required Optional Globals NeedsEval Computed NPruned Reaches Cannot InitOrder)
-          Txt  (write-manifest-txt Dir UserFiles Fns Required Optional Globals NeedsEval Computed NPruned Reaches Cannot InitOrder)
+          Sexp (write-manifest-sexp Dir UserFiles Fns Required Optional Globals NeedsEval Computed NPruned Reaches Cannot InitOrder Strip)
+          Txt  (write-manifest-txt Dir UserFiles Fns Required Optional Globals NeedsEval Computed NPruned Reaches Cannot InitOrder Strip)
           done))
 
 (define user-arities
@@ -1606,7 +1883,7 @@
   [_ | Xs] -> (+ 1 (ygg.len Xs)))
 
 (define write-manifest-sexp
-  Dir UserFiles Fns Required Optional Globals NeedsEval Computed NPruned Reaches Cannot InitOrder ->
+  Dir UserFiles Fns Required Optional Globals NeedsEval Computed NPruned Reaches Cannot InitOrder Strip ->
     (let Sink (open (@s Dir "/yggdrasil.manifest") out)
          W1 (pr-kl-line ["yggdrasil-manifest" 4] Sink)
          W2 (pr-kl-line ["kernel-version" "42-s42.20260825"] Sink)
@@ -1621,6 +1898,7 @@
          WA2 (pr-kl-line ["init-order" InitOrder] Sink)
          WA3 (pr-kl-line ["computed-names" Computed] Sink)
          WA4 (pr-kl-line ["pruned-init" NPruned] Sink)
+         WA5 (if (= Strip data) (pr-kl-line ["read-data" true] Sink) done)
          WB (pr-kl-line ["reaches" | Reaches] Sink)
          WC (pr-kl-line ["cannot-reach" | Cannot] Sink)
          WD (ygg.shaken-line-sexp Sink)
@@ -1628,7 +1906,7 @@
          (close Sink)))
 
 (define write-manifest-txt
-  Dir UserFiles Fns Required Optional Globals NeedsEval Computed NPruned Reaches Cannot InitOrder ->
+  Dir UserFiles Fns Required Optional Globals NeedsEval Computed NPruned Reaches Cannot InitOrder Strip ->
     (let Sink (open (@s Dir "/yggdrasil.manifest.txt") out)
          W1 (pr (make-string "manifest-version=4~%") Sink)
          W2 (pr (make-string "kernel-version=42-s42.20260825~%") Sink)
@@ -1643,6 +1921,7 @@
          WA2 (pr (make-string "init-order=~A~%" InitOrder) Sink)
          WA3 (pr (make-string "computed-names=~A~%" Computed) Sink)
          WA4 (pr (make-string "pruned-init=~A~%" NPruned) Sink)
+         WA5 (if (= Strip data) (pr (make-string "read-data=true~%") Sink) done)
          WB (ygg.mapc (/. C (pr (make-string "reaches=~A~%" C) Sink)) Reaches)
          WC (ygg.mapc (/. C (pr (make-string "cannot-reach=~A~%" C) Sink)) Cannot)
          WD (ygg.shaken-line-txt Sink)
@@ -2205,21 +2484,22 @@
            Unlimit   (set *maximum-print-sequence-size* 1000000000)
            Kernel    (kernel-code)
            Graph     (call-graph Kernel)
-           KLFiles   (map (fn bootstrap) Files)
-           RawKL     (map (fn read-file) KLFiles)
+           KLFiles   (ygg.bootstrap-files Files)
+           RawKL     (ygg.read-user-kl KLFiles)
            RawFs     (function-calls RawKL)
-           EvalFree  (eval-free? RawFs)
+           Strip     (ygg.strip-mode RawKL RawFs)
+           EvalFree  (not (= Strip false))
            EvalBy    (ygg.filter (/. F (element? F (value *eval-entry-points*))) RawFs)
-           KL        (strip-user-declares RawKL EvalFree)
-           Tops      (prepare-tops (toplevel-forms Kernel) EvalFree)
-           Graph2    (if EvalFree (strip-f-error-row Graph) Graph)
+           KL        (strip-user-declares RawKL Strip)
+           Tops      (prepare-tops (toplevel-forms Kernel) Strip)
+           Graph2    (ygg.strip-graph Graph Strip)
            InitSeeds (ygg.remove-dups (mapcan (fn called-fns) Tops))
            UserSeeds (ygg.kernel-seeds (function-calls KL))
            Floor     (footprint InitSeeds Graph2)
            Total     (footprint (append InitSeeds UserSeeds) Graph2)
            Rows      (ygg.why-rows KL InitSeeds UserSeeds Floor Total Graph2)
            Header    (pr (make-string "yggdrasil-why: mode=~A floor=~A total=~A kernel=~A~%"
-                                      (if EvalFree "eval-free" "eval-capable")
+                                      (ygg.mode-name Strip)
                                       (ygg.len Floor) (ygg.len Total)
                                       (ygg.len Graph))
                          (stoutput))
@@ -2358,13 +2638,14 @@
            Kernel   (ygg.pl-kernel P)
            Graph    (ygg.pl-graph P)
            RawFs    (ygg.pl-rawfs P)
-           EvalFree (ygg.pl-evalfree P)
+           Strip    (ygg.pl-strip P)
+           RawKL    (ygg.pl-rawkl P)
            KL       (ygg.pl-kl P)
            AllTops  (ygg.pl-alltops P)
            Tops     (ygg.pl-tops P)
            Foot     (ygg.pl-foot P)
            Arities  (arity-literal Tops)
-           TopsOut  (map (/. T (trim-top T Foot EvalFree Arities)) Tops)
+           TopsOut  (map (/. T (trim-top T Foot Strip Arities)) Tops)
            Cls      (ygg.cls-defuns Kernel)
            W1  (ygg.facts-file Dir "kernel"   (map (/. R [(row-head R)]) Graph))
            W2  (ygg.facts-file Dir "callpos"  (ygg.rows-of callpos Cls))
@@ -2405,9 +2686,21 @@
                                 (map (/. V [V]) (ygg.trace-defunwrites Foot Kernel KL)))
            W23 (ygg.facts-file Dir "called" [])
            W24 (ygg.facts-file Dir "readglobal" [])
+           \\ read-data mode (#27).  The reader family, the declaration
+           \\ (always one row, 1 or 0), the defuns read-data replaces with
+           \\ their replacements' primitives, and the third reading of the
+           \\ kernel's init forms.
+           W25 (ygg.facts-file Dir "readentry" (map (/. S [S]) (value *reader-entry-points*)))
+           W26 (ygg.facts-file Dir "datadecl"  [[(ygg.datadecl RawKL)]])
+           W27 (ygg.facts-file Dir "datacut"   (map (/. F [F]) (ygg.read-data-cut-names)))
+           W28 (ygg.facts-file Dir "datacutprim"
+                                (mapcan (/. C (map (/. Pr [(hd C) Pr])
+                                                   (ygg.prim-rows-body (hd (tl C)))))
+                                        (value *read-data-cuts*)))
+           W29 (ygg.facts-file Dir "formmentionsrd" (ygg.mention-rows AllTops 1 data))
            Restore (ygg.pl-restore P)
            Report  (pr (make-string "yggdrasil-facts: mode=~A dir=~A kernel=~A~%"
-                                    (if EvalFree "eval-free" "eval-capable")
+                                    (ygg.mode-name Strip)
                                     Dir (ygg.len Graph))
                        (stoutput))
            done))
@@ -2495,6 +2788,10 @@
 
 \\ Primitives per kernel defun, so the rules can compute the manifest's
 \\ primitive set over the reachable defuns rather than being handed it.
+\\ The primitives of one defun's body, as ygg.prim-rows reads them.
+(define ygg.prim-rows-body
+  [defun _ _ Body] -> (find-primitives Body))
+
 (define ygg.prim-rows
   [] -> []
   [[defun F _ Body] | Code] -> (append (map (/. P [F P]) (find-primitives Body))
@@ -2518,11 +2815,11 @@
 
 (define ygg.mention-rows
   [] _ _ -> []
-  [T | Ts] N true -> (ygg.mention-rows Ts (+ N 1) true) where (declare-form? T)
-  [T | Ts] N true -> (append (map (/. G [N G]) (called-fns (strip-eval-top T)))
-                             (ygg.mention-rows Ts (+ N 1) true))
   [T | Ts] N false -> (append (map (/. G [N G]) (called-fns T))
-                              (ygg.mention-rows Ts (+ N 1) false)))
+                              (ygg.mention-rows Ts (+ N 1) false))
+  [T | Ts] N Strip -> (ygg.mention-rows Ts (+ N 1) Strip) where (declare-form? T)
+  [T | Ts] N Strip -> (append (map (/. G [N G]) (called-fns (strip-eval-top T Strip)))
+                              (ygg.mention-rows Ts (+ N 1) Strip)))
 
 \\ ------------------------------ TSV writer ------------------------------
 \\ Tab-separated, newline-terminated, no header: Souffle's default .input
@@ -2885,12 +3182,12 @@
   Files FactsDir
    -> (let P        (ygg.pipeline Files)
            Kernel   (ygg.pl-kernel P)
-           EvalFree (ygg.pl-evalfree P)
+           Strip    (ygg.pl-strip P)
            KL       (ygg.pl-kl P)
            Tops     (ygg.pl-tops P)
            Foot     (ygg.pl-foot P)
            Arities  (arity-literal Tops)
-           TopsOut  (map (/. T (trim-top T Foot EvalFree Arities)) Tops)
+           TopsOut  (map (/. T (trim-top T Foot Strip Arities)) Tops)
            Called   (ygg.trace-read (@s FactsDir "/called.facts"))
            Reads    (ygg.trace-read (@s FactsDir "/readglobal.facts"))
            Meta     (ygg.trace-read (@s FactsDir "/trace.meta"))
@@ -3040,8 +3337,8 @@
   Files Dir -> (let MaxPrint  (value *maximum-print-sequence-size*)
                     Unlimit   (set *maximum-print-sequence-size* 1000000000)
                     Kernel    (kernel-code)
-                    KLFiles   (map (fn bootstrap) Files)
-                    KL        (map (fn read-file) KLFiles)
+                    KLFiles   (ygg.bootstrap-files Files)
+                    KL        (ygg.read-user-kl KLFiles)
                     Tops      (toplevel-forms Kernel)
                     Foot      (defun-names Kernel)
                     FootCode  (footcode Foot Kernel)
@@ -3063,12 +3360,14 @@
                     \\ InitOrder carries the check's own answer.  Neither
                     \\ argument is optional: write-manifest took a fifth
                     \\ argument when this was written, a sixth once stage 4
-                    \\ landed and a seventh once init-order= stopped being a
-                    \\ constant, and a short call here does not fail - Shen
+                    \\ landed, a seventh once init-order= stopped being a
+                    \\ constant and an eighth, the strip mode (a full build
+                    \\ strips nothing: false), for read-data=.  A short call
+                    \\ here does not fail - Shen
                     \\ curries it into a closure this `let` then discards, so
                     \\ the full build silently wrote no manifest at all.
                     WriteM    (write-manifest Dir UserOut UserKL Prims CNames 0
-                                              InitOrder)
+                                              InitOrder false)
                     Restore   (set *maximum-print-sequence-size* MaxPrint)
                     Report    (pr (make-string "yggdrasil-shake: shaken=false defuns=~A~%"
                                                (ygg.len FootCode))

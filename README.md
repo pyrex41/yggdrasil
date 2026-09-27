@@ -36,7 +36,9 @@ yggdrasil why    prog.shen                      # what each part of the program 
 yggdrasil targets                               # list targets and their toolchains
 ```
 
-`out/` receives `kernel.kl`, `<prog>.kl` and a manifest. The manifest records
+`out/` receives `kernel.kl`, `<prog>.kl` and a manifest. A program split over
+several files names them with leading `(load "lib.shen")` forms, and the shake
+hoists each into a `.kl` of its own ([`docs/shake.md`](docs/shake.md#multi-file-programs)). The manifest records
 what the slice can and cannot reach (`cannot-reach=eval` is a static guarantee
 that the program never evaluates code at run time), whether initialisation
 order was checked, and the flags the shake ran with.

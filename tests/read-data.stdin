@@ -1,0 +1,9 @@
+(service web (port 8080) (replicas 3))
+(service db (port 5432) (replicas 1))
+[alpha beta | gamma]
+(+ 1 2 3)
+(let X 1 Y 2 X)
+(append [a] [b])
+"a string"
+(package null [] (inner 7))
+end
