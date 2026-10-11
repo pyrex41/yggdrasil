@@ -613,5 +613,29 @@
       "{outdir}/koka-artifact/run"
     ],
     "_note": "Experimental native Koka executable embedding only manifest-listed KL; interpreter-backed, not direct KL compilation. needs-eval=true refused with exit 3. Qualification pending."
+  },
+  "koka-native": {
+    "dir_env": "YGGDRASIL_SHEN_KOKA_DIR",
+    "dir_default": "shen-koka",
+    "needs": [
+      "koka",
+      "cc",
+      "python3"
+    ],
+    "build": [
+      {
+        "argv": [
+          "{shen_koka}/bin/shen-koka",
+          "build-slice",
+          "--native",
+          "{outdir}/yggdrasil.manifest.txt",
+          "{outdir}/koka-native-artifact"
+        ]
+      }
+    ],
+    "run": [
+      "{outdir}/koka-native-artifact/run"
+    ],
+    "_note": "Experimental direct KL-to-Koka callbacks with shared runtime dispatch. Manifest initializer runs once. needs-eval=true is explicitly refused. Full native-kernel and general deployment qualification remain pending."
   }
 }
