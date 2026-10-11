@@ -590,5 +590,28 @@
     "run": [
       "{outdir}/app-c/app"
     ]
+  },
+  "koka": {
+    "dir_env": "YGGDRASIL_SHEN_KOKA_DIR",
+    "dir_default": "shen-koka",
+    "needs": [
+      "koka",
+      "cc",
+      "python3"
+    ],
+    "build": [
+      {
+        "argv": [
+          "{shen_koka}/bin/shen-koka",
+          "build-slice",
+          "{outdir}/yggdrasil.manifest.txt",
+          "{outdir}/koka-artifact"
+        ]
+      }
+    ],
+    "run": [
+      "{outdir}/koka-artifact/run"
+    ],
+    "_note": "Experimental native Koka executable embedding only manifest-listed KL; interpreter-backed, not direct KL compilation. needs-eval=true refused with exit 3. Qualification pending."
   }
 }

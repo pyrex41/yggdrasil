@@ -998,6 +998,7 @@ func build(target, outdir string, web bool) ([]string, error) {
 		"{shen_inets}":   siblingDir("hvm", b),
 		"{shen_truffle}": siblingDir(target, b),
 		"{shen_c}":       siblingDir("c", b),
+		"{shen_koka}":    siblingDir("koka", b),
 		"{shen_forth}":   siblingDir("forth", b),
 	}
 	// {program_file} is resolved BEFORE it joins the table, so that the step
