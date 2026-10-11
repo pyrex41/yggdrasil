@@ -17,10 +17,12 @@ file, and the two manifests) and must:
 Step 3 is not just defun loading. A user file carries defuns *and* toplevel
 expressions, and both must execute in source order.
 
-S42 has no `shen.initialise` of its own: global initialisation is toplevel forms
-interleaved through the kernel files. The shake collects those forms and
-synthesises `(defun shen.initialise () ...)`, so the contract above is the same
-one a builder would write against a kernel that had one.
+The vendored kernel is ShenOSKernel 42.2, whose `init.kl` defines
+`shen.initialise`. The `shen.initialise` in `kernel.kl` is nevertheless the
+shake's own: the shake unfolds init.kl's initialiser into its individual init
+forms, keeps the ones the slice needs (see [`docs/shake.md`](shake.md)), and
+writes them back as one `(defun shen.initialise () ...)`. A builder calls it
+exactly as it would call the kernel's.
 
 Builders must ignore manifest keys they do not recognise. New keys are added to
 the manifest as the shaker gains checks, and a builder that fails on an unknown
@@ -37,20 +39,26 @@ Paths below are relative to the sibling port checkout unless they start with
 
 | target | builder | artifact | approximate size and startup |
 |---|---|---|---|
-| `c` | `builders/c/build.sh <dir> <outdir>` (`SHEN_C`) | `app.c` + Makefile + CMakeLists, then `make` links `libshenc.a` into `<outdir>/app` | |
-| `erlang` | `builders/erlang/build.sh <dir> <outdir>` (`SHEN_ERL`) | slice compiled to BEAM plus the small shen-erl runtime and a `run` launcher; needs Erlang/OTP at run time but never boots the full kernel | |
-| `go` | `shen-go/cmd/yggdrasil-build <dir> <outdir>`, then `go build` | static binary | ~4.5 MB, under 10 ms; cross-compiles to linux and windows |
-| `joy` | `builders/joy/build.sh <dir> <out.sji> [shen-joy]` | deterministic shen-joy image v1, run by the bounded allocation-free device VM | |
-| `js` | `node ShenScript/bin/yggdrasil-build.js <dir> <out.js>` | self-contained ES module on Node 20+, Bun or Deno 2 | ~120 KB |
-| `julia` | `julia --project=shen-julia shen-julia/bin/yggdrasil-build.jl <dir> <outdir> --sysimage` | artifact project; with `--sysimage` a per-program sysimage, otherwise a lib-mode `.jl`. Kernel and user defuns are baked as module methods, the same AOT technique as shen-julia's own fast boot | sysimage ~266 MB, ~0.15 s warm; lib mode ~4 s |
+| `c` | `builders/c/build.sh <dir> <outdir>` (`SHEN_C`) | `app.c` + Makefile + CMakeLists, then `make` links `libshenc.a` into `<outdir>/app` | ~330 KB, ~15 ms |
+| `erlang` | `builders/erlang/build.sh <dir> <outdir>` (`SHEN_ERL`) | slice compiled to BEAM plus the small shen-erl runtime and a `run` launcher; needs Erlang/OTP at run time but never boots the full kernel | ~170 KB plus Erlang/OTP; ~1.3 s (VM boot) |
+| `go` | `shen-go/cmd/yggdrasil-build <dir> <outdir>`, then `go build` | static binary | ~5.8 MB, ~11 ms; cross-compiles to linux and windows |
+| `joy` | `builders/joy/build.sh <dir> <out.sji> [shen-joy]` | deterministic shen-joy image v1, run by the bounded allocation-free device VM | 308 bytes for `tests/joy-sum.shen` |
+| `js` | `node ShenScript/bin/yggdrasil-build.js <dir> <out.js>` | self-contained ES module on Node 20+, Bun or Deno 2 | ~73 KB; ~0.1 s on Node |
+| `julia` | `julia --project=shen-julia shen-julia/bin/yggdrasil-build.jl <dir> <outdir> --sysimage` | artifact project; with `--sysimage` a per-program sysimage, otherwise a lib-mode `.jl`. Kernel and user defuns are baked as module methods, the same AOT technique as shen-julia's own fast boot | sysimage ~266 MB, ~0.15 s warm (S42-era figure, not re-measured); lib mode ~0.5 s |
 | `kl` | `go build ./cmd/kl` in the shen-go checkout, then `yggdrasil program-file` concatenates `kernel.kl`, `(shen.initialise)` and the user files into one KL stream | the slice run directly on shen-go's bare KLambda VM, no stage-2 compiler in between | |
-| `lisp` | `builders/lisp/build.sh <dir> <exe>` (`LISP_IMPL=sbcl\|clisp\|ecl`, `SHEN_CL`) | saved image, or a linked executable under ECL | SBCL ~36 MB, CLISP ~7.8 MB, ECL ~620 KB plus libecl |
-| `lua` | `luajit shen-lua/bin/yggdrasil-build.lua <dir> <out.lua>` | self-contained `.lua` | ~640 KB, ~25 ms |
-| `rust` | `cargo run --release -p yggdrasil-build -- <dir> <outdir>`, then `cargo build --release` | static binary | ~9 MB, ~40 ms |
-| `scheme` | `builders/scheme/build.sh <dir> <outdir>` (`SHEN_SCHEME`) | Scheme program dir plus a `run` launcher (`chez --script`), compiled with shen-scheme's own `kl->scheme`; overridden kernel functions (`pr`, `shen.char-stoutput?`, dict ops) come from its `overrides.scm`, exactly as its own build does | |
+| `lisp` | `builders/lisp/build.sh <dir> <exe>` (`LISP_IMPL=sbcl\|clisp\|ecl`, `SHEN_CL`) | saved image, or a linked executable under ECL | SBCL 2.6.8 ~121 MB, ~25 ms, or ~11.5 MB and ~0.22 s with `YGGDRASIL_SBCL_COMPRESSION=1`; CLISP ~7.8 MB, ECL ~620 KB plus libecl (S42-era figures, not re-measured) |
+| `lua` | `luajit shen-lua/bin/yggdrasil-build.lua <dir> <out.lua>` | self-contained `.lua` | ~350 KB, ~20 ms |
+| `rust` | `cargo run --release -p yggdrasil-build -- <dir> <outdir>`, then `cargo build --release` | static binary | ~9.2 MB, ~15 ms |
+| `scheme` | `builders/scheme/build.sh <dir> <outdir>` (`SHEN_SCHEME`) | Scheme program dir plus a `run` launcher (`chez --script`), compiled with shen-scheme's own `kl->scheme`; overridden kernel functions (`pr`, `shen.char-stoutput?`, dict ops) come from its `overrides.scm`, exactly as its own build does. The artifact carries no KL-to-Scheme compiler, so a `needs-eval=true` slice is refused as a capability SKIP (exit 3) | ~100 KB plus Chez; ~0.4 s (compiles at load) |
 | `swift` | `builders/swift/build.sh <dir> <outdir>` (`SHEN_SWIFT`) | the slice plus a `run` launcher driving the shen-swift tree-walking interpreter in `--shaken` mode | |
 | `truffle` | `mvn -DskipTests package` in shen-truffle, then `java -jar target/yggdrasil-builder.jar --format jvm --runtime target/shen-truffle.jar <dir> <out>` | relocatable JVM application at `app-truffle/bin/shen-truffle` | |
 | `truffle-native` | the same builder with `--format native` | platform-native executable `app-truffle-native` | |
+
+Sizes and times are for `tests/fib.shen` on the 42.2 kernel, measured on a
+4-core x86-64 Linux container (best of five runs, process start to exit,
+stdout discarded). Not re-measured on 42.2: `swift`, `truffle` and
+`truffle-native` (their ports were not ready on 42.2), the julia sysimage
+(PackageCompiler was not installed), CLISP and ECL.
 
 Three targets are references rather than compilations. shen-swift, shen-lua and
 shen-julia artifacts reference their port's runtime rather than embedding a
@@ -119,9 +127,26 @@ Rejected: `eval` and `eval-kl`, closures (`lambda`, `freeze`), exceptions
 globals (`set`, `value`), `intern`, `absvector`, any `shen.`-prefixed call,
 string literals as values, arbitrary formatting, and non-tail recursion.
 
+`and`/`or` (which the pattern compiler emits for multi-column patterns) lower
+to `if`. `thaw` is rejected along with `freeze`, which covers the
+`(let GoTo (freeze E) ... (thaw GoTo))` continuations the 42.x factoriser
+emits under `(factorise +)`: they are closures, and the lowerer refuses them
+rather than approximating them.
+
 A rejection exits with status **3**. The CLI reads that one status as a
 capability limit rather than a build failure, so parity reports a SKIP instead
-of a false failure or a silently approximated semantics.
+of a false failure or a silently approximated semantics. Rejections come from
+two places, and both exit 3: the lowerer, and `shen-joy compile` itself when
+it refuses the program for a reason that is the program's (an unsupported
+construct, such as non-tail recursion, an unknown name, a resource limit, or a
+construct needing a profile larger than `core`). Anything else the compiler
+reports, and any I/O error, is a build failure (exit 1).
+
+`tests/joy-sum.shen` is the joy fixture; it builds and prints `32004000`.
+`tests/fib.shen` is a capability SKIP on this target by design, on every
+kernel version: `fib` recurses in non-tail position, which the bounded
+return-stack proof rejects, and its `(output "fib 20 = ~A~%" ...)` is not the
+single-`~A` output form.
 
 ```bash
 yggdrasil run tests/joy-sum.shen out/ --target joy
@@ -150,6 +175,38 @@ Three implementation details cost real debugging and are still live:
 When the manifest says `needs-eval=true` the builder additionally stages
 shen-cl's precompiled `compiled/compiler.lsp` into the artifact, so `eval-kl`
 works at run time.
+
+The builder compiles the synthesised `shen.initialise` as a handful of
+chunk functions (`yggdrasil.initialise-1` ... `-N`, 40 init forms each)
+called in order, rather than as one function. On the 42.2 kernel an
+eval-capable slice keeps about 300 init forms, some 255 of them holding
+closures (lambda-form entries and the typechecker's signature rules), and
+SBCL 2.6.7 and 2.6.8 compile that single function into an image that
+`save-lisp-and-die` cannot write (`post-GC failure ... Verify failed`).
+`kernel.kl` itself is unchanged; the chunks run the same forms in the same
+order.
+
+`YGGDRASIL_SBCL_COMPRESSION=1` (any value other than empty or `0`) makes the
+SBCL build save its image with `:compression t`. That needs an SBCL built with
+`:sb-core-compression`; without it the build fails by name rather than writing
+an uncompressed image. The compressed image is several times smaller and
+starts more slowly, since the core is decompressed on every start.
+
+## The scheme builder
+
+`builders/scheme/build.sh` needs a shen-scheme **source** checkout
+(`SHEN_SCHEME`, default `../shen-scheme`) for `src/compiler.shen`,
+`scripts/build.shen` and the four runtime files it copies (`src/chez-prelude.scm`,
+`src/primitives.scm`, `compiled/overrides.scm`,
+`compiled/shen-scheme-extensions.scm`), all still present in shen-scheme 0.50.
+It never needs `shen.boot` (0.50 has none; its runtime is
+`petite.boot`/`scheme.boot` plus `lib/shen-scheme/shen-scheme/runtime.so`):
+the artifact is compiled Scheme source run by `chez --script`. The binary
+that runs the `kl->scheme` step is `SHEN_SCHEME_BIN` (default
+`$SHEN_SCHEME/_build/bin/shen-scheme`); both the pyrex41 fork's `kernel-42.2`
+build and the upstream 0.50 release binary have been verified to work there.
+The step runs without `-q`, because on upstream 0.50 `-q` also silences the
+file writes, and the builder fails by name if a `.scm` it wrote is empty.
 
 ## The C target
 
@@ -186,9 +243,15 @@ fallback deliberately skips it.
 ## Running stage 1 on each host
 
 Stage 1 is pure Shen, but it compiles your program to KLambda with the host's
-`bootstrap` compiler, so the host must emit fully portable KL. Eight ports do:
-they produce a byte-identical `kernel.kl` and manifest against the shen-cl
-reference, with user KL identical modulo gensym numbering.
+`bootstrap` compiler, so the host must emit fully portable KL. On S42 eight
+ports did: they produced a byte-identical `kernel.kl` and manifest against the
+shen-cl reference, with user KL identical modulo gensym numbering. On 42.2
+this has been re-verified for shen-cl (`kernel-42.2`, the reference), shen-go
+(`kernel-42.2`, on `fib`, `prolog`, `metaeval` and `read-data`), shen-lua
+(`kernel-42.2` checkout, on `fib`) and upstream shen-scheme 0.50 (on `fib`);
+the other rows below are as measured on S42. Whatever the host, it must run
+ShenOSKernel 42.2 itself, or the user KL its `bootstrap` emits comes from a
+different kernel than the slice it is shaken against.
 
 The expression is always the same; only the launcher syntax differs. Write
 `SHAKE` for `'(yggdrasil.shake ["prog.shen"] "out")'`.
@@ -197,16 +260,17 @@ The expression is always the same; only the launcher syntax differs. Write
 |---|---|---|
 | shen-cl | `shen eval -q -l yggdrasil.shen -e SHAKE` | reference host, and the fastest |
 | shen-go | `shen eval -q -l yggdrasil.shen -e SHAKE` | the CLI's fallback host when shen-cl is missing |
-| shen-lua | `bin/shen yggdrasil.shen -e SHAKE` | checkout or LuaRocks `0.11.0-1` launcher; omit `-q` (see below) |
+| shen-lua | `bin/shen yggdrasil.shen -e SHAKE` | a `kernel-42.2` checkout (re-verified on `fib`); the published `0.11.x` LuaRocks rocks still carry S42.0 and would mix kernels; omit `-q` (see below) |
 | shen-rust | `shen-rust eval -l yggdrasil.shen -e SHAKE` | omit `-q`. Runs the deep call-graph walk on a 1 GB-stack thread |
 | shen-erl | `shen-erl eval -q -l yggdrasil.shen -e SHAKE` | |
 | ShenScript | `node bin/shen.js eval -l yggdrasil.shen -e SHAKE` | slowest host, roughly 25 s |
 | shen-julia | `shen-julia/bin/shen eval -l yggdrasil.shen -e SHAKE` | pre-create the output directory; the shake does not `mkdir` |
 | shen-swift | `shen-swift/.build/release/shen-swift eval -q -l yggdrasil.shen -e SHAKE` | tree-walking KLambda interpreter, iOS-capable |
+| shen-scheme 0.50 | `shen-scheme eval -l yggdrasil.shen -e SHAKE` | omit `-q` (see below); the REPL waits on stdin, so give it `</dev/null` |
 
-The **`*hush*` caveat**: `-q` sets `*hush*`, and on **shen-lua** and
-**shen-rust** that silences the `pr` writes to the output files, producing
-zero-byte artifacts. Omit `-q` on those two. shen-cl, shen-go, shen-erl,
+The **`*hush*` caveat**: `-q` sets `*hush*`, and on **shen-lua**,
+**shen-rust** and **shen-scheme** that silences the `pr` writes to the output
+files, producing zero-byte artifacts. Omit `-q` on those three. shen-cl, shen-go, shen-erl,
 ShenScript, shen-julia and shen-swift route `pr` to file streams regardless of
 `*hush*`, so `-q` is harmless there. Dropping `-q` everywhere is the safe
 default: it only adds a load-echo line to stdout, never to the artifacts.
@@ -214,7 +278,10 @@ default: it only adds a load-echo line to stdout, never to the artifacts.
 The CLI writes this invocation for you. `--host "<launcher>"` overrides the
 launcher, and `--eval-style` says how the host takes the expression: `sub` (the
 default) or `positional` for shen-lua. Use an absolute path for the LuaRocks
-launcher, since the CLI runs it from a temporary shake directory.
+launcher, since the CLI runs it from a temporary shake directory. The `sub`
+style passes `-q`, so shen-scheme cannot be the CLI's host today (it writes
+empty artifacts and the CLI reports `shake produced no kernel.kl`); run it by
+hand as in the table.
 
 ## Environment variables
 

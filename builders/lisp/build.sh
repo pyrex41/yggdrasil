@@ -14,6 +14,9 @@
 #               sbcl also honors legacy SBCL_BIN)
 #   SHEN_BIN  - shen-cl binary           (default: $SHEN_CL/bin/sbcl/shen)
 #   SHEN_CL   - shen-cl checkout         (default: sibling ../shen-cl)
+#   YGGDRASIL_SBCL_COMPRESSION - sbcl only: set to 1 to save the image with
+#               :compression t (needs an SBCL with :sb-core-compression;
+#               the build fails by name otherwise)
 set -euo pipefail
 
 if [ $# -ne 2 ]; then

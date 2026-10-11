@@ -247,6 +247,32 @@ a gate script has to be able to tell it from a disagreement.
 
 ## The parity, actually run, and what it found
 
+### On ShenOSKernel 42.2: it passes
+
+Re-run at the 42.2 retarget (2026-10-11), host shen-cl `kernel-42.2`, sibling
+shen-go `kernel-42.2` (`91fc6ee`), reference leg shen-cl (`--reference lisp`,
+the default):
+
+| fixture | `yggdrasil lower --target go` | `yggdrasil lower-check --target go` |
+|---|---|---|
+| `tests/fib.shen` | `yggdrasil-lower: OK target=go dropped=28 kept-kernel-defuns=53` | `yggdrasil-lower-check: OK target=go reference=lisp dropped=28 golden=fib.expected` |
+| `tests/hello.shen` | `yggdrasil-lower: OK target=go dropped=28 kept-kernel-defuns=53` | `yggdrasil-lower-check: OK target=go reference=lisp dropped=28 golden=hello.expected` |
+| `tests/prolog.shen` | `yggdrasil-lower: OK target=go dropped=34 kept-kernel-defuns=64` | `yggdrasil-lower-check: OK target=go reference=lisp dropped=34 golden=prolog.expected` |
+
+All three legs (canonical@lisp, canonical@go, lowered@go) agree with the
+golden. What changed is fix (1) below, made in the port: shen-go's
+`overridePrimitive` / `overrideNative` (`kl/kernelfast.go:208-224` at
+`91fc6ee`) now bind the native "whether or not the kernel defined the name, so
+a kernel slice whose KL body was dropped (Yggdrasil lower) still gets the
+binding". The KL defun really is dead text there, and dropping it is safe.
+(The specific S42 symptom, `variable vector not bound`, could not recur
+anyway: 42.2's initialiser builds `*property-vector*` with `shen.dict`, not
+`vector`.) `TestLowerCheckOnGoPassesWithUnconditionalInstall` pins the PASS,
+two-sided as before: it fails if the lowered leg stops agreeing.
+
+The rest of this section is the S42-era measurement, kept because it is the
+reason the gate is built the way it is.
+
 This section used to say the three-way parity "has never run on a lowering any
 port actually declares". It has now. At shen-go `30ab469` the gate opens on
 `go`, and the three fixtures below were lowered and checked for real on this
@@ -322,9 +348,10 @@ not, and no fact in `builders.json` records that, so the gate cannot see it.
   false fact to buy a true verdict is the failure mode this whole file is
   about.
 
-`TestLowerCheckOnGoFailsOnShenGoConditionalInstall` (`lower_test.go`) runs the
-real, unfaked path and records the FAIL, two-sided: if `lower-check --target go`
-ever passes, that test fails and demands this section be rewritten.
+`TestLowerCheckOnGoFailsOnShenGoConditionalInstall` (`lower_test.go`) ran the
+real, unfaked path and recorded the FAIL, two-sided: when `lower-check --target
+go` started passing (shen-go `kernel-42.2`), it failed and demanded this section
+be rewritten, and it is now `TestLowerCheckOnGoPassesWithUnconditionalInstall`.
 
 ### What would fix it
 
@@ -362,8 +389,8 @@ yggdrasil-lower-check: FAIL pair=canonical-target-vs-lowered-target target=go dr
 
 So the comparison is known to pass on an agreeing lowering and known to fail on
 a disagreeing one, and — new as of `30ab469` — known to fail on a real lowering
-that breaks the artifact. What has never been seen is a real lowering that
-*works*.
+that breaks the artifact. On S42 a real lowering that *works* had never been
+seen; on 42.2 it has (the table at the top of this section).
 
 The per-row differential tests are still worth writing, and the next section
 says what they are. Their role is **localisation**: when parity fails, a row

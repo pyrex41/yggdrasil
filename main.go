@@ -1974,6 +1974,15 @@ func cmdParity(rest []string) int {
 		r.transcript = stdoutFact == stdoutTranscript
 		runArgv, berr := build(t, outdir, false)
 		if berr != nil {
+			// A builder that exits 3 has said "this target cannot express
+			// this program" (the joy subset, an eval-capable slice on a
+			// builder without a compiler): a capability limit, reported as
+			// a SKIP by name rather than as a failure or a silent pass.
+			var unsupported capabilityError
+			if errors.As(berr, &unsupported) {
+				r.status, r.err = "skipcap", berr
+				continue
+			}
 			r.status, r.err = "builderr", berr
 			continue
 		}
@@ -2036,6 +2045,9 @@ func cmdParity(rest []string) int {
 			fmt.Printf("%-8s %-6s %s\n", t, "SKIP", "(builders.json declares stdin="+r.skip+
 				": this runtime reads its program from stdin, so the fixture's stdin bytes "+
 				"would be read as toplevel forms and the program would see EOF)")
+			continue
+		case "skipcap":
+			fmt.Printf("%-8s %-6s %s\n", t, "SKIP", "(capability: the builder exited 3 -- "+r.err.Error()+")")
 			continue
 		case "builderr":
 			fmt.Printf("%-8s %-6s build failed: %v\n", t, "FAIL", r.err)

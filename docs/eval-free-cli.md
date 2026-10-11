@@ -94,13 +94,32 @@ targets and the parity gate will (correctly) fail it. The fixture uses
 
 ## Reading S-expressions as data
 
-`read` is an eval entry point on the S42 kernel for a real reason, not an
-artefact of the analysis. The reader evaluates code by itself:
+`read` is an eval entry point for a real reason, not an artefact of the
+analysis. The reader evaluates code by itself. On ShenOSKernel 42.2 (42.1
+changed the read loop: `shen.try-parse` now only parses, and the loop expands
+the parsed forms afterwards) the path is:
 
 ```
-read -> shen.read-loop -> shen.try-parse -> shen.process-sexprs
+read -> shen.read-loop -> shen.process-sexprs
      -> shen.unpackage&macroexpand -> shen.unpackage -> eval
 ```
+
+`read-from-string` reaches `shen.process-sexprs` directly, and `lineread`
+through the same `shen.read-loop`. `shen.unpackage&macroexpand` now also
+consults the source-form handler registry (42.1) before ordinary macros, and
+`macroexpand` passes that registry to `shen.macroexpand-h` as its new fourth
+argument. Neither adds a path to `eval`: the registry is `()` after
+initialisation, and only `shen.register-source-form` fills it, with a handler
+function the program itself supplies, so a handler is user code the shake
+already sees. `read-from-string-unprocessed` (also 42.1) parses without
+unpackaging, macroexpanding or curry-processing, reaches nothing that
+evaluates, and is not an eval entry point; a program that only needs the raw
+S-expressions can use it and stay eval-free with no declaration at all.
+
+These paths were re-derived for 42.2 from the call graph, not carried over:
+the eval-reaching kernel defuns are the same eleven as on S42, and the five
+reader paths below go through the same five functions, with the same names
+and arities.
 
 `shen.unpackage` evaluates the exceptions expression of every
 `(package Name Exceptions ...)` form the reader returns, and there are four
@@ -138,8 +157,17 @@ when the program mentions no eval entry point other than `read`,
 
 The manifest says `needs-eval=false`, `cannot-reach=eval` and
 `read-data=true`. `tests/read-data.shen` reads its stdin this way and shakes
-to 355 kernel defuns, against 551 for the same program without the
-declaration, and `--web` builds it.
+to 379 kernel defuns on 42.2 (355 on S42), against 577 for the same
+program without the declaration, and `--web` builds it.
+
+`cannot-reach=eval` is still a sound syntactic fact on 42.2. It is derived
+from the primitives that occur in the emitted KL, and `eval-kl` is the only
+primitive that evaluates code; the kernel has no other route to evaluation.
+With the seven read-data cuts in place (the five functions above plus `input`
+and `shen.input-h+`) and `shen.f-error` replaced, no defun that applies
+`eval-kl` is reachable from `read`, `read-from-string`, `lineread` or the kept
+`*macros*` registration, and the arity table, external-symbol list and
+lambda-form entries that remain do not name `eval-kl`.
 
 What the declaration promises, and what holds you to it:
 

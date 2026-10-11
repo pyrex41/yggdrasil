@@ -6,7 +6,7 @@
 
 This repo is Yggdrasil, a tree-shaker for Shen programs. Stage 1
 (`yggdrasil.shen`, run on any certified Shen — developed against a sibling
-`../shen-cl` checkout) computes the reachable slice of the ShenOSKernel-41.2
+`../shen-cl` checkout) computes the reachable slice of the ShenOSKernel-42.2
 and writes KLambda + a manifest to an output dir. Stage 2 builders compile
 that slice per target; the LuaJIT builder
 (`../shen-lua/bin/yggdrasil-build.lua <dir> <out.lua>`) produces a
@@ -60,7 +60,7 @@ file.**
   emitted program must not mention `eval`, `read`, `load`, `tc`, etc.
 - Shen's `read-file` is not a data reader (it curries and cons-ifies);
   read policy files as plain text/lines.
-- 41.2 stlib is lazily materialised in port runtimes — reuse the `ygg.*`
+- the stlib is outside the shake universe and not in every port runtime — reuse the `ygg.*`
   helpers in `yggdrasil.shen` rather than `mapc`/`filter`/etc.
 - Keep the v1 predicate language small enough that shadowing stays
   decidable by construction.

@@ -380,7 +380,8 @@ func TestOnlyDeclaredPortReadsDifferFromTheDefault(t *testing.T) {
 // What it pins CHANGED with the representation. `_default.port_reads` is the
 // string "unknown" now, so there is no default list to compare against; the
 // list the Shen side must equal is portReadsFor(""), the union over the
-// targets that have actually declared one. Today that is go's five. The 35
+// targets that have actually declared one. Today that is go's four (five on S42,
+// before shen.*lambdatable* went). The 35
 // names this used to pin were a guess, and the whole point of the change is
 // that a guess must not be the value a reader inherits.
 func TestPortReadsDefaultMatchesShen(t *testing.T) {

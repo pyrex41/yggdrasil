@@ -6,8 +6,9 @@ A shake runs on a Shen host. The host's `bootstrap` compiler turns each user
 file into KLambda, which is why the host must emit fully portable KL and why
 `docs/targets.md` lists the eight ports verified to do so. The kernel's own
 KLambda is read alongside it. The seed set is the symbols of the kernel's
-toplevel initialisation forms plus the symbols of the user KL: anything named in
-either is something the program might call. From those seeds a worklist pass
+initialisation forms (init.kl's `shen.initialise`, unfolded, below) plus the
+symbols of the user KL: anything named in either is something the program
+might call. From those seeds a worklist pass
 walks the kernel call graph to fixpoint, and the reachable defuns are the
 footprint; everything else is discarded. The graph counts a symbol as an edge
 wherever it occurs in a body, not only in call position, because a bare symbol
@@ -21,10 +22,10 @@ the oracles that check the shake against them, are
 ## The call-graph cache
 
 Building the direct call graph is the one expensive pass: it walks every symbol
-leaf of roughly 280 KB of KLambda. It is done once and cached as plain text in
-`callgraph-cache.shen`, one line per defun, and reloaded on later shakes. The
-current graph is 686 defuns and 2,583 edges, about four per node, which is very
-sparse.
+leaf of roughly 335 KB of KLambda. It is done once and cached as plain text in
+`callgraph-cache-42.2.shen`, one line per defun, and reloaded on later shakes.
+The current graph, on ShenOSKernel 42.2, is 726 defuns and 2,770 edges, about
+four per node, which is very sparse. (On Tarver's S42 it was 686 and 2,583.)
 
 Two properties of the cache are load-bearing.
 
@@ -48,6 +49,49 @@ Shen measured around 5 s per pass, against the 0.24 s the cache saves. The CLI's
 extracted root is named for a hash of the embedded tree, so a cache written
 inside one is by construction the cache for that kernel.
 
+## The initialiser, unfolded
+
+The kernel is the community ShenOSKernel 42.2 (see
+[`KLambda/PROVENANCE.md`](../KLambda/PROVENANCE.md)). Every `.kl` file holds
+only defuns, and `init.kl` defines `shen.initialise` as a do-chain of three
+zero-place helpers, `shen.initialise-environment`, `-lambda-forms` and
+`-signedfuncs`, each itself a do-chain of the real work: about 45 global
+`set`s, the arity table, the `shen` external-symbol list, one
+`(shen.set-lambda-form-entry (cons F (lambda ...)))` per kernel function, and
+one `(set shen.*sigf* (shen.assoc-> F Rule ...))` per typed kernel function.
+
+The shake does not keep that initialiser as a defun. `kernel-code` *unfolds*
+it: a do-chain becomes its forms, and a call `(F)` to a zero-place kernel
+defun becomes `F`'s own unfolded body, recursively. The result is a flat list
+of init forms in execution order, and `shen.initialise` and the three helpers
+leave the kernel's defun set. Everything downstream works on that list: seeding
+reads it, eval-stripping and `trim-top` rewrite and drop forms in it, the
+init-order check and stage-4 pruning index it, the trace weaver instruments
+it, and the survivors are written back as a synthesised
+`(defun shen.initialise () ...)`. The two rewrites preserve evaluation order
+exactly, so an unshaken build (`--no-shake`) does what the kernel's own
+initialiser does.
+
+This is the same shape the shake had on Tarver's S42, where there was no
+`shen.initialise` and the init forms really were toplevel forms interleaved
+through `declarations.kl` and `types.kl`; there it collected them, here it
+unfolds them. A kernel with no `shen.initialise` is refused by name.
+
+## The shake universe
+
+The kernel the shake draws from is seventeen of the release's 23 KLambda
+files: the fifteen core files, `dict.kl` and `init.kl` (726 defuns once the
+initialiser is unfolded). The precompiled standard library `stlib.kl` and the
+six extensions (`features`, `expand-dynamic`, `launcher`,
+`programmable-pattern-matching`, `namespaces`, `type-annotations`) are
+deliberately outside it and are not vendored. The stlib needs its own
+`stlib.initialise` and is not carried uniformly by port runtimes; the
+extensions act on the host at compile time (macros, source-form handlers, the
+command line), so their effect is already in the user KL `bootstrap` emits.
+The consequence is the one under Gotchas: a run-time call to a stlib or
+extension function names a function the slice does not define.
+[`KLambda/PROVENANCE.md`](../KLambda/PROVENANCE.md) records the decision.
+
 ## Tables masquerading as code
 
 Several kernel constructs are syntactically calls but semantically data. Left
@@ -61,11 +105,13 @@ builder drops their edges:
 | `(set shen.*special* ...)` and `shen.*extraspecial*` | name lists |
 | a toplevel `(declare F Type)` | `F` is a table key and `Type` is data; declaring a function does not call it |
 | `shen.assoc->` with a literal symbol key | the key is a key, not a callee |
-| the lambda-form eta-entries | a name-to-wrapper table |
+| a lambda-form entry `(shen.set-lambda-form-entry (cons F (lambda ...)))` | a name-to-wrapper pair whose only callee is its own key |
 
 The literals themselves survive; they are filtered to the footprint at write
-time, so the emitted arity table and lambda table carry only names the slice
-kept.
+time, so the emitted arity table and lambda-form entries carry only names the
+slice kept. The lambda-form entries are filtered in every mode, not only an
+eval-free one: an entry for a function the slice does not define is a dangling
+reference, and a port that resolves calls statically will not compile it.
 
 In an eval-capable program this subtraction is not sound, because the kernel can
 turn a name in a data literal into a call at run time. The rule set says so
@@ -83,20 +129,29 @@ read  read-from-string  lineread  input  input+  bootstrap
 ```
 
 When the user KL mentions none of them, the shake takes the eval-free path. It
-drops the `*macros*` registration and replaces `shen.f-error`'s interactive
-track prompt with a plain `simple-error`. With those two gone the macro
-expander, the typechecker, the reader and `eval` itself are no longer reachable
-and fall away.
+drops the `*macros*` registration, drops the kernel's type-signature
+registrations (the `(set shen.*sigf* (shen.assoc-> ...))` init forms, which
+only the typechecker reads), and replaces `shen.f-error`'s interactive track
+prompt with a plain `simple-error`. With those gone the macro expander, the
+typechecker, the reader and `eval` itself are no longer reachable and fall
+away.
+
+The 42.2 lambda-form table needs no stripping. S42 built its lambda table with
+`eval-kl` at boot (`shen.build-lambda-table`), which would have made every
+program eval-capable, so the shake used to replace it with a literal of its
+own; 42.2 writes the eta-wrappers as literals already.
 
 Detection is a syntactic membership test, so it over-approximates, and it
 over-approximates in the safe direction: a stray symbol named `eval` that is
 never applied keeps the whole machinery. A program that is wrongly called
 eval-capable is merely larger; the converse cannot happen.
 
-The size difference is the point. An eval-free program shakes to roughly 50 to
-100 kernel defuns, an eval-capable one to around 550. `tests/fib.shen` is 54
-defuns and 13 KB of KL; `tests/metaeval.shen` is 551, both counts including the
-synthesised `shen.initialise`.
+The size difference is the point. An eval-free program shakes to roughly 80 to
+100 kernel defuns, an eval-capable one to around 575. `tests/fib.shen` is 81
+defuns and 19 KB of KL; `tests/metaeval.shen` is 577, both counts including the
+synthesised `shen.initialise`. (On S42 they were 54 / 13 KB and 551. The floor
+rose by about 25 defuns because 42.2's `*property-vector*` is a `shen.dict`, so
+`put`/`get` bring the dict and `hash` code with them.)
 
 Each port supplies its own runtime `eval-kl` for the eval-capable case: the lisp
 builder stages shen-cl's precompiled `compiled/compiler.lsp` when the manifest
@@ -110,7 +165,7 @@ There is a third mode, **read-data**, for a program that declares with a
 toplevel `(set yggdrasil.*read-data* true)` that what it reads is data and
 mentions no eval entry point but `read`, `read-from-string` and `lineread`.
 It strips like the eval-free mode but keeps the macro table, replaces the
-five kernel functions through which the S42 reader itself evaluates
+five kernel functions through which the kernel's reader itself evaluates
 (`shen.unpackage`, `shen.process-def`, `shen.process-synonyms`,
 `shen.process-datatype`, `shen.update-lambdatable`) with named errors, and
 keeps the arity table and the `shen` external-symbol list whole but for
@@ -189,6 +244,7 @@ recognise, which is what makes every key below contract-safe to add.
 
 | key | meaning |
 |---|---|
+| `kernel-version=` | the vendored kernel the slice was shaken from: `42.2` (ShenOSKernel 42.2). Earlier manifests say `42-s42.20260825` (Tarver's S42.0) or older; the CLI never reads it and the port builders at most warn on it (shen-lua's `kernel-42.2` builder expects exactly `42.2`, ShenScript's any `42`), so an old manifest still reads as before |
 | `reaches=` / `cannot-reach=` | the artifact's effectful capabilities over `{eval, read, write, file, clock}`, derived from the emitted primitive set. `cannot-reach=eval` is a static, certifiable "this program can never evaluate code at run time" |
 | `needs-eval=` | whether `eval-kl` survived into the slice. The eval-strip and the capability report stay in lock-step because both read the same primitive set |
 | `init-order=` | `checked` or `checked-weak`, see below |
@@ -231,9 +287,10 @@ and pruning against a `port_reads` list nobody has checked can drop a
 
 A global counts as live when a reachable kernel defun reads it, when a kept
 toplevel form reads it, when its name occurs anywhere in your program, or when
-**the port's own runtime** reads it natively. shen-go's `fn` reads
-`shen.*lambdatable*` from Go, its `arity` reads `*property-vector*`, and its
-`open` resolves paths through `*home-directory*`. That last category is
+**the port's own runtime** reads it natively. shen-go's native `arity` and
+`fn` read `*property-vector*` from Go (on 42.x `fn` finds the lambda form in
+the property vector; the S42-era `shen.*lambdatable*` is gone), and its `open`
+resolves paths through `*home-directory*`. That last category is
 per-backend data, so it lives in [`builders.json`](../builders.json) next to the
 backend as a `"port_reads"` array, with a `"port_reads_source"` naming the
 runtime lines it was read off and a `"port_reads_checked_by"` naming the test
@@ -275,9 +332,13 @@ stays however dead its global is.
   to paren applications and turns `[a b c]` into cons ASTs. `.kl` files survive
   it because the symbol walk does not care about tree shape, but anything else,
   the call-graph cache included, has to be written and parsed as plain text.
-- The stlib is **lazily materialised**, so `mapc`, `filter`,
-  `remove-duplicates` and `copy-file` do not exist in port runtimes.
+- The stlib is **outside the shake universe** (it is not vendored, and port
+  runtimes do not uniformly carry it), so `mapc`, `filter`,
+  `remove-duplicates` and `copy-file` may not exist at run time.
   `yggdrasil.shen` carries its own `ygg.*` versions and uses those throughout.
+  The host's stlib and extensions still work at COMPILE time (the shen-cl host
+  loads them), so a program can use their macros; a run-time call to a stlib
+  or extension function names a function the slice does not define.
 - Compiled KL carries **explicit property-table arguments**. The
   external-symbols registration, for instance, is a 5-element `put` node, not a
   4-element one. Pattern matches on KL shapes have to expect the extra

@@ -72,8 +72,16 @@
 (define lsp.symbol->string
   S -> "|;|"  where (= ; S)
   S -> "|:|"  where (= : S)
+  \\ A name starting with ':' (the 42.2 kernel's signature table has :=)
+  \\ would read back as a KEYWORD whose name drops the colon, colliding
+  \\ with = ; shen-cl's own scripts/build.shen pipe-quotes it the same way.
+  S -> (@s "|" (str S) "|")  where (lsp.colon-prefixed? (explode (str S)))
   S -> (@s "|" (str S) "|")  where (lsp.cased-symbol? (explode S))
   S -> (str S))
+
+(define lsp.colon-prefixed?
+  [C | _] -> true  where (= ":" C)
+  _ -> false)
 
 (define lsp.cased-symbol?
   [] -> false
@@ -145,8 +153,57 @@
 
 \\ ====================== compiling KL to Lisp =============================
 
+\\ The shake writes the initialiser as ONE defun, a do-chain of every kept
+\\ init form.  On the 42.2 kernel an eval-capable slice keeps ~300 of them,
+\\ ~255 holding closures (lambda-form entries and the typechecker's
+\\ signature rules), and SBCL (2.6.7 and 2.6.8 both) compiles that one
+\\ function into an image save-lisp-and-die cannot write: "post-GC failure
+\\ ... Verify failed".  The same forms split over a few functions save
+\\ fine (shen-cl's own init.lsp is three).  So the Lisp build compiles the
+\\ do-chain as consecutive chunks, each its own defun, called in order from
+\\ shen.initialise: the same forms in the same order, so the same
+\\ initialisation, and kernel.kl is untouched.
+(set lsp.*init-chunk* 40)
+
+(define lsp.split-initialise
+  [] -> []
+  [[defun shen.initialise [] Body] | Forms]
+    -> (let Chunks (lsp.chunks (lsp.unchain Body) (value lsp.*init-chunk*))
+            Names  (lsp.chunk-names 1 (lsp.len Chunks))
+            (append (map (/. NC [defun (hd NC) [] (nest-do (hd (tl NC)))])
+                         (lsp.zip Names Chunks))
+                    [[defun shen.initialise [] (nest-do (map (/. N [N]) Names))]
+                     | (lsp.split-initialise Forms)]))
+  [F | Forms] -> [F | (lsp.split-initialise Forms)])
+
+(define lsp.unchain
+  [do A B] -> [A | (lsp.unchain B)]
+  X -> [X])
+
+(define lsp.chunks
+  [] _ -> []
+  Xs N -> [(lsp.take Xs N) | (lsp.chunks (lsp.drop Xs N) N)])
+
+(define lsp.take
+  [] _ -> []
+  _ 0 -> []
+  [X | Xs] N -> [X | (lsp.take Xs (- N 1))])
+
+(define lsp.drop
+  [] _ -> []
+  Xs 0 -> Xs
+  [_ | Xs] N -> (lsp.drop Xs (- N 1)))
+
+(define lsp.chunk-names
+  I N -> []  where (> I N)
+  I N -> [(intern (@s "yggdrasil.initialise-" (str I))) | (lsp.chunk-names (+ I 1) N)])
+
+(define lsp.zip
+  [] [] -> []
+  [X | Xs] [Y | Ys] -> [[X Y] | (lsp.zip Xs Ys)])
+
 (define lsp.compile-kernel
-  Dir -> (let Forms  (read-file (@s Dir "/kernel.kl"))
+  Dir -> (let Forms  (lsp.split-initialise (read-file (@s Dir "/kernel.kl")))
               FlagOn (set shen-cl.*compiling-shen-sources* true)
               Lisp   (map (/. F (shen-cl.kl->lisp F)) Forms)
               FlagOff (set shen-cl.*compiling-shen-sources* false)

@@ -1,7 +1,7 @@
 \\ Fixture: a program that reads S-expression DATA from stdin with `read`,
 \\ and stays eval-free (#27).
 \\
-\\ `read` is an eval entry point, and on S42 rightly so: the kernel's reader
+\\ `read` is an eval entry point, and rightly so: the kernel's reader
 \\ can evaluate code by itself (a package form's exceptions, defmacro,
 \\ synonyms, datatype).  The declaration below says this program's reads
 \\ are data, and the shake takes the read-data mode: the reader and the

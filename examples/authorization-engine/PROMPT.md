@@ -6,7 +6,7 @@
 ## Context
 
 This repo is Yggdrasil, a tree-shaker for Shen programs: stage 1
-computes the reachable ShenOSKernel-41.2 slice and emits KLambda + a
+computes the reachable ShenOSKernel-42.2 slice and emits KLambda + a
 manifest; per-target stage-2 builders compile it for Common Lisp, LuaJIT
 (self-contained ~640 KB .lua), Go (static ~4.5 MB binary), Rust, and
 JavaScript (self-contained ~120 KB ES module via ShenScript). See
@@ -61,7 +61,7 @@ services, and the Rust library at the edge. Identical decision semantics by cons
 - Keep the artifact eval-strippable; the authoring/analysis tool may use
   the full reader and eval machinery.
 - Shen's `read-file` is not a data reader; parse policy files as text.
-- 41.2 stlib is lazily materialised in ports — use the `ygg.*` helpers.
+- the stlib is outside the shake universe and not in every port runtime — use the `ygg.*` helpers.
 - Benchmark Lua-path decision latency early; specialization should keep
   it to straight dispatch, but verify under wrk before widening scope.
 

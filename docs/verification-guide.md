@@ -34,20 +34,23 @@ the JavaScript bundler world
 is a good short one), and Mark Tarver's
 [original Yggdrasil paper](../yggdrasil.pdf) proposed it for Shen in 2023.
 
-The S42 kernel is 686 KL functions. A "hello world" needs about fifty.
-The shake computes which fifty, emits just those as `kernel.kl`, and
+The kernel (the community ShenOSKernel 42.2) is 726 KL functions. A
+"hello world" needs about eighty. The shake computes which eighty, emits just those as `kernel.kl`, and
 hands the result to a per-target builder that compiles KL to Go, Lua,
 JavaScript, Rust, and so on. See the [README](../README.md) for the
 pipeline and targets.
 
 The shaken program is not just a subset. Along the way the shake also:
 
-- wraps the kernel's toplevel initialisation forms into a synthesised
-  `shen.initialise`;
+- unfolds the kernel's initialiser (init.kl's `shen.initialise`) into its
+  individual init forms, trims them, and writes the survivors back as a
+  synthesised `shen.initialise`;
 - when the program can never evaluate code at runtime ("eval-free"),
   replaces the interactive partial-function handler `shen.f-error` with a
-  plain error, blanks the macro registration, and trims three kernel
-  tables to the functions that survive;
+  plain error, blanks the macro registration, drops the kernel's type
+  signatures, and trims the arity table and the external-symbol list to the
+  functions that survive (the lambda-form entries are trimmed in every
+  mode);
 - drops type declarations, which only the typechecker reads.
 
 So the question "is the shaken program the same program?" is a real one,
@@ -103,7 +106,7 @@ kernel's KL by walking every symbol in every function body, and cached.
 
 Two facts about this graph decide much of what follows.
 
-It is small and sparse: 686 nodes and about 2,600 edges. A worklist
+It is small and sparse: 726 nodes and about 2,800 edges. A worklist
 traversal takes milliseconds. Tarver's 1.0 design computed the full
 transitive closure with
 [Warshall's algorithm](https://en.wikipedia.org/wiki/Floyd%E2%80%93Warshall_algorithm),
@@ -121,8 +124,8 @@ it at runtime. Drop that edge and `f` is shaken out of a program that
 calls it. Measured on S42 without eval stripping, even that unsound
 refinement shrinks the graph by 7% and the floor by eleven functions out
 of 661. What actually decides the footprint is a step: with no eval entry
-point reachable the floor is 48 functions; with one, it is 548, because
-the macro expander, typechecker and reader come in together. That
+point reachable the floor is 48 functions; with one, it is 548 (on 42.2:
+75 and 574), because the macro expander, typechecker and reader come in together. That
 difference of five hundred functions is a symbol test, not a graph
 problem. So the machinery in the rest of this guide is not about making
 the footprint smaller; it is about establishing that the footprint is
@@ -145,7 +148,7 @@ directly, two numbers: what it *adds* over the floor alone, and what would
 leave `kernel.kl` if it went away (*exclusive*). `--trace F` prints the
 shortest call chain to any kernel function.
 
-Two things it showed immediately. The S42 kernel's own `bootstrap` already
+Two things it showed immediately. The kernel's own `bootstrap` already
 rewrites a partial function's `(shen.f-error f)` into a plain error, so the
 example in the thread costs nothing in a bootstrapped program. And when
 creep happens it is that step function again: the eval-capable trace for
@@ -251,16 +254,17 @@ change, with one later, deliberate exception described below, and
 worklist and by Warshall and asserts agreement.
 
 One divergence needs explaining, recorded as D8. Datalog derives a *set*
-of reachable functions; it has no notion of order. But two things the
-shake writes depend on an order. `kernel.kl` lists the kept functions in
+of reachable functions; it has no notion of order. On S42 two things the
+shake wrote depended on an order. `kernel.kl` lists the kept functions in
 kernel load order, which is fine, since that order comes from the kernel
-files, not the footprint. The lambda table does not: for an eval-free
-program the shake replaces the kernel's boot-time table construction with
-a literal `(set shen.*lambdatable* (cons (cons f (lambda ...)) ...))`, one
-entry per footprint function, and that literal is emitted by walking the
-footprint *as a list*. Whatever order the list has becomes the order of
-the entries and therefore the bytes of `kernel.kl`, so the order has to be
-a defined, deterministic function of the program.
+files, not the footprint. The lambda table did not: for an eval-free
+program the shake replaced S42's boot-time table construction with a
+literal `(set shen.*lambdatable* (cons (cons f (lambda ...)) ...))`, one
+entry per footprint function, emitted by walking the footprint *as a
+list*, so the order had to be a defined, deterministic function of the
+program. (ShenOSKernel 42.2 ships its lambda forms as literals, and the
+shake only filters them, so on 42.2 the order no longer reaches
+`kernel.kl`; the definition below still fixes the footprint list.)
 
 It is defined, not walked. `ygg.rule-footprint` renders the derived set as
 kernel load order — `(map (fn row-head) Graph)`, the order `graph-rows`
@@ -631,9 +635,9 @@ the shake synthesises it *after* reachability runs, from the kernel's
 toplevel forms, and the generated `main` calls it. The user's own defuns
 are likewise in the graph but not in the kernel footprint, because they
 live outside `kernel.kl`; the shake already computes that set. The third
-is the port's **special forms**: names that are kernel defuns in S42 but
+is the port's **special forms**: names that are kernel defuns (in S42 and 42.2 alike) but
 that shen-go lowers inline with no symbol lookup, so they are never an
-edge in the recovered graph. `do` is one — S42 defines it as a kernel
+edge in the recovered graph. `do` is one — the kernel defines it as a kernel
 function while `src/compiler.shen` handles `(do X Y)` as a parse head —
 and it is not the only one: the intersection of shen-go's `shenPrimitive`
 table with `kernel.kl`'s defun names adds `not`, `symbol?`, `variable?`,
@@ -670,6 +674,15 @@ subtree would report the subtree as a finding. The subtree is derived from
 the same declaration over the graph the backend emitted, never declared
 separately, and the verdict prints it apart from the declaration as
 `called-only-from-them=`.
+
+On ShenOSKernel 42.2 (shen-go `kernel-42.2`, `91fc6ee`) `scip-check --target
+go` passes on `fib`, `hello` (the test fixtures), `metaeval` and
+`interpreter`, the last of which the S42 measurement below recorded as an
+open finding. The finding is gone because its cause is: 42.2 ships the
+lambda-form entries as literals in both builds, so the shaken and the full
+initialiser both reach `fix` through the same kind of call site, and the
+shake no longer manufactures a lambda table the full build lacks. The
+S42-era measurement, for the record:
 
 Measured on the repo fixtures (shen-go `30ab469`): `fib`, `hello`,
 `prolog`, `metaeval`, `partial-eval` and `tc-interp` all pass with an

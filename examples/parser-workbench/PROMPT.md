@@ -5,7 +5,7 @@
 ## Context
 
 This repo is Yggdrasil, a tree-shaker for Shen programs: stage 1
-computes the reachable ShenOSKernel-41.2 slice and emits KLambda + a
+computes the reachable ShenOSKernel-42.2 slice and emits KLambda + a
 manifest; per-target stage-2 builders compile it for Common Lisp, LuaJIT,
 Go, Rust, and JavaScript. See README.md and DEMO.md for exact invocations.
 
@@ -58,7 +58,7 @@ closes that gap.
   interpretation is too slow.
 - Shen's `read-file` is not a data reader; the corpus loader and any
   cache files must be plain text/bytes.
-- 41.2 stlib is lazily materialised in ports — use the `ygg.*` helpers.
+- the stlib is outside the shake universe and not in every port runtime — use the `ygg.*` helpers.
 
 ## Deliverables
 

@@ -468,35 +468,25 @@ func TestLowerCLILowersGoForReal(t *testing.T) {
 	}
 }
 
-// `yggdrasil lower-check --target go`, for real, on the gate the port now
-// opens -- and it FAILS. This test records that failure rather than hiding it,
-// and it is two-sided: if the run starts passing it fails and says what to
-// rewrite.
+// `yggdrasil lower-check --target go`, for real, on the gate the port opens --
+// and it PASSES. Two-sided: if the run starts failing, this test fails and
+// says what to rewrite.
 //
-// Why it fails. The install PHASE is what builders.json declares and what the
-// gate reads, and that fact is now true: shen-go 30ab469 calls
-// InstallKernelFast inside the kernel chunk loop, before shen.initialise. But
-// the phase is not the whole precondition for lowering. shen-go's overrides
-// are CONDITIONAL on the kernel having defined the name: overridePrimitive and
-// overrideNative (kl/kernelfast.go:211 and :218) both open with
+// History, because the expectation flipped. At shen-go 30ab469 (the S42-era
+// pin) this check FAILED, and this test recorded the failure: shen-go's
+// overridePrimitive / overrideNative opened with
 //
 //	if kernelBound(name) == nil { return }
 //
-// so deleting F's defun from kernel.kl does not leave a native bound to F --
-// it stops the native from being installed at all. On tests/fib.shen the
-// lowered artifact builds and then dies in its initialiser:
-//
-//	yggdrasil: shen.initialise failed: variable vector not bound
-//
-// because `vector` was dropped, its native was skipped, and shen.initialise's
-// `(set *property-vector* (vector 20000))` found nothing bound.
-//
-// So the lowered slice is wrong on go, the check says so, and NOTHING here
-// weakens it. docs/lowering.md carries the measurement. What would have to
-// change is shen-go's: an unconditional install, or a fact Yggdrasil can read
-// that says the install is conditional -- at which point this test's
-// expectation flips back.
-func TestLowerCheckOnGoFailsOnShenGoConditionalInstall(t *testing.T) {
+// so deleting F's defun from kernel.kl stopped F's native from being
+// installed at all, and the lowered fib died in its initialiser with
+// "variable vector not bound". shen-go's kernel-42.2 line (91fc6ee,
+// kl/kernelfast.go:208-224) installs unconditionally -- "whether or not the
+// kernel defined the name, so a kernel slice whose KL body was dropped
+// (Yggdrasil lower) still gets the binding" -- which is fix (1) of
+// docs/lowering.md, and the lowered slice now builds, runs and agrees with
+// the canonical one on the golden.
+func TestLowerCheckOnGoPassesWithUnconditionalInstall(t *testing.T) {
 	needGoLowerStage1(t)
 	bin := lowerCLI(t)
 	dir := filepath.Join(t.TempDir(), "out")
@@ -506,26 +496,16 @@ func TestLowerCheckOnGoFailsOnShenGoConditionalInstall(t *testing.T) {
 	if strings.Contains(s, "SKIP reason=toolchain-missing") {
 		t.Skipf("no-go-toolchain: the go toolchain is not usable here:\n%s", lastLines(s, 6))
 	}
-	if err == nil {
-		t.Fatalf("lower-check --target go now PASSES. shen-go's InstallKernelFast has stopped "+
-			"skipping names the kernel did not define (the kernelBound guard at "+
-			"kl/kernelfast.go:211/:218), or the pass has changed. Rewrite the measurement in "+
-			"docs/lowering.md and this test:\n%s", lastLines(s, 20))
+	if err != nil || !strings.Contains(s, "yggdrasil-lower-check: OK target=go") {
+		t.Fatalf("lower-check --target go no longer PASSES. If the lowered run died on an unbound "+
+			"name, shen-go's InstallKernelFast has gone back to skipping names the kernel did not "+
+			"define (the kernelBound guard removed at kl/kernelfast.go:208-224); rewrite the "+
+			"measurement in docs/lowering.md and this test:\n%s", lastLines(s, 20))
 	}
-	if !strings.Contains(s, "yggdrasil-lower-check: FAIL") {
-		t.Fatalf("lower-check failed without printing a FAIL sentinel:\n%s", lastLines(s, 20))
+	if !strings.Contains(s, "golden=fib.expected") {
+		t.Errorf("the OK line does not name the golden it agreed on:\n%s", lastLines(s, 6))
 	}
-	// The exact shape matters: a build or run failure of the LOWERED leg,
-	// not a disagreement of outputs and not a refused gate.
-	if !strings.Contains(s, "run=lowered@go") {
-		t.Errorf("the FAIL does not name the lowered@go run; the failure has moved "+
-			"and docs/lowering.md no longer describes it:\n%s", lastLines(s, 20))
-	}
-	if !strings.Contains(s, "not bound") {
-		t.Errorf("the lowered artifact did not die on an unbound name; the cause has moved:\n%s",
-			lastLines(s, 20))
-	}
-	t.Logf("real lower-check on go (expected FAIL, recorded in docs/lowering.md):\n%s", lastLines(s, 4))
+	t.Logf("real lower-check on go (expected OK, recorded in docs/lowering.md):\n%s", lastLines(s, 4))
 }
 
 // ---- the measurement ----

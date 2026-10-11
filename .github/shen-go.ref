@@ -24,7 +24,17 @@
 # and what opens `yggdrasil lower --target go`.
 #
 # Moving this SHA is a deliberate act, and the mover owns whatever the new host
-# changes.  Taken 2026-09-23 from
-#   git -C <shen-go checkout> rev-parse origin/master
-# (github.com/pyrex41/shen-go, refs/heads/master; the merge commit of PR #48)
-30ab4692fc5a2750ee61845cb1bdc96d60f4aca8
+# changes.  Moved 2026-10-11 for the ShenOSKernel 42.2 retarget
+# (pyrex41/yggdrasil#32) to the head of shen-go's `kernel-42.2` branch
+# (pyrex41/shen-go, refs/heads/kernel-42.2), then re-pinned to the merge
+# commit of pyrex41/shen-go#62 on master, `1f587de` (its second parent is the
+# reviewed branch head `91fc6ee`, so the tree under test is unchanged).  The vendored slice and
+# the stage-1 host must run the same kernel, and 30ab469 runs Tarver's S42.0.
+# What the move bought, measured on this branch: as a host it shakes fib,
+# prolog, metaeval and read-data byte-identically to shen-cl `kernel-42.2`;
+# `trace-check --target go` and `--target kl` pass on fib, prolog and
+# partial (go also on stdin-sum); and shen-go now installs its natives
+# unconditionally, so `yggdrasil lower-check --target go` PASSES
+# (docs/lowering.md).  Previous pin, PR #48:
+#   30ab4692fc5a2750ee61845cb1bdc96d60f4aca8
+1f587de815e2583e204398f3b2989a88154ca192

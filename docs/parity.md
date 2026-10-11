@@ -29,7 +29,10 @@ yggdrasil parity PROG OUTDIR [--target a,b] [--reference R] [--expect FILE] [--t
 ```
 
 - `--target a,b` — comma-separated targets to check. Default: every target whose
-  toolchain is on `PATH`; the rest are reported `SKIP`, never `FAIL`.
+  toolchain is on `PATH`; the rest are reported `SKIP`, never `FAIL`. A target
+  whose builder exits 3 (a capability limit: the bounded `joy` subset, or an
+  eval-capable slice on the `scheme` builder, which ships no compiler) is
+  reported `SKIP (capability: ...)` and is not counted as checked.
 - `--reference R` — the target whose output is the truth source when no `--expect`
   is given (default `lisp` = shen-cl, the reference runtime). It is built and
   added to the checked set automatically.

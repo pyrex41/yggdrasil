@@ -30,19 +30,35 @@ case "$DIR" in /*) ;; *) DIR="$PWD/$DIR" ;; esac
 case "$OUT" in /*) ;; *) OUT="$PWD/$OUT" ;; esac
 mkdir -p "$OUT"
 
+# The artifact carries no KL->Scheme compiler (app.scm never calls
+# _scm.initialize-compiler), so an eval-capable slice cannot run: its first
+# eval-kl dies with "variable kl:_scm.kl->scheme is not bound".  Refuse it
+# up front as a capability SKIP (exit 3), which the CLI and the parity gate
+# read as "this target does not support this program", not as a failure.
+if grep -qx 'needs-eval=true' "$DIR/yggdrasil.manifest.txt"; then
+    echo "scheme: needs-eval=true; this builder emits an eval-stripped artifact with no KL->Scheme compiler (capability SKIP)" >&2
+    exit 3
+fi
+
 # The user .kl filename(s) from the manifest (one expected for build/run).
-USER_KL="$(sed -n 's/^user=//p' "$DIR/yggdrasil.manifest.txt" | head -1)"
-[ -n "$USER_KL" ] || { echo "scheme: no user= in manifest" >&2; exit 1; }
+# Every user file, in manifest order, as a Shen list of strings.
+USERS="$(sed -n 's/^user=\(.*\)$/"\1"/p' "$DIR/yggdrasil.manifest.txt" | tr '\n' ' ')"
+[ -n "$USERS" ] || { echo "scheme: no user= in manifest" >&2; exit 1; }
 
 # Stage 1 of the builder: compile shaken kernel.kl + user .kl -> Scheme using
 # shen-scheme's own kl->scheme (run from the shen-scheme repo so its relative
 # src/ loads resolve). Writes kernel.scm, user.scm, init.scm into OUT.
-( cd "$SHEN_SCHEME" && "$SHEN_SCHEME_BIN" eval -q \
+# No -q: on upstream shen-scheme 0.50 it sets *hush*, which also silences
+# pr to the FILE streams this step writes, leaving zero-byte .scm files.
+( cd "$SHEN_SCHEME" && "$SHEN_SCHEME_BIN" eval \
     -l src/compiler.shen -l scripts/build.shen \
     -l "$RAT_ROOT/builders/scheme/build.shen" \
     -e "(_scm.initialize-compiler)" \
     -e "(load-overrides)" \
-    -e "(scm-rat-build \"$DIR\" \"$USER_KL\" \"$OUT\")" >/dev/null )
+    -e "(scm-rat-build \"$DIR\" [$USERS] \"$OUT\")" >/dev/null )
+for f in kernel.scm init.scm; do
+    [ -s "$OUT/$f" ] || { echo "scheme: kl->scheme wrote an empty $f (is SHEN_SCHEME_BIN a shen-scheme that honours file output?)" >&2; exit 1; }
+done
 
 # Copy the shen-scheme runtime the compiled code links against: the host
 # primitives, plus the port-specific OVERRIDES (pr, shen.char-stoutput?, dict
@@ -108,7 +124,7 @@ cat > "$OUT/app.scm" <<'SCM'
 (kl:set '*implementation* "chez-scheme")
 (kl:set '*release* (call-with-values scheme-version-number (lambda (a b c) (format "~s.~s.~s" a b c))))
 (kl:set '*porters* "Bruno Deferrari")
-(kl:set '*port* "0.45")
+(kl:set '*port* "0.50")
 (register-globals)
 (kl:global/*sterror* (standard-error-port))
 (kl:global/*stinput* (standard-input-port))

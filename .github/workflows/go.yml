@@ -68,8 +68,10 @@ env:
   #                     TestLowerLeavesTheCanonicalSliceAlone (lowering)
   #                     TestLowerCheckThreeWayParityPassesAndFails (lowering)
   #                     TestLowerCLILowersGoForReal (repin-30ab469)
-  #                     TestLowerCheckOnGoFailsOnShenGoConditionalInstall
-  #                     (repin-30ab469) -- the two that moved the count from
+  #                     TestLowerCheckOnGoPassesWithUnconditionalInstall
+  #                     (repin-30ab469; renamed and flipped from
+  #                     ...FailsOnShenGoConditionalInstall at the 42.2
+  #                     retarget, same gating) -- the two that moved the count from
   #                     43 to 45.  They replaced TestLowerCLIRefusesGo and
   #                     TestLowerCheckCLISkipsOnGo, which asserted that
   #                     `lower --target go` refuses and needed neither a host
