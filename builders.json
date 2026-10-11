@@ -612,7 +612,7 @@
     "run": [
       "{outdir}/koka-artifact/run"
     ],
-    "_note": "Experimental native Koka executable embedding only manifest-listed KL; interpreter-backed, not direct KL compilation. needs-eval=true refused with exit 3. Qualification pending."
+    "_note": "Experimental native Koka executable embedding only manifest-listed KL; interpreter-backed, not direct KL compilation. Eval-capable manifests use the embedded KLambda evaluator; the isolated metaevaluation fixture passes. Broader deployment qualification remains pending."
   },
   "koka-native": {
     "dir_env": "YGGDRASIL_SHEN_KOKA_DIR",

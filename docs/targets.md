@@ -287,3 +287,27 @@ and runtime dependencies. Each port also has its own locked flake, so it can be
 developed independently with `nix develop`. Unfinished Forth, HVM/inets, OCaml
 and Odin ports have development flakes without being supported Yggdrasil
 targets.
+
+
+## Experimental Koka targets and host
+
+`koka` builds a native executable containing the Koka KLambda interpreter and
+exactly the manifest-listed sources. It supports eval-capable manifests through
+that evaluator; the isolated metaevaluation fixture passes without an installed
+kernel. `koka-native` directly lowers eval-free KL into Koka callbacks and still
+refuses `needs-eval=true` with status 3. Both invoke the synthesized initializer
+once. Set `YGGDRASIL_SHEN_KOKA_DIR` and enter the port's pinned `nix develop` shell.
+
+To run stage 1 on the Koka interpreter, use its script launcher:
+
+```sh
+yggdrasil shake tests/fib.shen out --host /path/to/shen-koka/bin/shen-koka \
+  --eval-style script
+```
+
+Script mode executes a temporary driver containing the load and operation. It
+does not enable `*hush*`: pristine S42 suppresses even explicit file writes under
+that global, so the existing `sub` mode's `-q` creates empty artifacts on Koka.
+The script-mode fib kernel and both manifests match pinned Go and Lua byte for
+byte. This interpreter-host check took about ten minutes on the qualification
+machine; it is not a performance qualification.

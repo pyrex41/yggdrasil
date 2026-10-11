@@ -160,7 +160,17 @@ func cleanupTmp(dir string) {
 	os.RemoveAll(dir)
 }
 
-// driverFile writes the --eval-style=positional driver -- (load
+// driverHostArgv uses a file without enabling *hush*: the pristine S42
+// writer suppresses explicit file streams under *hush*, including artifacts.
+func driverHostArgv(host []string, style, driver string) []string {
+	argv := append([]string{}, host...)
+	if style == "script" {
+		argv = append(argv, "script")
+	}
+	return append(argv, driver)
+}
+
+// driverFile writes the --eval-style=positional or script driver -- (load
 // "yggdrasil.shen") followed by the expression -- into a scratch directory
 // of its own, and returns the path plus the cleanup that removes it.
 //
@@ -357,13 +367,13 @@ func shakeMode(prog, outdir string, host []string, evalStyle string, quiet bool,
 	}
 
 	var argv []string
-	if evalStyle == "positional" {
+	if evalStyle == "positional" || evalStyle == "script" {
 		drv, done, err := driverFile("_shake_driver.shen", expr)
 		if err != nil {
 			return "", err
 		}
 		defer done()
-		argv = append(append([]string{}, host...), drv)
+		argv = driverHostArgv(host, evalStyle, drv)
 	} else {
 		argv = append(append([]string{}, host...), "eval", "-q", "-l", "yggdrasil.shen", "-e", expr)
 	}
@@ -469,13 +479,13 @@ func runCheck(prog string, host []string, evalStyle string) (out, ver string, ok
 	expr := fmt.Sprintf(`(yggdrasil.check ["%s"])`, prog)
 
 	var argv []string
-	if evalStyle == "positional" {
+	if evalStyle == "positional" || evalStyle == "script" {
 		drv, done, err := driverFile("_check_driver.shen", expr)
 		if err != nil {
 			return "", "", false, err
 		}
 		defer done()
-		argv = append(append([]string{}, host...), drv)
+		argv = driverHostArgv(host, evalStyle, drv)
 	} else {
 		argv = append(append([]string{}, host...), "eval", "-q", "-l", "yggdrasil.shen", "-e", expr)
 	}
@@ -1152,7 +1162,7 @@ func cmdStage(cmd string, rest []string) int {
 	fs := flag.NewFlagSet("yggdrasil "+cmd, flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: shen-cl`)
-	evalStyle := fs.String("eval-style", "sub", "how the host evaluates the shake expr (sub | positional)")
+	evalStyle := fs.String("eval-style", "sub", "how the host evaluates the shake expr (sub | positional | script)")
 	target := fs.String("target", "", "stage-2 target: one of the entries in builders.json, which `yggdrasil targets` lists (naming them here too is a second copy that goes stale, and did)")
 	web := fs.Bool("web", false, "with --target js: emit a browser-safe ES module (passes --web to ShenScript's builder)")
 	typecheck := fs.Bool("typecheck", false, "typecheck PROG under (tc +) on the host before shaking; failure aborts with no artifacts, success is recorded as typechecked= in the manifest")
@@ -1307,7 +1317,7 @@ func cmdCheck(rest []string) int {
 	fs := flag.NewFlagSet("yggdrasil check", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: shen-cl`)
-	evalStyle := fs.String("eval-style", "sub", "how the host evaluates the check expr (sub | positional)")
+	evalStyle := fs.String("eval-style", "sub", "how the host evaluates the check expr (sub | positional | script)")
 	if err := fs.Parse(reorderArgs(rest, "host", "eval-style")); err != nil {
 		return 2
 	}
@@ -1362,13 +1372,13 @@ func runWhy(prog string, target string, host []string, evalStyle string) (string
 	}
 
 	var argv []string
-	if evalStyle == "positional" {
+	if evalStyle == "positional" || evalStyle == "script" {
 		drv, done, err := driverFile("_why_driver.shen", expr)
 		if err != nil {
 			return "", err
 		}
 		defer done()
-		argv = append(append([]string{}, host...), drv)
+		argv = driverHostArgv(host, evalStyle, drv)
 	} else {
 		argv = append(append([]string{}, host...), "eval", "-q", "-l", "yggdrasil.shen", "-e", expr)
 	}
@@ -1400,7 +1410,7 @@ func cmdWhy(rest []string) int {
 	fs := flag.NewFlagSet("yggdrasil why", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: shen-cl`)
-	evalStyle := fs.String("eval-style", "sub", "how the host evaluates the why expr (sub | positional)")
+	evalStyle := fs.String("eval-style", "sub", "how the host evaluates the why expr (sub | positional | script)")
 	trace := fs.String("trace", "", "also print the shortest call chain from the program to this kernel function")
 	if err := fs.Parse(reorderArgs(rest, "host", "eval-style", "trace")); err != nil {
 		return 2
@@ -1469,13 +1479,13 @@ func facts(prog, outdir string, host []string, evalStyle string, quiet bool, opt
 	}
 
 	var argv []string
-	if evalStyle == "positional" {
+	if evalStyle == "positional" || evalStyle == "script" {
 		drv, done, err := driverFile("_facts_driver.shen", expr)
 		if err != nil {
 			return "", err
 		}
 		defer done()
-		argv = append(append([]string{}, host...), drv)
+		argv = driverHostArgv(host, evalStyle, drv)
 	} else {
 		argv = append(append([]string{}, host...), "eval", "-q", "-l", "yggdrasil.shen", "-e", expr)
 	}
@@ -1517,7 +1527,7 @@ func cmdFacts(rest []string) int {
 	fs := flag.NewFlagSet("yggdrasil facts", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: shen-cl`)
-	evalStyle := fs.String("eval-style", "sub", "how the host evaluates the facts expr (sub | positional)")
+	evalStyle := fs.String("eval-style", "sub", "how the host evaluates the facts expr (sub | positional | script)")
 	tgt := fs.String("target", "", "dump portReads for this target's runtime instead of the shaker's conservative default")
 	if err := fs.Parse(reorderArgs(rest, "host", "eval-style", "target")); err != nil {
 		return 2
@@ -1884,7 +1894,7 @@ func cmdParity(rest []string) int {
 	fs := flag.NewFlagSet("yggdrasil parity", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: shen-cl`)
-	evalStyle := fs.String("eval-style", "sub", "how the host evaluates the shake expr (sub | positional)")
+	evalStyle := fs.String("eval-style", "sub", "how the host evaluates the shake expr (sub | positional | script)")
 	targetFlag := fs.String("target", "", "comma-separated targets to check (default: all whose tools are on PATH)")
 	reference := fs.String("reference", "lisp", "reference target whose output is the truth source")
 	expect := fs.String("expect", "", "golden stdout file; when given it is the authoritative truth")

@@ -355,13 +355,13 @@ func traceCheckHost(prog, factsDir string, host []string, evalStyle string) (str
 	}
 	expr := fmt.Sprintf(`(yggdrasil.trace-check ["%s"] "%s")`, prog, factsDir)
 	var argv []string
-	if evalStyle == "positional" {
+	if evalStyle == "positional" || evalStyle == "script" {
 		drv, done, err := driverFile("_tracecheck_driver.shen", expr)
 		if err != nil {
 			return "", err
 		}
 		defer done()
-		argv = append(append([]string{}, host...), drv)
+		argv = driverHostArgv(host, evalStyle, drv)
 	} else {
 		argv = append(append([]string{}, host...), "eval", "-q", "-l", "yggdrasil.shen", "-e", expr)
 	}
@@ -1146,7 +1146,7 @@ func cmdTraceCheck(rest []string) int {
 	fs := flag.NewFlagSet("yggdrasil trace-check", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: shen-cl`)
-	evalStyle := fs.String("eval-style", "sub", "how the host evaluates the shake expr (sub | positional)")
+	evalStyle := fs.String("eval-style", "sub", "how the host evaluates the shake expr (sub | positional | script)")
 	target := fs.String("target", "", "stage-2 target to build and run the traced artifact on")
 	stdinFile := fs.String("stdin", "", "file fed to the artifact's stdin (default: tests/<name>.stdin when it exists)")
 	pruneFlag := fs.Bool("prune-init", false, "trace the artifact as --prune-init would ship it, and FAIL when the run reads a global whose toplevel (set V _) the shake deleted and --target's builders.json port_reads does not declare")
