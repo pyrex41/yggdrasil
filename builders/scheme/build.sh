@@ -48,12 +48,17 @@ USERS="$(sed -n 's/^user=\(.*\)$/"\1"/p' "$DIR/yggdrasil.manifest.txt" | tr '\n'
 # Stage 1 of the builder: compile shaken kernel.kl + user .kl -> Scheme using
 # shen-scheme's own kl->scheme (run from the shen-scheme repo so its relative
 # src/ loads resolve). Writes kernel.scm, user.scm, init.scm into OUT.
-( cd "$SHEN_SCHEME" && "$SHEN_SCHEME_BIN" eval -q \
+# No -q: on upstream shen-scheme 0.50 it sets *hush*, which also silences
+# pr to the FILE streams this step writes, leaving zero-byte .scm files.
+( cd "$SHEN_SCHEME" && "$SHEN_SCHEME_BIN" eval \
     -l src/compiler.shen -l scripts/build.shen \
     -l "$RAT_ROOT/builders/scheme/build.shen" \
     -e "(_scm.initialize-compiler)" \
     -e "(load-overrides)" \
     -e "(scm-rat-build \"$DIR\" [$USERS] \"$OUT\")" >/dev/null )
+for f in kernel.scm init.scm; do
+    [ -s "$OUT/$f" ] || { echo "scheme: kl->scheme wrote an empty $f (is SHEN_SCHEME_BIN a shen-scheme that honours file output?)" >&2; exit 1; }
+done
 
 # Copy the shen-scheme runtime the compiled code links against: the host
 # primitives, plus the port-specific OVERRIDES (pr, shen.char-stoutput?, dict

@@ -244,6 +244,7 @@ recognise, which is what makes every key below contract-safe to add.
 
 | key | meaning |
 |---|---|
+| `kernel-version=` | the vendored kernel the slice was shaken from: `42.2` (ShenOSKernel 42.2). Earlier manifests say `42-s42.20260825` (Tarver's S42.0) or older; the CLI never reads it and the port builders at most warn on it (shen-lua's `kernel-42.2` builder expects exactly `42.2`, ShenScript's any `42`), so an old manifest still reads as before |
 | `reaches=` / `cannot-reach=` | the artifact's effectful capabilities over `{eval, read, write, file, clock}`, derived from the emitted primitive set. `cannot-reach=eval` is a static, certifiable "this program can never evaluate code at run time" |
 | `needs-eval=` | whether `eval-kl` survived into the slice. The eval-strip and the capability report stay in lock-step because both read the same primitive set |
 | `init-order=` | `checked` or `checked-weak`, see below |

@@ -192,6 +192,22 @@ SBCL build save its image with `:compression t`. That needs an SBCL built with
 an uncompressed image. The compressed image is several times smaller and
 starts more slowly, since the core is decompressed on every start.
 
+## The scheme builder
+
+`builders/scheme/build.sh` needs a shen-scheme **source** checkout
+(`SHEN_SCHEME`, default `../shen-scheme`) for `src/compiler.shen`,
+`scripts/build.shen` and the four runtime files it copies (`src/chez-prelude.scm`,
+`src/primitives.scm`, `compiled/overrides.scm`,
+`compiled/shen-scheme-extensions.scm`), all still present in shen-scheme 0.50.
+It never needs `shen.boot` (0.50 has none; its runtime is
+`petite.boot`/`scheme.boot` plus `lib/shen-scheme/shen-scheme/runtime.so`):
+the artifact is compiled Scheme source run by `chez --script`. The binary
+that runs the `kl->scheme` step is `SHEN_SCHEME_BIN` (default
+`$SHEN_SCHEME/_build/bin/shen-scheme`); both the pyrex41 fork's `kernel-42.2`
+build and the upstream 0.50 release binary have been verified to work there.
+The step runs without `-q`, because on upstream 0.50 `-q` also silences the
+file writes, and the builder fails by name if a `.scm` it wrote is empty.
+
 ## The C target
 
 Shake first, then build. The shaker is Shen, not C.
