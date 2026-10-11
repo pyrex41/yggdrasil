@@ -1,11 +1,11 @@
 # Yggdrasil
 
 A tree-shaker for [Shen](https://shenlanguage.org). It takes a Shen program and
-the S42 kernel, works out which of the kernel's 686 functions the program can
+the ShenOSKernel 42.2 kernel, works out which of the kernel's 726 functions the program can
 reach, and emits just that slice as portable KLambda. A per-target builder then
 compiles the slice with the port's own compiler into a standalone artifact.
 
-`tests/fib.shen` shakes to 54 kernel functions and 13 KB of KLambda. Built for Go
+`tests/fib.shen` shakes to 81 kernel functions and 19 KB of KLambda. Built for Go
 it is a static binary that starts in under 10 ms.
 
 Continuation of Mark Tarver's Yggdrasil 1.0 (3-clause BSD). His original paper is
@@ -26,7 +26,14 @@ checkout; set `YGGDRASIL_HOST` to any Shen launcher to override. Stage 2 needs
 the target port as a sibling checkout (`../shen-go`, `../shen-lua`, and so on)
 or a `YGGDRASIL_SHEN_<PORT>_DIR` variable pointing at one.
 
-The published Shen-lua `0.11.0-1` source rock can run stage 1 with Lua 5.1:
+The host must run the same kernel as the vendored slice (ShenOSKernel 42.2),
+or a shake mixes the host's `bootstrap` output with another kernel's slice. The
+published Shen-lua `0.11.x` rocks still carry Tarver's S42.0, so until a 42.2
+rock is released use a Shen-lua checkout on its `kernel-42.2` line as the host
+(`--host /path/to/shen-lua/bin/shen --eval-style positional`; verified to
+shake `tests/fib.shen` byte-identically to shen-cl). With a 42.2 rock the
+LuaRocks route is unchanged; this is how the S42-era `0.11.0-1` rock was
+used, with Lua 5.1:
 
 ```bash
 luarocks --lua-version=5.1 install shen 0.11.0-1
@@ -125,6 +132,10 @@ Without them, host-gated tests skip by name and CI asserts the exact skip count.
 
 ## Lineage
 
-The kernel is Tarver's S42, vendored under [`KLambda/`](KLambda/). Yggdrasil 1.0
-targeted the community 41.2 kernel; this repository retargeted it, was briefly
-published under another Norse name, and now carries the original name again.
+The kernel is the community ShenOSKernel 42.2 (Shen-Language/shen-sources, tag
+`shen-42.2`, the kernel shen-scheme 0.50 ships), vendored byte-for-byte under
+[`KLambda/`](KLambda/); [`KLambda/PROVENANCE.md`](KLambda/PROVENANCE.md) has the
+hashes and the lineage decision. Yggdrasil 1.0 targeted an earlier community
+kernel; this repository retargeted it to Tarver's S41.2 and S42.0 for a while,
+was briefly published under another Norse name, and now carries the original
+name and the community kernel line again.

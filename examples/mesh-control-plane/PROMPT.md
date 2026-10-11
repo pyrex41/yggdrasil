@@ -6,7 +6,7 @@
 ## Context
 
 This repo is Yggdrasil, a tree-shaker for Shen programs: stage 1
-computes the reachable ShenOSKernel-41.2 slice of a program and emits
+computes the reachable ShenOSKernel-42.2 slice of a program and emits
 KLambda + a manifest; per-target stage-2 builders compile it. The Go
 builder (`../shen-go/cmd/yggdrasil-build <dir> <outdir>` then `go build`)
 produces a ~4.5 MB static binary with ≤10 ms startup that cross-compiles
@@ -50,7 +50,7 @@ WireGuard; this tool is the brain that today is YAML and hope.
   topology file and writes config files. A thin wrapper script applies
   them (`wg-quick up` etc.).
 - Read input as plain text — Shen's `read-file` is not a data reader.
-- 41.2 stlib is lazily materialised in port runtimes; reuse the `ygg.*`
+- the stlib is outside the shake universe and not in every port runtime; reuse the `ygg.*`
   helpers from `yggdrasil.shen`.
 - Aim for `needs-eval=false`: hand-rolled lexer feeding `defcc` token
   lists, no `eval`/`read`/`load` in the shipped tool.

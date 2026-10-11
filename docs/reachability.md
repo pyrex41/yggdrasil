@@ -29,33 +29,35 @@ cost was never actually cheap. The evidence suggests it was meant to be run
 once and persisted — `fdg` reuses an already-bound `*ttable*`, and there is
 a `write-table-to-file`/`ttrans.shen` writer — but that writer is commented
 out and the `array`/`:=`/`for` DSL it needs never shipped, so it is doubtful
-the closure was ever successfully run at full kernel scale. Against
-Tarver's refreshed S41.2 kernel the per-shake numbers are:
+the closure was ever successfully run at full kernel scale. Against the
+vendored ShenOSKernel 42.2 the per-shake numbers are:
 
-| | S41.2-refresh numbers |
+| | ShenOSKernel 42.2 |
 |---|---|
-| Kernel defuns (V) | 683 (S41.2 refresh) |
-| Call edges (E) | 2,568 (≈ 4 per node — very sparse) |
-| Kernel KL source | ~280 KB |
-| Warshall closure | V³ ≈ 3.2 × 10⁸ ops, plus a V×V matrix |
-| Worklist reachability | O(V + E) ≈ 3.3 × 10³ graph ops per shake |
+| Kernel defuns (V) | 726 (730 in the files, less `shen.initialise` and the three helpers it inlines) |
+| Call edges (E) | 2,770 (≈ 4 per node — very sparse) |
+| Kernel KL source | ~335 KB |
+| Warshall closure | V³ ≈ 3.8 × 10⁸ ops, plus a V×V matrix |
+| Worklist reachability | O(V + E) ≈ 3.5 × 10³ graph ops per shake |
 
-Beyond the constant-factor pain, the closure computes ~466 thousand
+Beyond the constant-factor pain, the closure computes ~527 thousand
 pairwise answers per shake and then throws away all but one row's worth.
+(Tarver's refreshed S41.2 was 683 defuns and 2,568 edges, and his S42.0 686
+and 2,583: the same order throughout.)
 
 
 ## What Yggdrasil does instead
 
 1. **Build the direct call graph once** (`build-call-graph`): for each
    `defun`, record which kernel-defined names appear in its body. This is
-   the only expensive pass (it walks every symbol leaf of ~280 KB of KL),
-   so it is cached to disk (`callgraph-cache.shen`) and reloaded on
+   the only expensive pass (it walks every symbol leaf of ~335 KB of KL),
+   so it is cached to disk (`callgraph-cache-42.2.shen`) and reloaded on
    subsequent shakes.
 
    The cache is keyed by **filename**, and `load-call-graph` validates only
    that the parse was non-empty — so a cache that does not match the kernel
    loads fine and silently under-shakes. Nothing in the Shen layer can
-   affordably detect that: a content digest means folding over 324 KB of
+   affordably detect that: a content digest means folding over ~335 KB of
    KLambda as a bytelist, measured at ~5 s per pass on the shen-go host
    against the ~0.24 s the cache saves there.
 
@@ -104,7 +106,7 @@ down to O(V³/w) ≈ 2.2 × 10⁷ word ops. Objections, in order of importance:
    portable: shen-lua as host reproduces `kernel.kl` byte-for-byte.)
    Adding a Julia (or C, or anything) sidecar for graph math breaks the
    one property the tool exists to provide. There is no performance
-   problem to justify it: per-shake reachability over 683 nodes is
+   problem to justify it: per-shake reachability over ~700 nodes is
    milliseconds in pure Shen.
 3. **The actual bottleneck was never the traversal.** Profiling during the
    41.1 retarget showed the cost is in *building* the graph (one walk of

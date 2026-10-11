@@ -14,7 +14,7 @@ yggdrasil why PROG [--trace FN]
 ```
 
 ```
-yggdrasil-why: mode=eval-free floor=48 total=53 kernel=686
+yggdrasil-why: mode=eval-free floor=75 total=80 kernel=726
 top toplevel adds=5 exclusive=5
 seed pr adds=4 exclusive=4
 seed stoutput adds=1 exclusive=1
@@ -26,7 +26,7 @@ trace pr: pr
 All numbers are kernel defuns. The **floor** is what the kernel's own
 toplevel init forms reach with no user code at all; every program pays it.
 **total** is the footprint the shake would write to `kernel.kl`; **kernel**
-is the whole S42 kernel.
+is the whole kernel (726 defuns on ShenOSKernel 42.2).
 
 Then one row per unit of the program, sorted by cost:
 
@@ -60,7 +60,7 @@ which are the same program with and without one stray mention of `eval`:
 
 ```
 $ yggdrasil why tests/partial.shen --trace read
-yggdrasil-why: mode=eval-free floor=48 total=53 kernel=686
+yggdrasil-why: mode=eval-free floor=75 total=80 kernel=726
 top toplevel adds=5 exclusive=5
 seed pr adds=4 exclusive=4
 seed stoutput adds=1 exclusive=1
@@ -69,22 +69,21 @@ seed shen.app adds=0 exclusive=0
 trace read: not in footprint
 
 $ yggdrasil why tests/partial-eval.shen --trace read
-yggdrasil-why: mode=eval-capable floor=548 total=548 kernel=686
+yggdrasil-why: mode=eval-capable floor=574 total=574 kernel=726
 eval-capable because the program mentions: eval
 defun f adds=0 exclusive=0
 top toplevel adds=0 exclusive=0
 seed eval adds=0 exclusive=0
 ...
-trace read: eval -> shen.shen->kl -> shen.shen->kl-h -> shen.shendef->kldef
-  -> shen.<define> -> shen.shendef->kldef-h -> shen.compile-to-kl
-  -> shen.scan-body -> shen.f-error -> y-or-n? -> read
+trace read: eval -> shen.process-applications -> shen.process-cond-clauses
+  -> shen.f-error -> y-or-n? -> read
 ```
 
 Two things this shows that the shake alone does not:
 
 1. **The partial function costs nothing either way.** Tarver's example was
    `(define f {number --> number} 0 -> 1)`, whose `pps` shows a
-   `(shen.f-error f)` fallthrough. But the S42 kernel's own `bootstrap`
+   `(shen.f-error f)` fallthrough. But the kernel's own `bootstrap`
    (load.kl) runs `shen.partial` over the compiled KL, rewriting that call
    to `(simple-error "partial function f")`, so a bootstrapped user program
    never seeds `shen.f-error` at all. What is left are the kernel's
@@ -92,7 +91,7 @@ Two things this shows that the shake alone does not:
    `rewrite-f-error` / `strip-f-error-row` pair when the program is
    eval-free.
 2. **When creep does happen it is a step function.** One reachable eval
-   entry point moves the floor from 48 to 548 of 686 defuns, and every
+   entry point moves the floor from 75 to 574 of 726 defuns, and every
    per-row number collapses to 0 because everything is already in the
    floor. The `eval-capable because ...` line names the symbols that flipped
    it, and `--trace` shows the chain through `shen.f-error` and `y-or-n?`
@@ -111,7 +110,7 @@ Two further things from the same message, and where they stand:
   every row is red for the same reason, which is why the report names the
   cause instead of colouring every line.
 - **Lightweight substitutes**, e.g. `(simple-error "partial application
-  wrt f")` in place of `shen.f-error`. S42 already ships this substitute
+  wrt f")` in place of `shen.f-error`. The kernel already ships this substitute
   for user code (`shen.partial` in `bootstrap`), and the shake applies the
   same one to the kernel's internal callers (`*static-f-error*` in
   `yggdrasil.shen`) when the program is eval-free. The report is how you
@@ -121,7 +120,7 @@ Two further things from the same message, and where they stand:
 ## Cost
 
 Each row is two worklist traversals (`footprint`), O(V+E) each over a
-686-node, ~2,600-edge graph, so a report is a few dozen shakes' worth of
+726-node, ~2,800-edge graph, so a report is a few dozen shakes' worth of
 graph work: under a second on the shen-go host after the call-graph cache
 is warm. `--trace` is one breadth-first search.
 

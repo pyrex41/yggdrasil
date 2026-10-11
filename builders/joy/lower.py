@@ -110,13 +110,25 @@ def lower(expr) -> str:
         return f"(< {lower(expr[2])} {lower(expr[1])})"
     if head == "not":
         return f"(if {lower(expr[1])} false true)"
+    # The pattern compiler tests multi-column patterns with `and`, e.g.
+    # (and (cons? V) (= 1 W)). KLambda's `and`/`or` are short-circuit
+    # special forms, so they lower to `if` exactly.
+    if head in {"and", "or"}:
+        if len(expr) != 3:
+            raise ValueError(f"{head} expects two arguments")
+        a, b = lower(expr[1]), lower(expr[2])
+        return f"(if {a} {b} false)" if head == "and" else f"(if {a} true {b})"
     if head in {"hd", "tl", "cons?"}:
         mapped = {"hd": "head", "tl": "tail", "cons?": "nil?"}[head]
         body = f"({mapped} {lower(expr[1])})"
         return f"(if {body} false true)" if head == "cons?" else body
+    # `freeze`/`thaw` include the factoriser's continuation shape,
+    # (let GoTo (freeze E) ... (thaw GoTo)), which `(factorise +)` emits on
+    # 42.x: a closure, so it is refused rather than approximated.
     forbidden = {
-        "eval", "eval-kl", "lambda", "freeze", "trap-error", "set", "value",
-        "open", "close", "read-byte", "write-byte", "intern", "absvector",
+        "eval", "eval-kl", "lambda", "freeze", "thaw", "trap-error", "set",
+        "value", "open", "close", "read-byte", "write-byte", "intern",
+        "absvector", "type",
     }
     if head in forbidden or head.startswith("shen."):
         raise ValueError(f"unsupported KLambda construct: {head}")

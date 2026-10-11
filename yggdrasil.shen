@@ -1,17 +1,16 @@
 \\                                           Yggdrasil
 \\                  descended from Yggdrasil 1.0, (c) Mark Tarver, 3 clause BSD
 \\
-\\ Tree-shaker for Shen programs, targeting Mark Tarver's S42.0 (2026-08-25)
-\\ kernel (shenlanguage.org, re-uploaded 2026-07-11).
+\\ Tree-shaker for Shen programs, targeting the community ShenOSKernel 42.2
+\\ (Shen-Language/shen-sources, tag shen-42.2) - the kernel shen-scheme 0.50
+\\ ships.  See KLambda/PROVENANCE.md.
 \\
 \\ Stage 1 (this file): shake a program against that kernel and emit
 \\ minimal KL + a manifest.  Pure Shen against the certified kernel API.
-\\ The reference host is shen-cl built from its S41.2-refresh master -
-\\ same lineage as the vendored kernel.  A community-41.2 shen-cl is a
-\\ verified-working alternative: both hosts produce byte-identical
-\\ kernel.kl + manifest on all fixtures (user KL differs only in gensym
-\\ numbering).  Other hosts may emit port-internal hooks from their
-\\ bootstrap compiler (see README, host-portability gotcha).  Stage 2
+\\ The reference host is shen-cl built on the same 42.2 kernel (its
+\\ kernel-42.2 line); any host whose `bootstrap` emits portable KL will do
+\\ (see docs/targets.md).  Other hosts may emit port-internal hooks from
+\\ their bootstrap compiler (see README, host-portability gotcha).  Stage 2
 \\ (per target, lives in each port repo): compile the shaken KL with the
 \\ port's own KL->native compiler.
 \\
@@ -22,30 +21,37 @@
 \\    yggdrasil.manifest.txt   line-oriented manifest (key=value)
 \\
 \\ Driver contract for builders: load kernel.kl, call (shen.initialise),
-\\ then load the user files in order.  The S41 refresh has no
-\\ shen.initialise of its own - the shake synthesises one from the
-\\ kernel's toplevel init forms - so the contract is unchanged.
+\\ then load the user files in order.  42.2 ships a real shen.initialise
+\\ (init.kl), but the one in kernel.kl is still SYNTHESISED: kernel-code
+\\ unfolds init.kl's initialiser into a flat sequence of init forms, the
+\\ shake trims that sequence to the footprint, and the survivors are
+\\ wrapped back into a (defun shen.initialise () ...).  The contract is
+\\ unchanged.
 \\
 \\ Run from the Yggdrasil directory: paths below are relative.
 
-\\ No package wrapper: 41.2 has no stlib package to import from, and all
-\\ stdlib functions are kernel-defined globals.  The public entry point is
-\\ explicitly dot-qualified instead.
+\\ No package wrapper: the kernel has no stlib package to import from (the
+\\ stlib is outside the shake universe, see below), and every function used
+\\ here is a kernel-defined global.  The public entry point is explicitly
+\\ dot-qualified instead.
 
-\\ Tarver S41.2 refresh (shenlanguage.org Download/S41.2.zip, re-uploaded
-\\ 2026-07-11) in install.lsp boot order.  Unlike ShenOSKernel-41.2, this
-\\ kernel has no init.kl/shen.initialise: global initialisation is toplevel
-\\ forms interleaved in the files (declarations.kl sets + arity table +
-\\ external-symbols put + build-lambda-table, types.kl declares).  The shake
-\\ collects those forms and synthesises a (defun shen.initialise () ...)
-\\ so the stage-2 builder contract is unchanged.  backend.kl (the cl.*
-\\ KL->Lisp compiler) is vendored for the Lisp builder's eval path but is
-\\ not part of the runtime boot, matching install.lsp.
-(set *kernel* ["KLambda/sys.kl" "KLambda/writer.kl" "KLambda/core.kl"
- "KLambda/reader.kl" "KLambda/declarations.kl" "KLambda/toplevel.kl"
- "KLambda/macros.kl" "KLambda/load.kl" "KLambda/prolog.kl"
- "KLambda/sequent.kl" "KLambda/track.kl" "KLambda/t-star.kl"
- "KLambda/yacc.kl" "KLambda/types.kl"])
+\\ ShenOSKernel-42.2 in shen-cl's boot.lsp order.  Every 42.2 .kl file holds
+\\ only defuns, so the order is not load-bearing for the port; it is the
+\\ order kernel.kl is written in.  This is the SHAKE UNIVERSE: the fifteen
+\\ core files, dict.kl (the property vector is a shen.dict) and init.kl.
+\\ Deliberately left out, and not vendored: stlib.kl (it needs its own
+\\ stlib.initialise, and port runtimes do not all carry it) and the six
+\\ extension-*.kl files (namespaces, type-annotations,
+\\ programmable-pattern-matching, launcher, features, expand-dynamic),
+\\ which a host uses at COMPILE time - their effect is already in the user
+\\ KL that bootstrap emits - and which a shaken artifact never calls.  A
+\\ program that calls a stlib or extension function at run time names a
+\\ function the slice does not define; see docs/shake.md.
+(set *kernel* ["KLambda/toplevel.kl" "KLambda/core.kl" "KLambda/sys.kl"
+ "KLambda/dict.kl" "KLambda/sequent.kl" "KLambda/yacc.kl" "KLambda/reader.kl"
+ "KLambda/prolog.kl" "KLambda/track.kl" "KLambda/load.kl" "KLambda/writer.kl"
+ "KLambda/macros.kl" "KLambda/declarations.kl" "KLambda/types.kl"
+ "KLambda/t-star.kl" "KLambda/init.kl"])
 
 \\ The call-graph cache is a DERIVED artifact and deliberately does NOT live
 \\ in KLambda/.  It used to, and main.go's go:embed then said `KLambda` --
@@ -64,15 +70,20 @@
 \\ written inside one is, by construction, the cache for that kernel.
 \\ portable_test.go's TestEmbeddedTreeHasNoGeneratedCache keeps it so.
 \\
-\\ A content check in Shen is not an option: folding over the 324 KB of
-\\ KLambda as a bytelist measured ~5 s per pass on the shen-go host, against
-\\ the ~0.24 s the cache saves there.  Freshness has to be structural.
-(set *callgraph-cache* "callgraph-cache.shen")
+\\ A content check in Shen is not an option: folding over the KLambda as a
+\\ bytelist measured ~5 s per pass on the shen-go host, against the ~0.24 s
+\\ the cache saves there.  Freshness has to be structural.  The kernel's
+\\ version is in the file name for the one place where it is not: a shake
+\\ run straight from a repo checkout, where a cache an older kernel left
+\\ behind at the root would otherwise load as this kernel's graph.
+(set *callgraph-cache* "callgraph-cache-42.2.shen")
 
-\\ The 41.2 primitives: special forms plus everything the kernel calls but
-\\ does not define.  Derived mechanically: symbols in call position across
-\\ KLambda/*.kl minus defun'd names.  prolog-memory, vector, variable?,
-\\ read-file-as-* moved into the kernel in 41.2 and are no longer here.
+\\ The primitives: special forms plus everything the kernel calls but does
+\\ not define.  Derived mechanically: symbols in call position across
+\\ KLambda/*.kl minus defun'd names - re-derived for 42.2, and unchanged
+\\ from S42.  (input+ also sits in call position, inside its own
+\\ lambda-form entry, and is defined by no file: 41.3 made it a macro and
+\\ left the port to supply the function; see doc/port-upgrades.md.)
 (set *primitives* [if and or cond defun lambda let freeze type trap-error
       cons hd tl cons? intern pos tlstr cn str string? n->string string->n
       set value simple-error error-to-string
@@ -84,8 +95,8 @@
       *stinput* *stoutput*])
 
 \\ ===================== self-contained list helpers ======================
-\\ mapc/filter/remove-duplicates/copy-file live in 41.2's stlib, which is
-\\ lazily materialised and absent from port runtimes; define our own.
+\\ mapc/filter/remove-duplicates/copy-file live in the stlib, which is not
+\\ in every port runtime (and not in the shake universe); define our own.
 
 (define ygg.mapc
   _ [] -> done
@@ -301,8 +312,7 @@
                     Warn       (ygg.cn-warn CNames)
                     FootCode   (map (/. D (rewrite-f-error D Strip))
                                     (footcode Foot Kernel))
-                    Arities    (arity-literal Tops)
-                    TopsOut    (map (/. T (trim-top T Foot Strip Arities)) Tops)
+                    TopsOut    (ygg.trim-tops Tops Foot Strip)
                     \\ reach is read out of the database BEFORE the
                     \\ init-order check: that check closes a rule set of
                     \\ its own, and ygg.dl-run starts from an empty
@@ -329,10 +339,13 @@
                     Restore    (ygg.pl-restore P)
                     done))
 
-\\ The kernel's non-defun toplevel forms, in boot order.  These ARE the
-\\ initialisation in the S41 refresh; they are wrapped into a synthetic
-\\ (defun shen.initialise () ...) at write time so builders keep the
-\\ load-defuns / call-initialise / run-user contract.
+\\ The kernel's non-defun toplevel forms, in boot order.  On 42.2 these are
+\\ exactly the forms ygg.unfold-init flattened out of init.kl's
+\\ shen.initialise (no .kl file has a toplevel form of its own); they are
+\\ wrapped back into a synthetic (defun shen.initialise () ...) at write
+\\ time so builders keep the load-defuns / call-initialise / run-user
+\\ contract.  Over a user file the same function picks out its toplevel
+\\ forms.
 (define toplevel-forms
   [] -> []
   [[defun | _] | Code] -> (toplevel-forms Code)
@@ -343,16 +356,15 @@
 \\ through it the typechecker, the define-compiler and eval - reachable
 \\ from the init forms, putting a large floor under every program.  A
 \\ compiled program only needs that machinery if it can evaluate Shen at
-\\ runtime.  In the S41 refresh the registration is a toplevel form
-\\ (declarations.kl), not an initialise-environment edge, so eval-free
-\\ programs get it blanked in prepare-tops before seeds are computed.
-\\ The 161 toplevel (declare F Type) forms in types.kl seed nothing but
-\\ the typechecker's tables; eval-free programs drop them wholesale.
-\\ The (shen.build-lambda-table (external shen)) form builds the
-\\ name->eta-wrapper table via eval-kl at boot, which would force
-\\ needs-eval=true on every program; eval-free programs get it replaced
-\\ by a placeholder that trim-top expands into a literal
-\\ (set shen.*lambdatable* ...) restricted to the footprint.
+\\ runtime.  The registration is one of the unfolded init forms, so
+\\ eval-free programs get it blanked in prepare-tops before seeds are
+\\ computed.  The ~330 (set shen.*sigf* (shen.assoc-> F <rule> ...)) forms
+\\ (init.kl's shen.initialise-signedfuncs: the kernel's own type
+\\ signatures, compiled to Prolog closures) seed nothing but the
+\\ typechecker; stripped programs drop them wholesale, as they drop user
+\\ (declare ...) forms.  The lambda-form entries need no stripping: 42.2
+\\ writes them as literal eta-wrappers, so building them evaluates
+\\ nothing, and trim-top restricts them to the footprint in every mode.
 \\ function-calls over-approximates (every symbol counts), which errs in
 \\ the safe direction: a stray symbol named eval keeps the machinery.
 
@@ -365,9 +377,20 @@
 
 \\ ============================ read-data mode ============================
 \\ `read` parses; what makes a program eval-capable is evaluating what it
-\\ parsed.  But on S42 the kernel's reader itself can evaluate: every form
-\\ it returns goes through shen.unpackage&macroexpand, and four paths out
-\\ of that reach `eval` by real calls, not by over-approximation (#27):
+\\ parsed.  But the kernel's reader itself can evaluate: every form it
+\\ returns goes through shen.process-sexprs -> shen.unpackage&macroexpand
+\\ (on 42.2: source-form handlers first, then macroexpand, whose
+\\ shen.macroexpand-h now carries the handler registry as a 4th argument),
+\\ and four paths out of that reach `eval` by real calls, not by
+\\ over-approximation (#27).  Re-derived on 42.2 over the call graph (see
+\\ docs/eval-free-cli.md): the same four, by the same names and arities as
+\\ on S42, and with the seven cuts below in place no eval-kl caller is
+\\ reachable from read, read-from-string, lineread or the kept *macros*
+\\ registration.  The source-form handler registry is () at boot and only
+\\ shen.register-source-form fills it, with a function the PROGRAM supplies
+\\ - user code, which the shake already sees.  read-from-string-unprocessed
+\\ (42.1) parses without unpackaging, macroexpanding or curry-processing,
+\\ reaches nothing that evaluates, and is not an entry point at all:
 \\
 \\   shen.unpackage          (package Name Exceptions ...) evaluates
 \\                           Exceptions before recording the symbols
@@ -486,12 +509,20 @@
 
 (define prepare-tops
   Tops false -> Tops
-  Tops Strip -> (ygg.filter (/. T (not (declare-form? T)))
+  Tops Strip -> (ygg.filter (/. T (not (ygg.signature-form? T)))
                             (map (/. T (strip-eval-top T Strip)) Tops)))
 
 (define declare-form?
   [declare | _] -> true
   _ -> false)
+
+\\ A kernel init form whose only consumer is the typechecker: a
+\\ (declare F Type), or one of 42.2's signature registrations
+\\ (set shen.*sigf* (shen.assoc-> F Rule Sigf)).  The bare
+\\ (set shen.*sigf* ()) that opens them is not one, and stays.
+(define ygg.signature-form?
+  [set shen.*sigf* [shen.assoc-> | _]] -> true
+  T -> (declare-form? T))
 
 \\ User (declare F Type) forms get the same treatment as the kernel's own,
 \\ and for the same reason.  A type signature is consumed by the
@@ -519,7 +550,6 @@
 
 (define strip-eval-top
   [set *macros* _] true -> [set *macros* []]
-  [shen.build-lambda-table _] _ -> [ygg.lambdatable-placeholder]
   T _ -> T)
 
 \\ Eval-free programs cannot re-enter the macro expander, so the pattern
@@ -715,8 +745,8 @@
 \\ ====================== kernel call graph (cached) ======================
 \\ The original Yggdrasil computed a full transitive closure with Warshall's
 \\ algorithm - O(N^3) over every kernel symbol, which does not scale to the
-\\ 41.2 kernel (683 defuns, ~280K of KL).  We only ever need reachability
-\\ from a seed set, so build the direct call graph once (cached to disk)
+\\ 42.2 kernel (726 defuns once the initialiser is unfolded, ~335K of KL).
+\\ We only ever need reachability from a seed set, so build the direct call graph once (cached to disk)
 \\ and run a worklist traversal over it per shake.  Full rationale,
 \\ including why a faster external closure (Julia/bitsets) is still the
 \\ wrong tool: docs/reachability.md.
@@ -729,10 +759,79 @@
 \\ corrupting any row whose head's declared arity differs from its length.
 
 (define kernel-code
-  -> (mapcan (fn read-kl-file) (value *kernel*)))
+  -> (ygg.unfold-init (mapcan (fn read-kl-file) (value *kernel*))))
+
+\\ ------------------------- the initialiser, unfolded --------------------
+\\ 42.2's init.kl is four defuns: shen.initialise, a do-chain of three calls
+\\ to zero-place helpers (shen.initialise-environment, -lambda-forms and
+\\ -signedfuncs), each itself a do-chain of the real initialisation forms -
+\\ ~45 global sets, the arity table, the shen external-symbol list, one
+\\ (shen.set-lambda-form-entry (cons F (lambda ...))) per kernel function
+\\ and one (set shen.*sigf* (shen.assoc-> F <type rule> ...)) per typed
+\\ kernel function.
+\\
+\\ Everything downstream - seeding, eval-stripping, trimming, the
+\\ init-order check, stage-4 pruning, the trace weaver - works on a flat
+\\ list of init forms, so that is what kernel-code returns: the kernel's
+\\ defuns MINUS the initialiser and the helpers it inlines, followed by the
+\\ initialiser's body flattened into its forms, in execution order.  A
+\\ do-chain is flattened; a form (F) whose F is a zero-place defun of the
+\\ kernel is replaced by F's own flattened body, recursively.  Those are
+\\ the only two rewrites, and both preserve evaluation order exactly, so
+\\ (nest-do (toplevel-forms Kernel)) - the unshaken synthesised
+\\ initialiser - does what (shen.initialise) does, minus the three calls.
+\\
+\\ Inlined helpers leave the kernel's defun set: their bodies are now init
+\\ forms and seed the footprint as such, and a defun nobody calls would only
+\\ be one more row of the graph.  Nothing in the 42.2 kernel calls them but
+\\ shen.initialise (toplevel.kl's shen.loop names a shen.initialise_environment,
+\\ with an underscore, that no file defines).  A kernel with no
+\\ shen.initialise is refused by name rather than shaken into a slice with
+\\ no initialisation at all.
+(define ygg.unfold-init
+  Code -> (let Init  (ygg.find-defun shen.initialise Code)
+               Check (if (empty? Init)
+                         (simple-error "yggdrasil: the kernel defines no shen.initialise (is KLambda/ a 42.x community kernel with init.kl?)")
+                         ok)
+               Gone  [shen.initialise | (ygg.init-helpers (ygg.defun-body Init) Code)]
+               Forms (ygg.flatten-init (ygg.defun-body Init) Code)
+               (append (ygg.filter (/. D (not (ygg.defun-in? D Gone))) Code)
+                       Forms)))
+
+(define ygg.find-defun
+  _ [] -> []
+  F [[defun F Args Body] | _] -> [defun F Args Body]
+  F [_ | Code] -> (ygg.find-defun F Code))
+
+(define ygg.defun-body
+  [defun _ _ Body] -> Body)
+
+(define ygg.defun-in?
+  [defun F | _] Fs -> (element? F Fs)
+  _ _ -> false)
+
+\\ A zero-place kernel defun, applied with no arguments: the shape the
+\\ initialiser calls its helpers in.
+(define ygg.init-helper?
+  [F] Code -> (= [] (hd (tl (tl (ygg.find-defun F Code)))))
+      where (and (symbol? F) (cons? (ygg.find-defun F Code)))
+  _ _ -> false)
+
+(define ygg.flatten-init
+  [do A B] Code -> (append (ygg.flatten-init A Code) (ygg.flatten-init B Code))
+  [F] Code -> (ygg.flatten-init (ygg.defun-body (ygg.find-defun F Code)) Code)
+      where (ygg.init-helper? [F] Code)
+  Form _ -> [Form])
+
+(define ygg.init-helpers
+  [do A B] Code -> (append (ygg.init-helpers A Code) (ygg.init-helpers B Code))
+  [F] Code -> [F | (ygg.init-helpers (ygg.defun-body (ygg.find-defun F Code)) Code)]
+      where (ygg.init-helper? [F] Code)
+  _ _ -> [])
 
 \\ The kernel files are already fully-expanded KL.  read-file runs them
-\\ back through the macro expander, which - on the 41.2 kernel - is fatal:
+\\ back through the macro expander, which - on the 41.2 kernel, when stlib.kl
+\\ was in the universe - was fatal:
 \\ stlib.kl's own (defun vector.vector-macros ...) embeds literal
 \\ (vector.array-> ...) sub-forms, and the live vector.vector-macros macro
 \\ fires on them, trying to macro-expand a non-literal dimensional argument
@@ -799,6 +898,8 @@
 \\ Several kernel data tables masquerade as code and would otherwise drag
 \\ ~every public symbol into every footprint:
 \\   - the arity table literal is pure name/number data;
+\\   - a lambda-form entry (shen.set-lambda-form-entry (cons F (lambda ..)))
+\\     is a name -> eta-wrapper pair whose only callee is its own key F;
 \\   - the external-symbols registration is a name list;
 \\   - a toplevel (declare F Type) uses F as a table key and Type as data
 \\     - the declared function is NOT called by being declared.
@@ -806,6 +907,8 @@
 \\ footprint at write time (see trim-top).
 (define called-fns
   [shen.initialise-arity-table _] -> [shen.initialise-arity-table]
+  [shen.set-lambda-form-entry E] -> (called-fns shen.set-lambda-form-entry)
+      where (ygg.lambda-form-entry? E)
   [declare F _] -> (called-fns declare)  where (symbol? F)
   [put P shen.external-symbols _ | Rest] -> (union (called-fns put) (called-fns Rest))
       where (symbol? P)
@@ -818,7 +921,7 @@
   _ -> [])
 
 \\ defp is a build-time-only membership test: called-fns visits every
-\\ symbol leaf of ~280K of KL, where (element? F Fs) over 683 names
+\\ symbol leaf of ~335K of KL, where (element? F Fs) over 726 names
 \\ would cost ~45M comparisons.  Never consulted per-shake.
 (define kernel-defun?
   F -> (trap-error (get F defp) (/. E false)))
@@ -887,7 +990,7 @@
 \\
 \\ The database lives in the property store rather than in a threaded
 \\ value: Shen has no hash type in the certified API, and an assoc list
-\\ over 686 kernel names would put the scan back.  ygg.*dl-keys* records
+\\ over 726 kernel names would put the scan back.  ygg.*dl-keys* records
 \\ every key touched so ygg.dl-reset can empty them again - a run starts
 \\ from a clean database even inside one host process.
 
@@ -1350,19 +1453,18 @@
 \\ The remainder is exactly the NON-kernel seeds - primitives, user function
 \\ names, data symbols - because every kernel-defun seed is in `reach` by the
 \\ seed -> reach rule; they carry no row in Graph and so cannot appear in the
-\\ first half, and keep-set / trim-arity-pairs / eta-if-fn read them, so they
-\\ are not droppable.  Membership is therefore unchanged from the depth-first
+\\ first half, and keep-set / trim-arity-pairs / the lambda-form trim read
+\\ them, so they are not droppable.  Membership is therefore unchanged from the depth-first
 \\ walk this replaced: that walk emitted F only when F was in Reach u Seeds,
 \\ emitted every seed (each starts in its worklist and every seed is in the
 \\ set), and was asserted to emit every reach tuple - so its answer was
 \\ Reach u Seeds as a set, which is what the two halves above produce.
 \\
-\\ The order is observable in exactly one place: lambdatable-entries walks
-\\ this list to build the (set shen.*lambdatable* ...) literal that lands in
-\\ the synthesised shen.initialise.  footcode filters the kernel by
-\\ MEMBERSHIP, so every defun in kernel.kl is written in kernel load order
-\\ whatever this list says, and fn looks the lambdatable up with assoc, so
-\\ the order carries no meaning beyond the bytes.  Recorded as deviation D8
+\\ On 42.2 the order is observable nowhere in kernel.kl: footcode filters
+\\ the kernel by MEMBERSHIP, so every defun is written in kernel load order
+\\ whatever this list says, and trim-top filters the init forms the same
+\\ way, keeping init.kl's order.  (On S42 it fixed the order of the
+\\ shake-built lambda table; that table is gone.)  Recorded as deviation D8
 \\ in analysis/analysis.dl.
 (define ygg.rule-footprint
   Seeds Graph -> (let Reached (ygg.filter (fn ygg.dl-reach?)
@@ -1449,7 +1551,7 @@
 \\ the Warshall closure; the three must be the same set or stage 3 has
 \\ broken something.  The Warshall leg runs over the graph restricted to
 \\ the footprint - the closure of a set closed under edges is unchanged by
-\\ dropping the rest - because O(V^3) over all 686 kernel nodes is minutes
+\\ dropping the rest - because O(V^3) over all 726 kernel nodes is minutes
 \\ (see the Warshall section); above ygg.*warshall-limit* nodes it is
 \\ skipped and says so.
 \\
@@ -1527,7 +1629,7 @@
 \\
 \\ Cost is the reason it is not the default: O(V^3) over a V*V boolean
 \\ matrix.  Fine on the small graphs of the test fixtures; impractical on the
-\\ full 683-node kernel (see docs/reachability.md).  Enable per run with
+\\ full 726-node kernel (see docs/reachability.md).  Enable per run with
 \\ (set *use-warshall* true).
 \\
 \\ One correction over the 1.0 original: each seed is unioned into its own
@@ -1636,27 +1738,48 @@
 \\ restricted to the footprint (plus primitives): an eval-stripped program
 \\ can never define or look up functions outside its footprint, and the
 \\ full literal both bloats kernel.kl and re-introduces stray names
-\\ (eval-kl among them) that find-primitives would report.  The
-\\ lambdatable placeholder from strip-eval-top becomes a literal
-\\ (set shen.*lambdatable* ...) of eta-wrappers for footprint functions -
-\\ what build-lambda-table would have built with eval-kl at boot.
+\\ (eval-kl among them) that find-primitives would report.
+\\
+\\ In EVERY mode a lambda-form entry (shen.set-lambda-form-entry
+\\ (cons F (lambda ...))) survives only when F is in the footprint: it is
+\\ the callable form `fn` hands out for F, and a wrapper around a function
+\\ the slice does not define is a dangling reference (a compile error on a
+\\ port that resolves calls statically).  called-fns drops the entries'
+\\ edges for the same reason trim-top drops the entries: the table is data,
+\\ and (fn F) is a mention of F wherever it is written.  This replaces the
+\\ S42-era literal (set shen.*lambdatable* ...) that the shake used to
+\\ manufacture in place of S42's eval-kl-at-boot build-lambda-table: 42.2
+\\ ships the wrappers as literals already.
+(define ygg.trim-tops
+  Tops Foot Strip -> (ygg.filter (/. T (not (= T ygg.dropped)))
+                                 (map (/. T (trim-top T Foot Strip)) Tops)))
+
 (define trim-top
-  [shen.initialise-arity-table Lit] Foot true _ ->
+  [shen.set-lambda-form-entry [cons F L]] Foot _ ->
+      (if (element? F Foot) [shen.set-lambda-form-entry [cons F L]] ygg.dropped)
+      where (ygg.lambda-form-entry? [cons F L])
+  [shen.initialise-arity-table Lit] Foot true ->
       [shen.initialise-arity-table (trim-arity-pairs Lit (keep-set Foot))]
-  [put P shen.external-symbols Lit V] Foot true _ ->
+  [put P shen.external-symbols Lit V] Foot true ->
       [put P shen.external-symbols (trim-sym-list Lit (keep-set Foot)) V]
   \\ read-data: the reader reads both tables, so they stay whole but for
   \\ eval-kl (see "read-data mode").
-  [shen.initialise-arity-table Lit] Foot data _ ->
+  [shen.initialise-arity-table Lit] Foot data ->
       [shen.initialise-arity-table (ygg.drop-arity-pair eval-kl Lit)]
-  [put P shen.external-symbols Lit V] Foot data _ ->
+  [put P shen.external-symbols Lit V] Foot data ->
       [put P shen.external-symbols (ygg.drop-sym eval-kl Lit) V]
-  [ygg.lambdatable-placeholder] Foot Strip Arities ->
-      [set shen.*lambdatable* (consify (lambdatable-entries Foot Arities))]
-  T _ _ _ -> T)
+  T _ _ -> T)
+
+\\ (cons F (lambda X ...)) with F a symbol: the literal shape of one entry
+\\ of init.kl's lambda-form table.  The kernel's own runtime call,
+\\ (shen.set-lambda-form-entry (cons V W)) in shen.update-lambdatable, has a
+\\ variable where the lambda is, and is code.
+(define ygg.lambda-form-entry?
+  [cons F [lambda | _]] -> (symbol? F)
+  _ -> false)
 
 \\ The synthetic initialiser: the kept toplevel forms, in boot order, as a
-\\ right-nested do-chain.  Builders call it exactly as they called 41.2's
+\\ right-nested do-chain.  Builders call it exactly as they call 42.2's own
 \\ shen.initialise.
 (define synthesize-initialise
   Tops -> [defun shen.initialise [] (nest-do Tops)])
@@ -1665,54 +1788,6 @@
   [] -> []
   [T] -> T
   [T | Ts] -> [do T (nest-do Ts)])
-
-\\ The arity-table literal from the toplevel forms (flat alternating
-\\ (cons Name (cons Arity ...)) list); the eta-entry generator reads
-\\ arities out of it.
-(define arity-literal
-  [] -> []
-  [[shen.initialise-arity-table Lit] | _] -> Lit
-  [_ | Tops] -> (arity-literal Tops))
-
-(define arity-of
-  F [cons F [cons A _]] -> A
-  F [cons _ [cons _ Rest]] -> (arity-of F Rest)
-  _ _ -> -1)
-
-\\ Literal eta-wrapper entries, replacing boot-time eval-kl: for each
-\\ footprint function of arity N >= 1, (cons F (lambda X1 .. (F X1..XN))),
-\\ plus build-lambda-table's five hardwired printer entries when they are
-\\ in the footprint.  Deterministic variable names keep kernel.kl
-\\ byte-identical across hosts.
-(define lambdatable-entries
-  Foot Arities -> (append
-                   (mapcan (/. F (eta-hardwired F Foot))
-                           [shen.tuple shen.pvar shen.print-prolog-vector
-                            shen.print-freshterm shen.printF])
-                   (mapcan (/. F (eta-if-fn F Arities)) Foot)))
-
-(define eta-hardwired
-  F Foot -> (if (element? F Foot) [(eta-entry F 1)] []))
-
-(define eta-if-fn
-  F Arities -> (let A (arity-of F Arities)
-                    (if (> A 0) [(eta-entry F A)] [])))
-
-(define eta-entry
-  F N -> (let Vars (eta-vars 1 N)
-             [cons F (eta-nest Vars [F | Vars])]))
-
-(define eta-vars
-  I N -> []  where (> I N)
-  I N -> [(intern (cn "X" (str I))) | (eta-vars (+ I 1) N)])
-
-(define eta-nest
-  [] App -> App
-  [V | Vs] App -> [lambda V (eta-nest Vs App)])
-
-(define consify
-  [] -> []
-  [X | Xs] -> [cons X (consify Xs)])
 
 \\ Names worth keeping in the stripped data tables: footprint plus
 \\ primitives, minus the eval entry points (unreachable by construction).
@@ -1886,7 +1961,7 @@
   Dir UserFiles Fns Required Optional Globals NeedsEval Computed NPruned Reaches Cannot InitOrder Strip ->
     (let Sink (open (@s Dir "/yggdrasil.manifest") out)
          W1 (pr-kl-line ["yggdrasil-manifest" 4] Sink)
-         W2 (pr-kl-line ["kernel-version" "42-s42.20260825"] Sink)
+         W2 (pr-kl-line ["kernel-version" "42.2"] Sink)
          W3 (pr-kl-line ["kernel" "kernel.kl"] Sink)
          W4 (pr-kl-line ["init" shen.initialise] Sink)
          W5 (pr-kl-line ["user" | UserFiles] Sink)
@@ -1909,7 +1984,7 @@
   Dir UserFiles Fns Required Optional Globals NeedsEval Computed NPruned Reaches Cannot InitOrder Strip ->
     (let Sink (open (@s Dir "/yggdrasil.manifest.txt") out)
          W1 (pr (make-string "manifest-version=4~%") Sink)
-         W2 (pr (make-string "kernel-version=42-s42.20260825~%") Sink)
+         W2 (pr (make-string "kernel-version=42.2~%") Sink)
          W3 (pr (make-string "kernel=kernel.kl~%") Sink)
          W4 (pr (make-string "init=shen.initialise~%") Sink)
          W5 (ygg.mapc (/. F (pr (make-string "user=~A~%" F) Sink)) UserFiles)
@@ -2272,8 +2347,8 @@
 \\ depth (let, do, if, ...), but never inside a defun, a lambda or a
 \\ freeze: those bodies run when they are applied or forced, not while the
 \\ form itself is evaluated.  Skipping lambdas also keeps the eta-wrapper
-\\ literal trim-top builds for shen.*lambdatable* out of the scan - its
-\\ entry for the `value` primitive is literally (lambda X1 (value X1)).
+\\ literals of the lambda-form table out of the scan - the entry for the
+\\ `value` primitive is literally (lambda Y (value Y)).
 \\
 \\ The guard is ygg.cn-literal-sym?, not symbol?: a KL variable is a symbol
 \\ too, so symbol? alone reports (value X) inside (let X *a* ...) as a read
@@ -2330,7 +2405,7 @@
 (set ygg.*prune-init* false)
 
 \\ Default: the UNION of the port_reads lists that have actually been read
-\\ off a runtime -- today shen-go's five, since `go` is the only entry in
+\\ off a runtime -- today shen-go's four, since `go` is the only entry in
 \\ builders.json that declares one.  Every other target's entry declares
 \\ none and inherits `_default`, whose value is the literal string
 \\ "unknown": nobody has measured what those runtimes read natively.
@@ -2353,10 +2428,10 @@
 \\ host, you are pruning against shen-go's reads, whatever you then build.
 (set ygg.*port-reads*
      [\\ read natively by the go runtime (shen-go, kl/): open / load-file
-      \\ via ResolveHomePath, arity and fn via kernelArity / nativeFn,
-      \\ then the two port globals.  Sorted, as portReadsFor returns them.
-      *home-directory* *property-vector* *stinput* *stoutput*
-      shen.*lambdatable*])
+      \\ via ResolveHomePath, arity and fn via kernelArity / nativeFn (both
+      \\ through the property vector on 42.x), then the two port globals.
+      \\ Sorted, as portReadsFor returns them.
+      *home-directory* *property-vector* *stinput* *stoutput*])
 
 \\ (value V) with a literal V anywhere in a defun's body - unlike
 \\ ygg.io-reads this DOES descend into lambda and freeze, because a defun
@@ -2644,8 +2719,7 @@
            AllTops  (ygg.pl-alltops P)
            Tops     (ygg.pl-tops P)
            Foot     (ygg.pl-foot P)
-           Arities  (arity-literal Tops)
-           TopsOut  (map (/. T (trim-top T Foot Strip Arities)) Tops)
+           TopsOut  (ygg.trim-tops Tops Foot Strip)
            Cls      (ygg.cls-defuns Kernel)
            W1  (ygg.facts-file Dir "kernel"   (map (/. R [(row-head R)]) Graph))
            W2  (ygg.facts-file Dir "callpos"  (ygg.rows-of callpos Cls))
@@ -2710,7 +2784,7 @@
 
 \\ ---------------------------- edge facts --------------------------------
 \\ ygg.cls is a structural mirror of called-fns: same clause order, same
-\\ cons walk, same four data-table exceptions.  The only thing it adds is a
+\\ cons walk, same data-table exceptions.  The only thing it adds is a
 \\ position, so that the one set of symbols called-fns returns can be split
 \\ into callpos (a cons's head cell) and argpos (any later cell, tagged with
 \\ the head it sits under), and so that the symbols called-fns THROWS AWAY
@@ -2729,6 +2803,9 @@
 (define ygg.cls
   [shen.initialise-arity-table Lit] _ _
       -> [[callpos shen.initialise-arity-table] | (ygg.data Lit)]
+  [shen.set-lambda-form-entry E] _ _
+      -> (append (ygg.cls-sym shen.set-lambda-form-entry) (ygg.data E))
+      where (ygg.lambda-form-entry? E)
   [declare F Ty] _ _ -> (append (ygg.cls-sym declare) (ygg.data [F Ty]))
       where (symbol? F)
   [put P shen.external-symbols Lit | Rest] _ _
@@ -2817,7 +2894,7 @@
   [] _ _ -> []
   [T | Ts] N false -> (append (map (/. G [N G]) (called-fns T))
                               (ygg.mention-rows Ts (+ N 1) false))
-  [T | Ts] N Strip -> (ygg.mention-rows Ts (+ N 1) Strip) where (declare-form? T)
+  [T | Ts] N Strip -> (ygg.mention-rows Ts (+ N 1) Strip) where (ygg.signature-form? T)
   [T | Ts] N Strip -> (append (map (/. G [N G]) (called-fns (strip-eval-top T Strip)))
                               (ygg.mention-rows Ts (+ N 1) Strip)))
 
@@ -3186,8 +3263,7 @@
            KL       (ygg.pl-kl P)
            Tops     (ygg.pl-tops P)
            Foot     (ygg.pl-foot P)
-           Arities  (arity-literal Tops)
-           TopsOut  (map (/. T (trim-top T Foot Strip Arities)) Tops)
+           TopsOut  (ygg.trim-tops Tops Foot Strip)
            Called   (ygg.trace-read (@s FactsDir "/called.facts"))
            Reads    (ygg.trace-read (@s FactsDir "/readglobal.facts"))
            Meta     (ygg.trace-read (@s FactsDir "/trace.meta"))

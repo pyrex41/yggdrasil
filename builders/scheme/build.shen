@@ -4,7 +4,7 @@
 \\   shen-scheme eval -q -l src/compiler.shen -l scripts/build.shen \
 \\                     -l <yggroot>/builders/scheme/build.shen \
 \\                     -e "(_scm.initialize-compiler)" \
-\\                     -e "(scm-rat-build \"<shaken-dir>\" \"<user.kl>\" \"<out-dir>\")"
+\\                     -e "(scm-rat-build \"<shaken-dir>\" [\"<user.kl>\" ...] \"<out-dir>\")"
 \\
 \\ Compiles the shaken kernel.kl + user .kl into Scheme with shen-scheme's own
 \\ _scm.kl->scheme (the SAME compiler shen-scheme uses on the full kernel) and
@@ -27,18 +27,26 @@
 \\ the port supplies its own via compiled/overrides.scm, exactly as shen-scheme's
 \\ own build does. Requires (load-overrides) to have run first.
 (define scm-rat-compile-file
-  From To -> (let Kl   (read-file-unprocessed From)
-                  Defs (build.filter (/. X (and (defun? X) (not (overidden? X)))) Kl)
-                  Tops (build.filter (/. X (and (cons? X) (not (defun? X)))) Kl)
-                  Out  (open To out)
-                  W    (for-each (/. D (scm-rat-emit (_scm.kl->scheme D) Out)) Defs)
-                  C    (close Out)
-                  Tops))
+  From To -> (scm-rat-compile-files [From] To))
+
+\\ Several KL files into one .scm: every file's defuns, in order, and every
+\\ file's toplevel forms, in order.  A multi-file program (one user= line per
+\\ file, docs/shake.md) is compiled this way, so all of its defuns exist
+\\ before the first toplevel form runs.
+(define scm-rat-compile-files
+  Froms To -> (let Kl   (mapcan (/. F (read-file-unprocessed F)) Froms)
+                   Defs (build.filter (/. X (and (defun? X) (not (overidden? X)))) Kl)
+                   Tops (build.filter (/. X (and (cons? X) (not (defun? X)))) Kl)
+                   Out  (open To out)
+                   W    (for-each (/. D (scm-rat-emit (_scm.kl->scheme D) Out)) Defs)
+                   C    (close Out)
+                   Tops))
 
 (define scm-rat-build
-  Shaken User Out
+  Shaken Users Out
   -> (let KTops (scm-rat-compile-file (cn Shaken "/kernel.kl") (cn Out "/kernel.scm"))
-          UTops (scm-rat-compile-file (cn Shaken (cn "/" User)) (cn Out "/user.scm"))
+          UTops (scm-rat-compile-files (map (/. U (cn Shaken (cn "/" U))) Users)
+                                       (cn Out "/user.scm"))
           \\ Defines-before-code: kernel tops (arity tables, *special*, ...),
           \\ then (shen.initialise), then the user program's top-level forms.
           Inits (append KTops (append [[shen.initialise]] UTops))

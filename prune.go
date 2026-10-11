@@ -6,9 +6,10 @@ package main
 // The shaker decides which toplevel `(set V Lit)` forms the synthesised
 // initialiser can drop (see the "stage 4" section of yggdrasil.shen). What it
 // cannot know on its own is which globals a PORT's runtime reads natively,
-// without any Shen code mentioning them: shen-go's `fn` reads
-// shen.*lambdatable* from Go, its `arity` reads *property-vector*, its `open`
-// resolves paths through *home-directory*. Those are facts about a backend,
+// without any Shen code mentioning them: shen-go's `fn` and `arity` read
+// *property-vector* from Go (on 42.x the lambda forms live there; the S42-era
+// shen.*lambdatable* is gone), its `open` resolves paths through
+// *home-directory*. Those are facts about a backend,
 // not about Shen, so they live next to the backend, in builders.json's
 // "port_reads" array, and this file hands them to the shaker.
 //

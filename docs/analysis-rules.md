@@ -25,9 +25,10 @@ toolchain to the trust core.
 It is not a precision project. Measured on S42 without eval stripping, the
 most aggressive syntactic edge rule (call position only, which is unsound)
 shrinks the graph from 2587 to 2414 edges and the floor from 661 to 650
-defuns. The footprint is decided by the eval step (548 to 48), which is a
-symbol test. See `docs/why.md`. Precision-grade engines (Doop-style CFA on
-Soufflé) would optimise the wrong term on a 686-node graph the worklist
+defuns. The footprint is decided by the eval step (548 to 48 on S42; 574 to 75
+on ShenOSKernel 42.2), which is a symbol test. See `docs/why.md`.
+Precision-grade engines (Doop-style CFA on Soufflé) would optimise the wrong
+term on a ~700-node graph (686 on S42, 726 on 42.2) the worklist
 already reaches in milliseconds.
 
 It is also not a new dependency. Stage 1 stays pure Shen, running on all
@@ -83,7 +84,7 @@ evalcapable :- usersym(S), entry(S).
 Since #27 there is a third mode. A program that declares
 `(set yggdrasil.*read-data* true)` and whose only entry points are the reader
 family is shaken read-data: the reader family leaves the entry test, a
-handful of kernel defuns through which the S42 reader itself evaluates lose
+handful of kernel defuns through which the kernel's reader itself evaluates lose
 their edges (they are replaced by named errors at write time), and the init
 forms are read a third way, with the macro table kept. The rules for it are
 deviation D16 in [`analysis/analysis.dl`](../analysis/analysis.dl), and the
@@ -422,7 +423,7 @@ The converse containment does not hold and is not asserted. `reach ⊋ called`
 on every fixture, which is ordinary imprecision (`called-fns` is a
 position-insensitive cons walk, D1) plus the fact that one run takes one
 path. Shrinking that gap is not what this is for; `docs/why.md` explains why
-precision is the wrong thing to optimise on a 686-node graph.
+precision is the wrong thing to optimise on a ~700-node graph.
 
 ### Measured
 
@@ -908,9 +909,11 @@ cannot drift apart.
    pre-rules binary is several stages back -- so none is quoted.
 
    One thing the rules do not give, and cannot: an order. Datalog derives a
-   set, but `lambdatable-entries` walks the footprint *list* to build the
-   `(set shen.*lambdatable* ...)` literal, so the order is part of
-   `kernel.kl`'s bytes. It is **defined**, not walked: `ygg.rule-footprint`
+   set, but on S42 `lambdatable-entries` walked the footprint *list* to build
+   the `(set shen.*lambdatable* ...)` literal, so the order was part of
+   `kernel.kl`'s bytes. (On ShenOSKernel 42.2 that literal is gone: the
+   kernel ships its lambda forms as literals and `trim-top` only filters
+   them, so the order is no longer visible in `kernel.kl`.) It is **defined**, not walked: `ygg.rule-footprint`
    renders the derived set as kernel load order — `(map (fn row-head)
    Graph)`, the order `graph-rows` read the kernel in — restricted to
    `reach`, followed by the seeds the rules do not reach, deduplicated.
@@ -948,7 +951,8 @@ cannot drift apart.
    test-only entry point that computes the footprint all three ways and
    prints `agree=`; the Warshall leg runs over the graph restricted to the
    footprint (a set closed under edges has the same closure) and is skipped
-   above 150 nodes, because O(V^3) over all 686 is minutes.
+   above 150 nodes, because O(V^3) over all ~700 (686 on S42, 726 on 42.2)
+   is minutes.
 
    Byte-identity, verified the way stages 1 and 2 were: the pre-change
    binary built from 48a5170 and the new one shaken over every fixture in
@@ -1029,11 +1033,14 @@ cannot drift apart.
      file), `*home-directory*` (`ResolveHomePath`, which `open`, `load-file`
      and the native `read-file` all resolve through), `*property-vector*`
      (`kernelArity` in `kl/kernelfast.go`, behind the native `arity` and
-     `fn`), and `shen.*lambdatable*` (`nativeFn`, same file). The generated
-     `main.go` (`cmd/yggdrasil-build`) reads no global of its own. The lambda
-     table and the arity table are therefore live on `go` because its port
-     reads them, not because a rule says tables are special; the
-     external-symbols `put` is not a `set` and so is never prunable anyway.
+     `fn`), and, until the 42.2 retarget, `shen.*lambdatable*` (`nativeFn`,
+     same file; on 42.x `nativeFn` reads the lambda form out of
+     `*property-vector*` instead, and the global no longer exists). The
+     generated `main.go` (`cmd/yggdrasil-build`) reads no global of its own.
+     The property vector is therefore live on `go` because its port reads
+     it, not because a rule says tables are special; the external-symbols
+     `put` and the lambda-form entries are not `set`s and so are never
+     prunable anyway.
    - **every other target** declares no `port_reads` at all and inherits
      the `_default` block, whose value is the literal string `unknown`
      (hickey-14). `--prune-init --target T` on such a target is refused by
@@ -1283,6 +1290,17 @@ cannot drift apart.
    follow `shen.build-lambda-table`, or check (2) stops counting the
    initialiser's own edges. Both are changes to the *graph*; neither is a
    subtraction from the residue, and the choice is a person's.
+
+   **On ShenOSKernel 42.2 the finding is closed by the kernel.** Re-run at
+   the 42.2 retarget (host shen-cl `kernel-42.2`, shen-go `91fc6ee`): 42.2
+   ships its lambda-form entries as literals, so the full build's
+   initialiser has the same `(cons fix (lambda ...))` call sites the shaken
+   one keeps, and `shen.build-lambda-table` no longer exists. `interpreter`
+   now passes: `footprint=85 reachable=71; full defuns=737 reachable=643`,
+   `special_forms=integer?,not,symbol?,variable?`, `OK ... accounted=15`.
+   `metaeval` passes too (`footprint=576 reachable=569; full defuns=728
+   reachable=644`, `OK ... accounted=9`), and `fib` and `hello` pass in
+   `TestScipCheckFixtures`.
 
    **The delta, and how it is accounted for.** It is small and it is
    entirely *declared*, which is the useful outcome: there is no integer to

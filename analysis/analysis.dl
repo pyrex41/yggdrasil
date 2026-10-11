@@ -38,10 +38,11 @@
 //
 // D2. The note gates data-literal symbols on eval-capability:
 //         edge(F,G) :- datasym(F,G), kernel(G), evalcapable.
-//     The code has no such gate. `called-fns`'s four exceptions -- the arity
-//     table literal, the `put P shen.external-symbols` registration, a
-//     toplevel `(declare F Type)`, and the `shen.*special*` /
-//     `shen.*extraspecial*` lists, plus the `shen.assoc-> K` key -- drop
+//     The code has no such gate. `called-fns`'s exceptions -- the arity
+//     table literal, a lambda-form entry `(shen.set-lambda-form-entry
+//     (cons F (lambda ...)))`, the `put P shen.external-symbols`
+//     registration, a toplevel `(declare F Type)`, and the `shen.*special*`
+//     / `shen.*extraspecial*` lists, plus the `shen.assoc-> K` key -- drop
 //     those symbols in BOTH modes. (What is eval-gated is what happens to
 //     the surviving literals at write time: `trim-top` filters them to the
 //     footprint, which cannot change the footprint.) So `datasym` derives no
@@ -57,13 +58,16 @@
 //     have to go too. Both rules below carry the mode guard.
 //
 // D4. The note's `seed`/`floorseed` read `form-mentions(N, G)` from a single
-//     set of toplevel forms. `prepare-tops` makes the toplevel forms
-//     themselves mode-dependent: in eval-free mode it deletes every
-//     `(declare F Type)` form and rewrites two more (`(set *macros* ...)` is
-//     blanked, `(shen.build-lambda-table ...)` becomes a placeholder). The
-//     dump therefore carries both readings, `formmentions` (raw) and
-//     `formmentionsef` (post-prepare-tops), indexed by the same raw form
-//     number, and the rules pick between them on the mode.
+//     set of toplevel forms. (On ShenOSKernel 42.2 the "toplevel init forms"
+//     are init.kl's shen.initialise unfolded into its forms, see
+//     `ygg.unfold-init`; nothing below depends on where they came from.)
+//     `prepare-tops` makes the forms themselves mode-dependent: in eval-free
+//     mode it deletes every type-signature form -- a `(declare F Type)`, or
+//     a 42.2 `(set shen.*sigf* (shen.assoc-> F Rule ...))` -- and blanks
+//     `(set *macros* ...)`. The dump therefore carries both readings,
+//     `formmentions` (raw) and `formmentionsef` (post-prepare-tops), indexed
+//     by the same raw form number, and the rules pick between them on the
+//     mode.
 //
 // D5. Likewise `usersym`. `strip-user-declares` drops user `(declare ...)`
 //     forms in eval-free mode only, so the dump carries `usersym` (the
@@ -78,11 +82,11 @@
 //     one step earlier.
 //
 // D7. `initprim` is handed over as a fact rather than derived. `trim-top`
-//     rewrites the arity table, the external-symbols list and the lambda
-//     table against the FOOTPRINT, so the primitives the emitted initialiser
-//     mentions depend on the answer this rule set computes. Deriving it
-//     would mean restating `trim-arity-pairs`, `keep-set` and
-//     `lambdatable-entries` in Datalog for no gain: `reach` is the stage-1
+//     rewrites the arity table and the external-symbols list, and drops
+//     lambda-form entries, against the FOOTPRINT, so the primitives the
+//     emitted initialiser mentions depend on the answer this rule set
+//     computes. Deriving it would mean restating `trim-arity-pairs`,
+//     `keep-set` and the lambda-form trim in Datalog for no gain: `reach` is the stage-1
 //     acceptance criterion, and `needsEval`/`reaches` ride along with it.
 //     Note that `initprim` is consequently dumped for the mode the program
 //     is actually in, unlike the other relations.
@@ -91,9 +95,12 @@
 //     the `ygg.dl` engine in yggdrasil.shen over (value *shake-rules*) -- the
 //     same rules, as Shen data, one clause per clause below. One thing the
 //     rules do not and cannot give it: an ORDER. Datalog derives a set, and
-//     `lambdatable-entries` walks the footprint LIST to build the
-//     (set shen.*lambdatable* ...) literal, so an order has to come from
-//     somewhere.
+//     on S42 `lambdatable-entries` walked the footprint LIST to build the
+//     (set shen.*lambdatable* ...) literal, so an order had to come from
+//     somewhere. (On 42.2 that literal is gone -- the kernel ships its
+//     lambda forms as literals and `trim-top` only filters them -- so the
+//     order below is no longer observable in kernel.kl at all; it is kept
+//     because it is still the defined order of the footprint list.)
 //
 //     It is now DEFINED rather than walked. `ygg.rule-footprint` renders the
 //     derived set as
@@ -106,7 +113,7 @@
 //     `graph-rows` read the kernel file in. The remainder is exactly the
 //     non-kernel seeds -- primitives, user function names, data symbols --
 //     which D6 excludes from `reach` and the Shen footprint has always
-//     carried for `keep-set`/`trim-arity-pairs`/`eta-if-fn`.
+//     carried for `keep-set`/`trim-arity-pairs`/the lambda-form trim.
 //
 //     Until this commit the shake instead re-ran the PRE-RULES depth-first
 //     worklist over the raw call graph from its own seed list, emitted only
@@ -120,7 +127,7 @@
 //     was asserted to emit every `reach` tuple, so its answer was reach u
 //     Seeds as a set -- what the two halves above produce.
 //
-//     The order is observable in exactly one place: the
+//     On S42 the order was observable in exactly one place: the
 //     (set shen.*lambdatable* ...) literal inside the synthesised
 //     shen.initialise. `footcode` selects kernel defuns by MEMBERSHIP and so
 //     writes them in kernel load order whatever this list says, and `fn`
@@ -137,7 +144,7 @@
 
 
 // D16. Read-data mode (#27). The reader family (`read`, `read-from-string`,
-//     `lineread`) is an eval entry point on S42 because the kernel's reader
+//     `lineread`) is an eval entry point because the kernel's reader
 //     can evaluate by itself, through shen.unpackage, shen.process-def,
 //     shen.process-synonyms, shen.process-datatype and
 //     shen.update-lambdatable. A program that declares its reads are data,

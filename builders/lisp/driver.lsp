@@ -147,11 +147,22 @@
   (dolist (name yggdrasil-user-names)
     (yggdrasil-import (concatenate 'string name ".lsp"))))
 
+;; YGGDRASIL_SBCL_COMPRESSION=1 (any value but empty or 0) saves the image
+;; with :compression t, which needs an SBCL built with :sb-core-compression
+;; (zstd or zlib core compression); without that feature the build fails
+;; here, by name, rather than producing an uncompressed image silently.
+;; The image is several times smaller and starts measurably slower.
 #+sbcl
-(sb-ext:save-lisp-and-die yggdrasil-exe
-  :executable t
-  :save-runtime-options t
-  :toplevel #'yggdrasil-toplevel)
+(let* ((env (sb-ext:posix-getenv "YGGDRASIL_SBCL_COMPRESSION"))
+       (compress (and env (string/= env "") (string/= env "0"))))
+  (when (and compress (not (member :sb-core-compression *features*)))
+    (format *error-output* "~&yggdrasil: YGGDRASIL_SBCL_COMPRESSION is set but this SBCL was built without :sb-core-compression~%")
+    (yggdrasil-exit 1))
+  (apply #'sb-ext:save-lisp-and-die yggdrasil-exe
+         :executable t
+         :save-runtime-options t
+         :toplevel #'yggdrasil-toplevel
+         (when compress (list :compression t))))
 
 #+clisp
 (progn
