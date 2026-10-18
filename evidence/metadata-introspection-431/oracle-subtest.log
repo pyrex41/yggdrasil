@@ -1,0 +1,7 @@
+=== RUN   TestAnalysisOracleMatchesShake
+    analysis_test.go:150: souffle not on PATH; evaluating the rules with analysis/refeval.py only
+=== RUN   TestAnalysisOracleMatchesShake/metadata-introspection
+--- PASS: TestAnalysisOracleMatchesShake (1.08s)
+    --- PASS: TestAnalysisOracleMatchesShake/metadata-introspection (1.08s)
+PASS
+ok  	github.com/pyrex41/yggdrasil	1.229s
