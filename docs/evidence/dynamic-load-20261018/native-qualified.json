@@ -1,0 +1,113 @@
+{
+  "revision": "34bd9d00b8d2c25c95f4458ac50a62b71359d5f9",
+  "host_sha256": "e5166b02930f49d67844cdb3bf7eef5c7e23226862a8c2478d18eba1618db84d",
+  "runtime_revision": "6c990150ed9404985dc4a13fa3b77466d37de395",
+  "runtime_sources_sha256": {
+    "src/rc/emit.c": "e4f56a44159e0a691d397b958770c39e8350519bc30d21b1067e09979166a03b",
+    "src/rc/emit.h": "ae1946b669f771941b12a706316a28090aefd126f54cc687fa00a3b10b322a9f",
+    "src/rc/eval.c": "5d49c8bd17cb29737538745776a7f8dad6f395e9d09e489e6886bae73961709f",
+    "src/rc/eval.h": "40840e20cb00334a7032ef11aec08ce6a0846912ae05dfb0d08e894ba7ad2e15",
+    "src/rc/eval_plan.h": "91c896c000ff381922ccd5fa72420aab6cc8f87f1f8b7851d97c69142f167af4",
+    "src/rc/main.c": "ab8acf1869eb6f6751cf454d107dfe6cf400f267562b758341115582893ee4d1",
+    "src/rc/primitives.c": "e745613a31beb3eea888d35a2f07a55ebc14f312a621a2dc88f4023eec0e32b1",
+    "src/rc/primitives.h": "ad9a5b0483d68a1829b6a0557d9b71b0f0ab240b67ec152ab2f0e4f3c87782d2",
+    "src/rc/rc.c": "981142db8a86ff6f802035f2ca69dfba1558c0aa2e5df6fe545bc8f97f0d9114",
+    "src/rc/rc.h": "b77320047d47b013b5064b44d749e80fab11319769145d9e6a676371d9990aec",
+    "src/rc/rc_internal.h": "397a2e0220e73ddfedff03a13fb3048d53c8c4d9ad534f730b0ddee943e1f860",
+    "src/rc/read.c": "f61444980f2d34d3986f9640103b3478501c4d368f6c2dd5058a4b39b3143667",
+    "src/rc/read.h": "71fb3e8ce757174ee47dde95f732200ae1b023c66f8164ac0a4d82ebb241fea5"
+  },
+  "source_sha256": {
+    "main.go": "af91bef6547f81ffe7209ae00edbb0f98b7ff9d6cc377960819a761c8e27d7a6",
+    "yggdrasil.shen": "b3675a1ddb8fcdfdfc46decac22c15b5e31a8e665985b20ee4ea7af142a21741",
+    "builders/c/build.sh": "681a50d3c337de3738eec111b555dad61ab53538488591c17c4868183e1ce1ba",
+    "builders/c/compile.py": "a97d184b186fed1d6252e3a6a4183efe0fb2ae4cfece328a667cbf021f8e05b4",
+    "builders.json": "0a580308a876f00ea85bd01b775c1beb6aeedf68dac2e3fc995561abd1f1b661",
+    "dynamic_load_test.go": "587456d78e5ebb9a5dca23c2bae1f4dc0f0eaf6194c93e3cd2634c87e0e83a7c",
+    "tests/tc-interp.shen": "9010d5f767330920a03a9911da47845fcf5d9aaa1d159695caf0f7564d91c024",
+    "tests/interpreter.shen": "795756fa345ba3644c14973e9c30c9d979a0585e7aed3860b56d8bb54444cd0c"
+  },
+  "runs": [
+    {
+      "label": "build-cli",
+      "command": [
+        "go",
+        "build",
+        "-o",
+        "<YGGDRASIL_ROOT>/.bin/ygg-rc-qualified",
+        "."
+      ],
+      "cwd": "<YGGDRASIL_ROOT>",
+      "exit_code": 0,
+      "seconds": 9.887739541998599
+    },
+    {
+      "label": "build-native",
+      "command": [
+        "<YGGDRASIL_ROOT>/.bin/ygg-rc-qualified",
+        "build",
+        "tests/tc-interp.shen",
+        "<YGGDRASIL_ROOT>/out-shen-c-rc-evidence/gap-closure/tc-interp-qualified",
+        "--target",
+        "c",
+        "--host",
+        "<YGGDRASIL_ROOT>/.bin/shen-go-host"
+      ],
+      "cwd": "<YGGDRASIL_ROOT>",
+      "exit_code": 0,
+      "seconds": 33.700333833985496
+    },
+    {
+      "label": "run-native",
+      "command": [
+        "<YGGDRASIL_ROOT>/out-shen-c-rc-evidence/gap-closure/tc-interp-qualified/app-c/app"
+      ],
+      "cwd": "<YGGDRASIL_ROOT>/tests",
+      "exit_code": 0,
+      "seconds": 1.3300307499885093
+    },
+    {
+      "label": "audit-native",
+      "command": [
+        "<SHEN_C_RELEASE_ROOT>/scripts/test-rc.sh",
+        "--audit-only",
+        "<YGGDRASIL_ROOT>/out-shen-c-rc-evidence/gap-closure/tc-interp-qualified/app-c/app"
+      ],
+      "cwd": "<YGGDRASIL_ROOT>",
+      "exit_code": 0,
+      "seconds": 0.25618608301738277
+    },
+    {
+      "label": "native-tests",
+      "command": [
+        "go",
+        "test",
+        "-tags",
+        "shen_c",
+        "-count=1",
+        "-timeout",
+        "5m",
+        "-run",
+        "TestCBuilder|TestDynamicLoadClosure",
+        "-v",
+        "."
+      ],
+      "cwd": "<YGGDRASIL_ROOT>",
+      "exit_code": 0,
+      "seconds": 106.07398570797523
+    }
+  ],
+  "cli_sha256": "97401d4ed5bbcb643598e512f4156f5a92969ae9e683720386da4a11aca3f346",
+  "artifact_sha256": {
+    "app-c/Makefile": "bfc08319399107f5269c8e82837a60df351289fef6498aa9afe57792fdbc0d2b",
+    "app-c/app": "0017ef798d78761e93bb838247ddc18b843a32730846f0e8512212f788c93cac",
+    "app-c/app.c": "f5d97e692ab08a04a4783f1c5a04072d9818e76947cb64e83c3b098335bf5bd3",
+    "kernel.kl": "2a13cebfcb37524acb9736a461727c7c870ad51067bd40f9891025aeeab66de2",
+    "tc-interp.kl": "f9ae2f7ba424736da8d26a815bf571dd34a1f5ca7b82692f41ed35b971076518",
+    "yggdrasil.manifest": "bda6afade61bda7c8865081be0fc691132f413edd3abfad232b195207cec3ff5",
+    "yggdrasil.manifest.txt": "f44c504c9ac2414d04400d129514ec1c650a919d3c3d973eae929abfc3df2c3e"
+  },
+  "normal_form": 7,
+  "source_unchanged": true,
+  "status": "PASS"
+}

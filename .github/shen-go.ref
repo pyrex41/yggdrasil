@@ -1,6 +1,6 @@
 # The shen-go stage-1 host pin: ONE SHA, read by every workflow that needs a
-# Shen host.  Three workflows need it (go.yml's host-test, analysis-oracle.yml,
-# parity-gate.yml); three hand-copied constants with three hand-written
+# Shen host. Four workflows need it (go.yml's host-test, analysis-oracle.yml,
+# parity-gate.yml and shen-c.yml); hand-copied constants with hand-written
 # comments would drift, and the next mover would have to find all three.  The
 # steps that read this file take the first bare 40-hex line below.
 #
