@@ -335,7 +335,9 @@
                 Kernel   (kernel-code)
                 Graph    (call-graph Kernel)
                 SourceFiles (ygg.expand-files Files)
-                KLFiles  (ygg.bootstrap-files SourceFiles)
+                \\ SourceFiles already includes leading-load expansion; expanding
+                \\ them again would report every static dependency twice.
+                KLFiles  (map (fn bootstrap) SourceFiles)
                 RawKL    (ygg.read-user-kl KLFiles)
                 DynFiles (ygg.dynamic-files SourceFiles SourceFiles)
                 \\ Dynamic files are already discovered recursively.  Expanding
@@ -350,7 +352,9 @@
                 KL       (strip-user-declares RawKL Strip)
                 AllTops  (toplevel-forms Kernel)
                 Tops     (prepare-tops AllTops Strip)
-                Seeds    (append (mapcan (fn called-fns) Tops) (function-calls KL))
+                Seeds    (append (mapcan (fn called-fns) Tops)
+                                 (append (function-calls KL)
+                                         (function-calls DynRawKL)))
                 Run      (ygg.shake-rules-run Kernel Graph AllTops KL RawFs
                                                   (append RawKL DynRawKL))
                 Foot     (ygg.rule-footprint Seeds Graph)
