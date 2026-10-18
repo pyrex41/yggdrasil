@@ -188,7 +188,7 @@
          Deps  (ygg.literal-loads Forms)
          Paths (map (/. S (ygg.resolve-path (ygg.dirname F) S)) Deps)
          New   (ygg.filter (/. D (and (ygg.readable-file? D)
-                                      (not (element? D Seen)))) Paths)
+                                      (not (ygg.path-seen? D Seen)))) Paths)
          Next  (append (map (/. D [D [F | Stack]]) New) Fs)
          Seen2 (append New Seen)
          Acc2  (append New Acc)
@@ -201,8 +201,36 @@
   F -> (trap-error (do (read-file F) true) (/. E false)))
 
 (define ygg.dynamic-cycle?
-  F Stack -> (element? (truncate-filename F "")
-                       (map (/. P (truncate-filename P "")) Stack)))
+  F Stack -> (element? (ygg.canonical-path F)
+                       (map (fn ygg.canonical-path) Stack)))
+
+\\ Dynamic sources are not emitted, so equal basenames in different
+\\ directories are distinct dependencies.  Canonicalise only lexical path
+\\ aliases (./ and ../); preserve the caller's relative-directory semantics.
+(define ygg.path-seen?
+  F Seen -> (element? (ygg.canonical-path F)
+                       (map (fn ygg.canonical-path) Seen)))
+
+(define ygg.canonical-path
+  F -> (ygg.canonical-parts (ygg.path-parts F) []))
+
+(define ygg.path-parts
+  "" -> []
+  S -> (ygg.path-parts-h S "" []))
+
+(define ygg.path-parts-h
+  "" "" Parts -> (reverse Parts)
+  "" Cur Parts -> (reverse [Cur | Parts])
+  (@s C Ss) Cur Parts -> (ygg.path-parts-h Ss "" [Cur | Parts])
+      where (ygg.separator? C)
+  (@s C Ss) Cur Parts -> (ygg.path-parts-h Ss (cn Cur C) Parts))
+
+(define ygg.canonical-parts
+  [] Acc -> (reverse Acc)
+  ["." | Parts] Acc -> (ygg.canonical-parts Parts Acc)
+  [".." | Parts] [_ | Acc] -> (ygg.canonical-parts Parts Acc)
+  [".." | Parts] Acc -> (ygg.canonical-parts Parts [".." | Acc])
+  [Part | Parts] Acc -> (ygg.canonical-parts Parts [Part | Acc]))
 
 \\ Acc is every file emitted so far, newest first; Stack the files whose
 \\ loads are being expanded, for the cycle case.
