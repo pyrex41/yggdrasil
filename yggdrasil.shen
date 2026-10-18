@@ -266,7 +266,7 @@
                 EvalFree (not (= Strip false))
                 KL       (strip-user-declares RawKL Strip)
                 AllTops  (toplevel-forms Kernel)
-                Tops     (prepare-tops AllTops Strip)
+                Tops     (prepare-tops AllTops Strip RawKL RawFs)
                 Seeds    (append (mapcan (fn called-fns) Tops) (function-calls KL))
                 Run      (ygg.shake-rules-run Kernel Graph AllTops KL RawFs RawKL)
                 Foot     (ygg.rule-footprint Seeds Graph)
@@ -510,9 +510,17 @@
   [X | Xs] Ys -> (or (element? X Ys) (intersect? Xs Ys)))
 
 (define prepare-tops
-  Tops false -> Tops
-  Tops Strip -> (ygg.filter (/. T (not (ygg.signature-form? T)))
-                            (map (/. T (strip-eval-top T Strip)) Tops)))
+  Tops false _ _ -> Tops
+  Tops Strip RawKL RawFs -> (ygg.filter
+                              (/. T (or (not (ygg.signature-form? T))
+                                        (ygg.observes-signatures? RawKL)))
+                              (map (/. T (strip-eval-top T Strip RawFs)) Tops)))
+
+(define ygg.observes-signatures?
+  RawKL -> (element? shen.*sigf* (function-calls RawKL)))
+
+(define ygg.observes-macros?
+  RawFs -> (element? macroexpand RawFs))
 
 (define declare-form?
   [declare | _] -> true
@@ -551,6 +559,12 @@
                    KL))
 
 (define strip-eval-top
+  [set *macros* V] true RawFs -> [set *macros* V]
+                                      where (ygg.observes-macros? RawFs)
+  [set *macros* _] true _ -> [set *macros* []]
+  T _ _ -> T)
+
+(define strip-eval-top-legacy
   [set *macros* _] true -> [set *macros* []]
   T _ -> T)
 
@@ -1416,8 +1430,8 @@
    -> (append (map (/. R [kernel (row-head R)]) Graph)
       (append (ygg.cls-defuns Kernel)
       (append (map (/. R [formmentions | R]) (ygg.mention-rows AllTops 1 false))
-      (append (map (/. R [formmentionsef | R]) (ygg.mention-rows AllTops 1 true))
-      (append (map (/. R [formmentionsrd | R]) (ygg.mention-rows AllTops 1 data))
+      (append (map (/. R [formmentionsef | R]) (ygg.mention-rows-observed AllTops 1 true RawKL RawFs))
+      (append (map (/. R [formmentionsrd | R]) (ygg.mention-rows-observed AllTops 1 data RawKL RawFs))
       (append (map (/. S [usersym S]) (ygg.remove-dups (function-calls KL)))
       (append (map (/. S [rawsym S]) (ygg.remove-dups RawFs))
       (append (map (/. S [entry S]) (value *eval-entry-points*))
@@ -2568,7 +2582,7 @@
            EvalFree  (not (= Strip false))
            EvalBy    (ygg.filter (/. F (element? F (value *eval-entry-points*))) RawFs)
            KL        (strip-user-declares RawKL Strip)
-           Tops      (prepare-tops (toplevel-forms Kernel) Strip)
+           Tops      (prepare-tops (toplevel-forms Kernel) Strip RawKL RawFs)
            Graph2    (ygg.strip-graph Graph Strip)
            InitSeeds (ygg.remove-dups (mapcan (fn called-fns) Tops))
            UserSeeds (ygg.kernel-seeds (function-calls KL))
@@ -2892,12 +2906,22 @@
   [F | _] -> F where (symbol? F)
   _ -> top)
 
+(define ygg.mention-rows-observed
+  [] _ _ _ _ -> []
+  [T | Ts] N Strip RawKL RawFs -> (ygg.mention-rows-observed Ts (+ N 1) Strip RawKL RawFs)
+                                      where (and (ygg.signature-form? T)
+                                                 (not (ygg.observes-signatures? RawKL)))
+  [T | Ts] N Strip RawKL RawFs -> (append (map (/. G [N G])
+                                                (called-fns (strip-eval-top T Strip RawFs)))
+                                          (ygg.mention-rows-observed Ts (+ N 1) Strip RawKL RawFs))
+  )
+
 (define ygg.mention-rows
   [] _ _ -> []
   [T | Ts] N false -> (append (map (/. G [N G]) (called-fns T))
                               (ygg.mention-rows Ts (+ N 1) false))
   [T | Ts] N Strip -> (ygg.mention-rows Ts (+ N 1) Strip) where (ygg.signature-form? T)
-  [T | Ts] N Strip -> (append (map (/. G [N G]) (called-fns (strip-eval-top T Strip)))
+  [T | Ts] N Strip -> (append (map (/. G [N G]) (called-fns (strip-eval-top-legacy T Strip)))
                               (ygg.mention-rows Ts (+ N 1) Strip)))
 
 \\ ------------------------------ TSV writer ------------------------------
