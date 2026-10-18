@@ -1,0 +1,58 @@
+{
+  "scope": "Real 42.2 shake with updated Shen-C RC target; release v0.3.0 runtime, suffix views off",
+  "host_source": "1f587de815e2583e204398f3b2989a88154ca192",
+  "host_sha256": "e5166b02930f49d67844cdb3bf7eef5c7e23226862a8c2478d18eba1618db84d",
+  "runs": [
+    {
+      "fixture": "hello",
+      "build_command": [
+        "<YGG_ROOT>/.bin/ygg",
+        "build",
+        "tests/hello.shen",
+        "<YGG_ROOT>/out-shen-c-rc-hello",
+        "--target",
+        "c"
+      ],
+      "build_exit": 0,
+      "build_seconds": 3.620510542,
+      "run_exit": 0,
+      "stdout": "hello from shaken shen\n",
+      "stderr": "",
+      "binary_sha256": "fa94fa4e2ef4bddbb37bbec0fbc3ec7d8471946043a63740d5b85e53eebffbc4"
+    },
+    {
+      "fixture": "fib",
+      "build_command": [
+        "<YGG_ROOT>/.bin/ygg",
+        "build",
+        "tests/fib.shen",
+        "<YGG_ROOT>/out-shen-c-rc-fib",
+        "--target",
+        "c"
+      ],
+      "build_exit": 0,
+      "build_seconds": 2.859015583,
+      "run_exit": 0,
+      "stdout": "fib 20 = 6765\n",
+      "stderr": "",
+      "binary_sha256": "a8042112af09e3866ff6fc397bda9513bb8d1fd8965ad7d15654ee4ccc3b0d1f"
+    },
+    {
+      "fixture": "tc-interp",
+      "build_command": [
+        "<YGG_ROOT>/.bin/ygg",
+        "build",
+        "tests/tc-interp.shen",
+        "<YGG_ROOT>/out-shen-c-rc-tc-interp",
+        "--target",
+        "c"
+      ],
+      "build_exit": 0,
+      "build_seconds": 21.971812,
+      "run_exit": 0,
+      "stdout": "num#type : symbol\nprimitive-object#type : symbol\npattern#type : symbol\nl-formula#type : symbol\n(fn normal-form) : (l-formula --> l-formula)\n(fn ==>>) : (l-formula --> l-formula)\n(fn eval-error?) : (l-formula --> boolean)\n(fn successor) : (A --> l-formula)\n(fn predecessor) : (A --> l-formula)\n(fn sub) : ((list (pattern * l-formula)) --> (l-formula --> l-formula))\n(fn match) : (pattern --> (l-formula --> (list (pattern * l-formula))))\n(fn no-match?) : ((list (pattern * l-formula)) --> boolean)\n(fn replace) : (pattern --> (l-formula --> (l-formula --> l-formula)))\n(fn free?) : (pattern --> (pattern --> boolean))\n\nrun time: 0.748408 secs\n\ntypechecked in 222031 inferences\nundefined function fixinferences = 222031\n",
+      "stderr": "",
+      "binary_sha256": "09f36ad9c3da1984603cff1b102d3e9505f2b37adb709f8e84541f4f4b6e60cc"
+    }
+  ]
+}

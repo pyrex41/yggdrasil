@@ -18,8 +18,8 @@
     "stdout; 'needs' lists external tools that must be on PATH (else SKIP).",
     "The Erlang target compiles the shaken slice to BEAM with shen-erl; scheme",
     "compiles via kl->scheme; swift interprets the minimal slice directly.",
-    "The C target (shen-c) emits NativeFunction C + Makefile/CMakeLists and",
-    "links libshenc.a (option 5 rung 1; not eval_kl_object of the source).",
+    "The C target uses Shen-C v0.3.0's rc-build to emit native C + Makefile",
+    "and compile with its independent reference-counted C17 runtime.",
     "",
     "A step whose argv[0] is '{yggdrasil}' is not a subprocess: it names one",
     "of yggdrasil's own build helpers (main.go's internalSteps, also reachable",
@@ -571,7 +571,7 @@
     "dir_env": "YGGDRASIL_SHEN_C_DIR",
     "needs": [
       "cc",
-      "pkg-config",
+      "python3",
       "make"
     ],
     "build": [

@@ -6,7 +6,7 @@
       systems = [ "aarch64-darwin" "aarch64-linux" "x86_64-linux" ];
       each = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
       tools = pkgs: with pkgs; [
-        go_1_27 git gnumake clang cmake ninja pkg-config boehmgc
+        go_1_27 git gnumake clang cmake ninja pkg-config
         sbcl clisp ecl luajit luarocks rustc cargo nodejs_22 julia chez swift
         beamPackages.erlang maven graalvmPackages.graalvm-ce
         python3 curl unzip gnutar coreutils

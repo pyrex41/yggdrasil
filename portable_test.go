@@ -198,6 +198,9 @@ func TestCBuilderRecipe(t *testing.T) {
 	if !strings.Contains(joinedNeeds, "cc") || !(strings.Contains(joinedNeeds, "make") || strings.Contains(joinedNeeds, "cmake")) {
 		t.Fatalf("c needs = %v (want cc and make or cmake)", bld.Needs)
 	}
+	if !strings.Contains(joinedNeeds, "python3") || strings.Contains(joinedNeeds, "pkg-config") {
+		t.Fatalf("c needs = %v (native RC builds need python3, not pkg-config)", bld.Needs)
+	}
 	if len(bld.Build) != 1 || !strings.Contains(strings.Join(bld.Build[0].Argv, " "), "builders/c/build.sh") {
 		t.Fatalf("unexpected c build steps: %#v", bld.Build)
 	}

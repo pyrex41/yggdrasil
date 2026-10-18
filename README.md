@@ -75,7 +75,7 @@ order was checked, and the flags the shake ran with.
 | `scheme` | shen-scheme | Chez program |
 | `swift` | shen-swift | slice run by the shen-swift interpreter |
 | `truffle`, `truffle-native` | shen-truffle | JVM application or native image |
-| `c` | shen-c | C project linked against libshenc |
+| `c` | shen-c v0.3.0+ | Native C with the independent reference-counted runtime |
 | `joy` | shen-joy | bounded image for the allocation-free device VM |
 | `kl` | shen-go `cmd/kl` | the slice run directly on the bare KLambda VM |
 

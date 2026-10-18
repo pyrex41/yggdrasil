@@ -1,0 +1,23 @@
+{
+  "test_source_note": "Native test uses explicit shen_c build tag; final tagged positive log is focused-final.log. Default Go host skip gates are unchanged.",
+  "go_tests": {
+    "default": "PASS, 50 skipped top-level host/target tests in this local checkout",
+    "native": "PASS with -tags shen_c and explicit released RC checkout",
+    "full_host_suite": "UNKNOWN: earlier bounded five-minute run timed out in TestTraceCheckFixtures; not credited as final-source qualification"
+  },
+  "nix_platform_eval": [
+    "aarch64-darwin",
+    "aarch64-linux",
+    "x86_64-linux"
+  ],
+  "packaged_cli_sha256": "53d1156c313f577d76dd6f625a0c671bb1f2cbc7f137dd4b984ebc2341be8c4d",
+  "native_receipt_sha256": "9ca8c2c70cedfe228999f0470448ef0a285a57a9364fe5e48a44ea4a8c24fe2e",
+  "current_native_test_sha256": "8ba977c693b3d29053faf3383816f727a6a079316560693038a56dc4946bced3",
+  "scope": "Follow-up tagged test and package qualification; original native runtime measurements precede the test-only build-tag change. Production adapter sources are unchanged.",
+  "darwin_nix": {
+    "status": "PASS",
+    "store_path": "/nix/store/x275iw5nyraf34k03b74k7nqkrg8kl0z-yggdrasil-0.1.0/bin/yggdrasil",
+    "sha256": "b849a6f7d1aa3c02602d5e261760489ab8f6b7e83556cc0b76a5fb680b5b9110",
+    "packaged_metadata": "arity = 1"
+  }
+}

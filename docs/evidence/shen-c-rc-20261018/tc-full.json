@@ -1,0 +1,16 @@
+{
+  "build_command": [
+    "<YGG_ROOT>/.bin/ygg",
+    "build",
+    "tests/tc-interp.shen",
+    "<YGG_ROOT>/out-shen-c-rc-tc-full",
+    "--target",
+    "c",
+    "--no-shake"
+  ],
+  "build_exit": 0,
+  "build_seconds": 24.982178459,
+  "run_exit": 0,
+  "stdout": "num#type : symbol\nprimitive-object#type : symbol\npattern#type : symbol\nl-formula#type : symbol\n(fn normal-form) : (l-formula --> l-formula)\n(fn ==>>) : (l-formula --> l-formula)\n(fn eval-error?) : (l-formula --> boolean)\n(fn successor) : (A --> l-formula)\n(fn predecessor) : (A --> l-formula)\n(fn sub) : ((list (pattern * l-formula)) --> (l-formula --> l-formula))\n(fn match) : (pattern --> (l-formula --> (list (pattern * l-formula))))\n(fn no-match?) : ((list (pattern * l-formula)) --> boolean)\n(fn replace) : (pattern --> (l-formula --> (l-formula --> l-formula)))\n(fn free?) : (pattern --> (pattern --> boolean))\n\nrun time: 0.851401 secs\n\ntypechecked in 222031 inferences\nnormal-form = 7\ninferences = 222031\n",
+  "stderr": ""
+}

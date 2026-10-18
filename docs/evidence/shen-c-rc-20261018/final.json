@@ -1,0 +1,102 @@
+{
+  "scope": "Native RC adapter qualification against existing pristine 42.2 shaken inputs and full-kernel control; not a performance or cross-platform claim",
+  "runtime_revision": "6c990150ed9404985dc4a13fa3b77466d37de395",
+  "runtime_sources_sha256": {
+    "eval.c": "5d49c8bd17cb29737538745776a7f8dad6f395e9d09e489e6886bae73961709f",
+    "rc.c": "981142db8a86ff6f802035f2ca69dfba1558c0aa2e5df6fe545bc8f97f0d9114",
+    "rc_internal.h": "397a2e0220e73ddfedff03a13fb3048d53c8c4d9ad534f730b0ddee943e1f860",
+    "emit.c": "e4f56a44159e0a691d397b958770c39e8350519bc30d21b1067e09979166a03b",
+    "primitives.c": "e745613a31beb3eea888d35a2f07a55ebc14f312a621a2dc88f4023eec0e32b1",
+    "read.c": "f61444980f2d34d3986f9640103b3478501c4d368f6c2dd5058a4b39b3143667",
+    "eval.h": "40840e20cb00334a7032ef11aec08ce6a0846912ae05dfb0d08e894ba7ad2e15",
+    "main.c": "ab8acf1869eb6f6751cf454d107dfe6cf400f267562b758341115582893ee4d1",
+    "primitives.h": "ad9a5b0483d68a1829b6a0557d9b71b0f0ab240b67ec152ab2f0e4f3c87782d2",
+    "rc.h": "b77320047d47b013b5064b44d749e80fab11319769145d9e6a676371d9990aec",
+    "emit.h": "ae1946b669f771941b12a706316a28090aefd126f54cc687fa00a3b10b322a9f",
+    "eval_plan.h": "91c896c000ff381922ccd5fa72420aab6cc8f87f1f8b7851d97c69142f167af4",
+    "read.h": "71fb3e8ce757174ee47dde95f732200ae1b023c66f8164ac0a4d82ebb241fea5"
+  },
+  "builder_sha256": "e5e7cc64039117d760c0ca88f26c32e41536f6cc35f5bd6debe667a43b599b2b",
+  "adapter_sources_sha256": {
+    "builders/c/build.sh": "681a50d3c337de3738eec111b555dad61ab53538488591c17c4868183e1ce1ba",
+    "builders/c/compile.py": "a97d184b186fed1d6252e3a6a4183efe0fb2ae4cfece328a667cbf021f8e05b4",
+    "builders.json": "0a580308a876f00ea85bd01b775c1beb6aeedf68dac2e3fc995561abd1f1b661",
+    "c_builder_test.go": "919895f02095921e2b43639b9c55e79fea31eb272877dad07a6c6b9dc7e01aed"
+  },
+  "compiler": "Apple clang version 21.0.0 (clang-2100.3.34.2)\nTarget: arm64-apple-darwin27.0.0\nThread model: posix\nInstalledDir: /Library/Developer/CommandLineTools/usr/bin\n",
+  "flags": "-O3 -std=c17; suffix views off",
+  "runs": [
+    {
+      "case": "hello",
+      "inputs_sha256": {
+        "out-shen-c-rc-hello/yggdrasil.manifest.txt": "bf92a17599214fecb2c200d7a18212a4f396e88d7ccdc26b60563bf5dbb7418d",
+        "out-shen-c-rc-hello/kernel.kl": "aa11d59fa370f5cd65606569da02598b803232b16963b63a084591f7670e55cf",
+        "out-shen-c-rc-hello/hello.kl": "a09b46467dbffb9a0d2d5e48453a4c60d193a4cb2b953655e10ce6c8ca6452cb"
+      },
+      "command": [
+        "bash",
+        "<YGG_ROOT>/builders/c/build.sh",
+        "<YGG_ROOT>/out-shen-c-rc-hello",
+        "<YGG_ROOT>/out-shen-c-rc-hello/app-c-final"
+      ],
+      "build_exit": 0,
+      "build_seconds": 1.750593792,
+      "status": "PASS",
+      "run_exit": 0,
+      "stdout_sha256": "79128d1a9ac753adba687b00b918b04a834731ef1bac4a76ce4a4d324fdeef36",
+      "binary_sha256": "fa94fa4e2ef4bddbb37bbec0fbc3ec7d8471946043a63740d5b85e53eebffbc4",
+      "generated_c_sha256": "ae0c925a69b1da7ec9cfd23348c55dd580285dec3e6f22c4e8b66e1c20202a87",
+      "inputs_unchanged": true,
+      "audit": "PASS: no Boehm symbols/dependency"
+    },
+    {
+      "case": "fib",
+      "inputs_sha256": {
+        "out-shen-c-rc-fib/yggdrasil.manifest.txt": "3b297f1ecc7a7b2c21db86cfcea1f2cac35ce48ce0a938528dabe721d525b46b",
+        "out-shen-c-rc-fib/kernel.kl": "db1db9a5e90b42f2880adb7339da9e1d57dd63b74586bab26691e3226d3ef6c1",
+        "out-shen-c-rc-fib/fib.kl": "3b9c22b5e7838ad60cd716206e8aaea6706497ae093e104007cf3e975fc2cbdc"
+      },
+      "command": [
+        "bash",
+        "<YGG_ROOT>/builders/c/build.sh",
+        "<YGG_ROOT>/out-shen-c-rc-fib",
+        "<YGG_ROOT>/out-shen-c-rc-fib/app-c-final"
+      ],
+      "build_exit": 0,
+      "build_seconds": 1.6475653330000002,
+      "status": "PASS",
+      "run_exit": 0,
+      "stdout_sha256": "71eb6ced52100b15c399c18f4e54445c91d7a326179547745c9b582974bf4a28",
+      "binary_sha256": "046be542431df0247840e13b59171dcb725bc356c313528cab106d89238f4e4f",
+      "generated_c_sha256": "4ff21b2a2f68f8942c20d3b72caf850b87c553034ab22ee356b0078981de7c02",
+      "inputs_unchanged": true,
+      "audit": "PASS: no Boehm symbols/dependency"
+    },
+    {
+      "case": "tc-full",
+      "inputs_sha256": {
+        "out-shen-c-rc-tc-full/yggdrasil.manifest.txt": "4320da3ad9170d59dc204e73b4b55b92551dca4bdf169ebe48158dec2f0cf35c",
+        "out-shen-c-rc-tc-full/kernel.kl": "1dd7171eef631ff0bc8752db666e567d70437dd6ea144b57b49fded7d641a764",
+        "out-shen-c-rc-tc-full/tc-interp.kl": "f9ae2f7ba424736da8d26a815bf571dd34a1f5ca7b82692f41ed35b971076518"
+      },
+      "command": [
+        "bash",
+        "<YGG_ROOT>/builders/c/build.sh",
+        "<YGG_ROOT>/out-shen-c-rc-tc-full",
+        "<YGG_ROOT>/out-shen-c-rc-tc-full/app-c-final"
+      ],
+      "build_exit": 0,
+      "build_seconds": 20.876532667,
+      "status": "PASS",
+      "run_exit": 0,
+      "stdout_sha256": "c3e11217cfecfb702047eb8695a8c127e9ccf0056ce972058d667142a35271b0",
+      "binary_sha256": "b5e5e57de0b28a084ad98eb008267ac3c8f64a6768c7f62aa7616daed1cc6aa2",
+      "generated_c_sha256": "2ac5a2b75a370f0ba0e8908ca6c9c0a46d0f9de7ffa639165c75ffa2f8495487",
+      "inputs_unchanged": true,
+      "audit": "PASS: no Boehm symbols/dependency"
+    }
+  ],
+  "metadata": "PASS: packaged CLI reports declared user arity 1; pre-adapter attempts returned -1",
+  "dynamic_load_slice": "OPEN: shaken tc-interp omits fix used by runtime-loaded interpreter; unshaken control passes normal-form = 7",
+  "status": "PASS for stated adapter controls; dynamic-load slice OPEN"
+}

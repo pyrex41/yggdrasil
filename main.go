@@ -239,7 +239,8 @@ func yggRoot() (string, error) {
 
 // defaultHost resolves the stage-1 host launcher argv, or nil. Preference:
 // $YGGDRASIL_HOST / $BIFROST_SHEN_CL, then sibling shen-cl, then sibling
-// shen-go. Stage-1 is Shen (not C); shen-c cannot yet load yggdrasil.shen.
+// shen-go. Shen-C's native RC backend is supported for stage 2; its separate
+// bundled kernel has not been qualified as a stage-1 host for this 42.2 shake.
 func defaultHost() []string {
 	for _, env := range []string{"YGGDRASIL_HOST", "BIFROST_SHEN_CL"} {
 		if v := os.Getenv(env); v != "" {
@@ -250,8 +251,7 @@ func defaultHost() []string {
 		}
 	}
 	cwd, _ := os.Getwd()
-	// Stage-1 host is Shen, not C. shen-c cannot yet load yggdrasil.shen;
-	// fall back to sibling shen-go when shen-cl is missing.
+	// Use a compatible stage-1 host; Shen-C is supported as a stage-2 compiler.
 	for _, rel := range []string{
 		filepath.Join("..", "shen-cl", "bin", "sbcl", "shen"),
 		filepath.Join("..", "shen-go", "bin", "shen"),

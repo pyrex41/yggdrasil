@@ -39,7 +39,7 @@ Paths below are relative to the sibling port checkout unless they start with
 
 | target | builder | artifact | approximate size and startup |
 |---|---|---|---|
-| `c` | `builders/c/build.sh <dir> <outdir>` (`SHEN_C`) | `app.c` + Makefile + CMakeLists, then `make` links `libshenc.a` into `<outdir>/app` | ~330 KB, ~15 ms |
+| `c` | `builders/c/build.sh <dir> <outdir>` (`SHEN_C`) | Shen-C v0.3.0 `rc-build`: native `app.c` + Makefile and independent RC runtime | Remeasure for RC; earlier Boehm figures do not apply |
 | `erlang` | `builders/erlang/build.sh <dir> <outdir>` (`SHEN_ERL`) | slice compiled to BEAM plus the small shen-erl runtime and a `run` launcher; needs Erlang/OTP at run time but never boots the full kernel | ~170 KB plus Erlang/OTP; ~1.3 s (VM boot) |
 | `go` | `shen-go/cmd/yggdrasil-build <dir> <outdir>`, then `go build` | static binary | ~5.8 MB, ~11 ms; cross-compiles to linux and windows |
 | `joy` | `builders/joy/build.sh <dir> <out.sji> [shen-joy]` | deterministic shen-joy image v1, run by the bounded allocation-free device VM | 308 bytes for `tests/joy-sum.shen` |
@@ -70,7 +70,7 @@ kernel against the full 2,500-line one.
 
 | target | needs |
 |---|---|
-| `c` | `cc`, `pkg-config`, `make` |
+| `c` | `cc` (C17), `python3`, `make` |
 | `erlang` | `erl`, `erlc`, `make`, `cc`, `curl`, `unzip`, `tar`, `shasum` |
 | `go`, `kl` | `go` |
 | `joy` | `python3` |
@@ -218,27 +218,36 @@ yggdrasil build tests/fib.shen out/ --target c
 builders/c/build.sh out out/app-c && out/app-c/app
 ```
 
-Each shaken `defun` becomes a C `NativeFunction` on `shen_context` over Boehm
-GC. It is not `eval_kl_object` of the source string, and not Chicken-style
-compilation onto the C stack. The builder emits `app.c`, a Makefile and a
-CMakeLists, then `make` links `libshenc.a` into `<outdir>/app`. It builds
-shen-c's `bin/libshenc.a` and `bin/yggdrasil-build` first if they are missing.
+The C target uses Shen-C v0.3.0 or newer. Each shaken KL definition is emitted
+as native C, with explicit ownership and the independent reference-counted
+runtime, including cycle reclamation. The compiler reads Yggdrasil's manifest
+to select kernel/user files and the explicit initialization function, then
+emits `app.c` and a Makefile and builds `<outdir>/app`.
 
-Boehm GC must come from Nix's `pkg-config`, not Homebrew. When a Homebrew
-`bdw-gc` is what `pkg-config` finds, `builders/c/build.sh` re-enters
-`nix develop` in the shen-c flake; if `nix` is unavailable it prints the command
-to run and exits 1.
+The adapter registers manifest `fn=` arities after kernel initialization and
+before user code, using the retained property-table helpers. It stages copies
+of the selected KL files and leaves the original artifact unchanged. This
+preserves `(arity user-function)` without requiring source-reflection helpers
+that a small shake may omit.
 
-`tests/hello.shen` and `tests/fib.shen` build and print their expected output.
-`tests/tc-interp.shen` is the needs-eval typecheck slice (`(tc +)` plus
-`load interpreter.shen`), whose `kernel.kl` keeps `t-star`, `types`, the reader
-and `load`, around 568 defuns. Run that app from a directory containing
-`tests/interpreter.shen`. Kernel `declare` tables run as NativeFunctions, but
-`load interpreter.shen` currently traps in `macroexpand`/`walk`.
+The builder refreshes `bin/rc-build` with Shen-C's `Makefile.rc`. A C17 compiler,
+make and Python 3 are required; Boehm, pkg-config and automatic Nix re-entry
+are no longer used. `SHEN_C` names the compiler source checkout when invoking
+the builder directly; the CLI uses `YGGDRASIL_SHEN_C_DIR` for that override.
 
-shen-c is not a stage-1 host. Its launcher has `-l` and `-e` and its `*hush*` is
-stdout-only, but `yggdrasil.shake` on shen-c is unverified; the CLI's host
-fallback deliberately skips it.
+The shaken kernel still comes from Yggdrasil's pinned community 42.2 sources.
+Shen-C's own CLI bundles a separate S43 kernel reported as 43.1; selecting its
+compiler/runtime does not replace the artifact's kernel. Stage 1 continues to
+use a compatible 42.2 host. Shen-C stage-1 hosting is unqualified, so automatic
+host fallback continues to skip it.
+
+See the [RC integration qualification](shen-c-rc-20261018.md) for tested
+fixtures and remaining platform limits. Hello, Fibonacci and user arity work.
+The full-kernel `tc-interp` control typechecks and returns `normal-form = 7`;
+its shaken form still omits `fix`, which the interpreter loads dynamically.
+Use `--no-shake` for that fixture until its dynamic dependency set is closed.
+Historical Boehm sizes, timings and typecheck failures are not evidence for
+this backend.
 
 ## Running stage 1 on each host
 
