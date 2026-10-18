@@ -3,10 +3,18 @@
 \\ shaker must retain them only for programs that mention the observations.
 
 (define signature-visible?
-  -> (if (get char-stream? shen.*sigf*) true false))
+  -> (map (/. F [(element? F (external shen))
+                 (not (empty? (assoc F (value shen.*sigf*))))])
+           [char-stream? read-unit-string write-string]))
 
 (define macro-context-visible?
-  -> (macroexpand [shen.@c [shen.@ch foo]]))
+  -> (macroexpand [shen.@c (cons a (cons (intern "bar!")
+                                         (cons (protect Tail) [])))]))
+
+(define macro-context-visible-h?
+  -> (macroexpand [shen.@ch (cons a (cons (intern "bar!")
+                                          (cons (protect Tail) [])))]))
 
 (output "signature-visible: ~A~%" (signature-visible?))
 (output "macro-context-visible: ~A~%" (macro-context-visible?))
+(output "macro-context-visible-h: ~A~%" (macro-context-visible-h?))

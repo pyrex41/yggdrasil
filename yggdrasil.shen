@@ -266,7 +266,9 @@
                 EvalFree (not (= Strip false))
                 KL       (strip-user-declares RawKL Strip)
                 AllTops  (toplevel-forms Kernel)
-                Tops     (prepare-tops AllTops Strip RawKL RawFs)
+                Tops     (prepare-tops AllTops Strip
+                           (ygg.observes-signatures? RawKL)
+                           (ygg.observes-macros? RawFs))
                 Seeds    (append (mapcan (fn called-fns) Tops) (function-calls KL))
                 Run      (ygg.shake-rules-run Kernel Graph AllTops KL RawFs RawKL)
                 Foot     (ygg.rule-footprint Seeds Graph)
@@ -511,10 +513,10 @@
 
 (define prepare-tops
   Tops false _ _ -> Tops
-  Tops Strip RawKL RawFs -> (ygg.filter
+  Tops Strip ObservesSignatures ObservesMacros -> (ygg.filter
                               (/. T (or (not (ygg.signature-form? T))
-                                        (ygg.observes-signatures? RawKL)))
-                              (map (/. T (strip-eval-top T Strip RawFs)) Tops)))
+                                        ObservesSignatures))
+                              (map (/. T (strip-eval-top T Strip ObservesMacros)) Tops)))
 
 (define ygg.observes-signatures?
   RawKL -> (element? shen.*sigf* (function-calls RawKL)))
@@ -559,8 +561,7 @@
                    KL))
 
 (define strip-eval-top
-  [set *macros* V] true RawFs -> [set *macros* V]
-                                      where (ygg.observes-macros? RawFs)
+  [set *macros* V] true true -> [set *macros* V]
   [set *macros* _] true _ -> [set *macros* []]
   T _ _ -> T)
 
@@ -2582,7 +2583,9 @@
            EvalFree  (not (= Strip false))
            EvalBy    (ygg.filter (/. F (element? F (value *eval-entry-points*))) RawFs)
            KL        (strip-user-declares RawKL Strip)
-           Tops      (prepare-tops (toplevel-forms Kernel) Strip RawKL RawFs)
+           Tops      (prepare-tops (toplevel-forms Kernel) Strip
+                                  (ygg.observes-signatures? RawKL)
+                                  (ygg.observes-macros? RawFs))
            Graph2    (ygg.strip-graph Graph Strip)
            InitSeeds (ygg.remove-dups (mapcan (fn called-fns) Tops))
            UserSeeds (ygg.kernel-seeds (function-calls KL))
@@ -2907,13 +2910,20 @@
   _ -> top)
 
 (define ygg.mention-rows-observed
+  Tops N Strip RawKL RawFs -> (ygg.mention-rows-observed-h Tops N Strip
+                                (ygg.observes-signatures? RawKL)
+                                (ygg.observes-macros? RawFs)))
+
+(define ygg.mention-rows-observed-h
   [] _ _ _ _ -> []
-  [T | Ts] N Strip RawKL RawFs -> (ygg.mention-rows-observed Ts (+ N 1) Strip RawKL RawFs)
-                                      where (and (ygg.signature-form? T)
-                                                 (not (ygg.observes-signatures? RawKL)))
-  [T | Ts] N Strip RawKL RawFs -> (append (map (/. G [N G])
-                                                (called-fns (strip-eval-top T Strip RawFs)))
-                                          (ygg.mention-rows-observed Ts (+ N 1) Strip RawKL RawFs))
+  [T | Ts] N Strip ObservesSignatures ObservesMacros ->
+    (ygg.mention-rows-observed-h Ts (+ N 1) Strip ObservesSignatures ObservesMacros)
+    where (and (ygg.signature-form? T) (not ObservesSignatures))
+  [T | Ts] N Strip ObservesSignatures ObservesMacros ->
+    (append (map (/. G [N G])
+                 (called-fns (strip-eval-top T Strip ObservesMacros)))
+            (ygg.mention-rows-observed-h Ts (+ N 1) Strip
+                                          ObservesSignatures ObservesMacros))
   )
 
 (define ygg.mention-rows
