@@ -1,7 +1,7 @@
 # Yggdrasil
 
 A tree-shaker for [Shen](https://shenlanguage.org). It takes a Shen program and
-the ShenOSKernel 42.2 kernel, works out which of the kernel's 726 functions the program can
+the ShenOSKernel 43.1 kernel, works out which of the kernel's 727 functions the program can
 reach, and emits just that slice as portable KLambda. A per-target builder then
 compiles the slice with the port's own compiler into a standalone artifact.
 
@@ -26,23 +26,13 @@ checkout; set `YGGDRASIL_HOST` to any Shen launcher to override. Stage 2 needs
 the target port as a sibling checkout (`../shen-go`, `../shen-lua`, and so on)
 or a `YGGDRASIL_SHEN_<PORT>_DIR` variable pointing at one.
 
-The host must run the same kernel as the vendored slice (ShenOSKernel 42.2),
-or a shake mixes the host's `bootstrap` output with another kernel's slice. The
-published Shen-lua `0.11.x` rocks still carry Tarver's S42.0, so until a 42.2
-rock is released use a Shen-lua checkout on its `kernel-42.2` line as the host
-(`--host /path/to/shen-lua/bin/shen --eval-style positional`; verified to
-shake `tests/fib.shen` byte-identically to shen-cl). With a 42.2 rock the
-LuaRocks route is unchanged; this is how the S42-era `0.11.0-1` rock was
-used, with Lua 5.1:
-
-```bash
-luarocks --lua-version=5.1 install shen 0.11.0-1
-yggdrasil shake prog.shen out/ --host "$(command -v shen)" --eval-style positional
-```
-
-The rock includes the launcher and kernel, but not Shen-lua's
-`bin/yggdrasil-build.lua`. Building the `lua` target still needs the Shen-lua
-source checkout.
+The host must run the same community kernel as the vendored slice,
+ShenOSKernel 43.1. Shen CL 3.2.0 is the reference host. Set
+`YGGDRASIL_HOST=/path/to/shen-cl/bin/sbcl/shen` explicitly when checking a new
+checkout. A host still running 42.2 must be upgraded before use with this tree.
+Stage-2 targets also need the public `char-stream?`, `read-unit-string`, and
+`write-string` interfaces; target validation is recorded in
+[`docs/shen-cl-43.1.md`](docs/shen-cl-43.1.md).
 
 ## Use
 
@@ -132,8 +122,8 @@ Without them, host-gated tests skip by name and CI asserts the exact skip count.
 
 ## Lineage
 
-The kernel is the community ShenOSKernel 42.2 (Shen-Language/shen-sources, tag
-`shen-42.2`, the kernel shen-scheme 0.50 ships), vendored byte-for-byte under
+The kernel is the community ShenOSKernel 43.1 (Shen-Language/shen-sources, tag
+`shen-43.1`, also used by shen-scheme 0.51), vendored byte-for-byte under
 [`KLambda/`](KLambda/); [`KLambda/PROVENANCE.md`](KLambda/PROVENANCE.md) has the
 hashes and the lineage decision. Yggdrasil 1.0 targeted an earlier community
 kernel; this repository retargeted it to Tarver's S41.2 and S42.0 for a while,

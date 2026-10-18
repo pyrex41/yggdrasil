@@ -49,6 +49,14 @@ cd "$RAT_ROOT"
     -e "(set lsp.*shen-cl* \"$SHEN_CL/\")" \
     -e "(lsp.build \"$DIR\" \"$EXE\")"
 
+# Shen CL 3.1+ splits the dictionary backend out of primitives.lsp.
+# Older fork runtimes keep it inline; support both layouts.
+if [ -f "$SHEN_CL/src/dictionaries.lsp" ]; then
+    cp "$SHEN_CL/src/dictionaries.lsp" "$DIR/dictionaries.lsp"
+else
+    rm -f "$DIR/dictionaries.lsp"
+fi
+
 # Build: load the runtime + shaken kernel + user code, initialise, emit the
 # executable (saved image on sbcl/clisp; compiled-and-linked binary on ecl).
 cd "$DIR"

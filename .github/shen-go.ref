@@ -37,4 +37,8 @@
 # unconditionally, so `yggdrasil lower-check --target go` PASSES
 # (docs/lowering.md).  Previous pin, PR #48:
 #   30ab4692fc5a2750ee61845cb1bdc96d60f4aca8
-1f587de815e2583e204398f3b2989a88154ca192
+# Retargeted 2026-10-18 to community ShenOSKernel 43.1. The previous
+# 1f587de pin runs 42.2 and is rejected by the new stage-1 kernel guard.
+# acba88a includes the complete release, public stream interfaces and byte-port
+# refusal without input consumption; canonical 154/154 and KL certification pass.
+acba88a3f189f055285a9bdb22901ad688db7cd3

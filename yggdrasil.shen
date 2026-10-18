@@ -1,14 +1,14 @@
 \\                                           Yggdrasil
 \\                  descended from Yggdrasil 1.0, (c) Mark Tarver, 3 clause BSD
 \\
-\\ Tree-shaker for Shen programs, targeting the community ShenOSKernel 42.2
-\\ (Shen-Language/shen-sources, tag shen-42.2) - the kernel shen-scheme 0.50
+\\ Tree-shaker for Shen programs, targeting the community ShenOSKernel 43.1
+\\ (Shen-Language/shen-sources, tag shen-43.1) - the kernel shen-scheme 0.51
 \\ ships.  See KLambda/PROVENANCE.md.
 \\
 \\ Stage 1 (this file): shake a program against that kernel and emit
 \\ minimal KL + a manifest.  Pure Shen against the certified kernel API.
-\\ The reference host is shen-cl built on the same 42.2 kernel (its
-\\ kernel-42.2 line); any host whose `bootstrap` emits portable KL will do
+\\ The reference host is shen-cl built on the same 43.1 kernel (its
+\\ 3.2.0 release line); any host whose `bootstrap` emits portable KL will do
 \\ (see docs/targets.md).  Other hosts may emit port-internal hooks from
 \\ their bootstrap compiler (see README, host-portability gotcha).  Stage 2
 \\ (per target, lives in each port repo): compile the shaken KL with the
@@ -21,7 +21,7 @@
 \\    yggdrasil.manifest.txt   line-oriented manifest (key=value)
 \\
 \\ Driver contract for builders: load kernel.kl, call (shen.initialise),
-\\ then load the user files in order.  42.2 ships a real shen.initialise
+\\ then load the user files in order.  43.1 ships a real shen.initialise
 \\ (init.kl), but the one in kernel.kl is still SYNTHESISED: kernel-code
 \\ unfolds init.kl's initialiser into a flat sequence of init forms, the
 \\ shake trims that sequence to the footprint, and the survivors are
@@ -35,7 +35,7 @@
 \\ here is a kernel-defined global.  The public entry point is explicitly
 \\ dot-qualified instead.
 
-\\ ShenOSKernel-42.2 in shen-cl's boot.lsp order.  Every 42.2 .kl file holds
+\\ ShenOSKernel-43.1 in shen-cl's boot.lsp order.  Every 43.1 .kl file holds
 \\ only defuns, so the order is not load-bearing for the port; it is the
 \\ order kernel.kl is written in.  This is the SHAKE UNIVERSE: the fifteen
 \\ core files, dict.kl (the property vector is a shen.dict) and init.kl.
@@ -47,6 +47,10 @@
 \\ KL that bootstrap emits - and which a shaken artifact never calls.  A
 \\ program that calls a stlib or extension function at run time names a
 \\ function the slice does not define; see docs/shake.md.
+\\ Refuse a mixed bootstrap/slice kernel before compiling any user source.
+(if (= (version) "43.1") true
+    (simple-error "Yggdrasil requires a community Shen 43.1 stage-1 host"))
+
 (set *kernel* ["KLambda/toplevel.kl" "KLambda/core.kl" "KLambda/sys.kl"
  "KLambda/dict.kl" "KLambda/sequent.kl" "KLambda/yacc.kl" "KLambda/reader.kl"
  "KLambda/prolog.kl" "KLambda/track.kl" "KLambda/load.kl" "KLambda/writer.kl"
@@ -76,12 +80,11 @@
 \\ version is in the file name for the one place where it is not: a shake
 \\ run straight from a repo checkout, where a cache an older kernel left
 \\ behind at the root would otherwise load as this kernel's graph.
-(set *callgraph-cache* "callgraph-cache-42.2.shen")
+(set *callgraph-cache* "callgraph-cache-43.1.shen")
 
 \\ The primitives: special forms plus everything the kernel calls but does
 \\ not define.  Derived mechanically: symbols in call position across
-\\ KLambda/*.kl minus defun'd names - re-derived for 42.2, and unchanged
-\\ from S42.  (input+ also sits in call position, inside its own
+\\ KLambda/*.kl minus defun'd names - re-derived for 43.1.  (input+ also sits in call position, inside its own
 \\ lambda-form entry, and is defined by no file: 41.3 made it a macro and
 \\ left the port to supply the function; see doc/port-upgrades.md.)
 (set *primitives* [if and or cond defun lambda let freeze type trap-error
@@ -90,8 +93,7 @@
       absvector address-> <-address absvector?
       write-byte read-byte open close get-time eval-kl
       = + - * / > < >= <= number?
-      shen.char-stinput? shen.char-stoutput?
-      shen.read-unit-string shen.write-string
+      char-stream? read-unit-string write-string
       *stinput* *stoutput*])
 
 \\ ===================== self-contained list helpers ======================
@@ -339,7 +341,7 @@
                     Restore    (ygg.pl-restore P)
                     done))
 
-\\ The kernel's non-defun toplevel forms, in boot order.  On 42.2 these are
+\\ The kernel's non-defun toplevel forms, in boot order.  On 43.1 these are
 \\ exactly the forms ygg.unfold-init flattened out of init.kl's
 \\ shen.initialise (no .kl file has a toplevel form of its own); they are
 \\ wrapped back into a synthetic (defun shen.initialise () ...) at write
@@ -362,7 +364,7 @@
 \\ (init.kl's shen.initialise-signedfuncs: the kernel's own type
 \\ signatures, compiled to Prolog closures) seed nothing but the
 \\ typechecker; stripped programs drop them wholesale, as they drop user
-\\ (declare ...) forms.  The lambda-form entries need no stripping: 42.2
+\\ (declare ...) forms.  The lambda-form entries need no stripping: 43.1
 \\ writes them as literal eta-wrappers, so building them evaluates
 \\ nothing, and trim-top restricts them to the footprint in every mode.
 \\ function-calls over-approximates (every symbol counts), which errs in
@@ -379,10 +381,10 @@
 \\ `read` parses; what makes a program eval-capable is evaluating what it
 \\ parsed.  But the kernel's reader itself can evaluate: every form it
 \\ returns goes through shen.process-sexprs -> shen.unpackage&macroexpand
-\\ (on 42.2: source-form handlers first, then macroexpand, whose
+\\ (on 43.1: source-form handlers first, then macroexpand, whose
 \\ shen.macroexpand-h now carries the handler registry as a 4th argument),
 \\ and four paths out of that reach `eval` by real calls, not by
-\\ over-approximation (#27).  Re-derived on 42.2 over the call graph (see
+\\ over-approximation (#27).  Re-derived on 43.1 over the call graph (see
 \\ docs/eval-free-cli.md): the same four, by the same names and arities as
 \\ on S42, and with the seven cuts below in place no eval-kl caller is
 \\ reachable from read, read-from-string, lineread or the kept *macros*
@@ -517,7 +519,7 @@
   _ -> false)
 
 \\ A kernel init form whose only consumer is the typechecker: a
-\\ (declare F Type), or one of 42.2's signature registrations
+\\ (declare F Type), or one of 43.1's signature registrations
 \\ (set shen.*sigf* (shen.assoc-> F Rule Sigf)).  The bare
 \\ (set shen.*sigf* ()) that opens them is not one, and stays.
 (define ygg.signature-form?
@@ -745,7 +747,7 @@
 \\ ====================== kernel call graph (cached) ======================
 \\ The original Yggdrasil computed a full transitive closure with Warshall's
 \\ algorithm - O(N^3) over every kernel symbol, which does not scale to the
-\\ 42.2 kernel (726 defuns once the initialiser is unfolded, ~335K of KL).
+\\ 43.1 kernel (727 defuns once the initialiser is unfolded).
 \\ We only ever need reachability from a seed set, so build the direct call graph once (cached to disk)
 \\ and run a worklist traversal over it per shake.  Full rationale,
 \\ including why a faster external closure (Julia/bitsets) is still the
@@ -762,7 +764,7 @@
   -> (ygg.unfold-init (mapcan (fn read-kl-file) (value *kernel*))))
 
 \\ ------------------------- the initialiser, unfolded --------------------
-\\ 42.2's init.kl is four defuns: shen.initialise, a do-chain of three calls
+\\ 43.1's init.kl is four defuns: shen.initialise, a do-chain of three calls
 \\ to zero-place helpers (shen.initialise-environment, -lambda-forms and
 \\ -signedfuncs), each itself a do-chain of the real initialisation forms -
 \\ ~45 global sets, the arity table, the shen external-symbol list, one
@@ -783,7 +785,7 @@
 \\
 \\ Inlined helpers leave the kernel's defun set: their bodies are now init
 \\ forms and seed the footprint as such, and a defun nobody calls would only
-\\ be one more row of the graph.  Nothing in the 42.2 kernel calls them but
+\\ be one more row of the graph.  Nothing in the 43.1 kernel calls them but
 \\ shen.initialise (toplevel.kl's shen.loop names a shen.initialise_environment,
 \\ with an underscore, that no file defines).  A kernel with no
 \\ shen.initialise is refused by name rather than shaken into a slice with
@@ -921,7 +923,7 @@
   _ -> [])
 
 \\ defp is a build-time-only membership test: called-fns visits every
-\\ symbol leaf of ~335K of KL, where (element? F Fs) over 726 names
+\\ symbol leaf of ~335K of KL, where (element? F Fs) over 727 names
 \\ would cost ~45M comparisons.  Never consulted per-shake.
 (define kernel-defun?
   F -> (trap-error (get F defp) (/. E false)))
@@ -990,7 +992,7 @@
 \\
 \\ The database lives in the property store rather than in a threaded
 \\ value: Shen has no hash type in the certified API, and an assoc list
-\\ over 726 kernel names would put the scan back.  ygg.*dl-keys* records
+\\ over 727 kernel names would put the scan back.  ygg.*dl-keys* records
 \\ every key touched so ygg.dl-reset can empty them again - a run starts
 \\ from a clean database even inside one host process.
 
@@ -1460,7 +1462,7 @@
 \\ set), and was asserted to emit every reach tuple - so its answer was
 \\ Reach u Seeds as a set, which is what the two halves above produce.
 \\
-\\ On 42.2 the order is observable nowhere in kernel.kl: footcode filters
+\\ On 43.1 the order is observable nowhere in kernel.kl: footcode filters
 \\ the kernel by MEMBERSHIP, so every defun is written in kernel load order
 \\ whatever this list says, and trim-top filters the init forms the same
 \\ way, keeping init.kl's order.  (On S42 it fixed the order of the
@@ -1551,7 +1553,7 @@
 \\ the Warshall closure; the three must be the same set or stage 3 has
 \\ broken something.  The Warshall leg runs over the graph restricted to
 \\ the footprint - the closure of a set closed under edges is unchanged by
-\\ dropping the rest - because O(V^3) over all 726 kernel nodes is minutes
+\\ dropping the rest - because O(V^3) over all 727 kernel nodes is minutes
 \\ (see the Warshall section); above ygg.*warshall-limit* nodes it is
 \\ skipped and says so.
 \\
@@ -1629,7 +1631,7 @@
 \\
 \\ Cost is the reason it is not the default: O(V^3) over a V*V boolean
 \\ matrix.  Fine on the small graphs of the test fixtures; impractical on the
-\\ full 726-node kernel (see docs/reachability.md).  Enable per run with
+\\ full 727-node kernel (see docs/reachability.md).  Enable per run with
 \\ (set *use-warshall* true).
 \\
 \\ One correction over the 1.0 original: each seed is unioned into its own
@@ -1748,7 +1750,7 @@
 \\ edges for the same reason trim-top drops the entries: the table is data,
 \\ and (fn F) is a mention of F wherever it is written.  This replaces the
 \\ S42-era literal (set shen.*lambdatable* ...) that the shake used to
-\\ manufacture in place of S42's eval-kl-at-boot build-lambda-table: 42.2
+\\ manufacture in place of S42's eval-kl-at-boot build-lambda-table: 43.1
 \\ ships the wrappers as literals already.
 (define ygg.trim-tops
   Tops Foot Strip -> (ygg.filter (/. T (not (= T ygg.dropped)))
@@ -1779,7 +1781,7 @@
   _ -> false)
 
 \\ The synthetic initialiser: the kept toplevel forms, in boot order, as a
-\\ right-nested do-chain.  Builders call it exactly as they call 42.2's own
+\\ right-nested do-chain.  Builders call it exactly as they call 43.1's own
 \\ shen.initialise.
 (define synthesize-initialise
   Tops -> [defun shen.initialise [] (nest-do Tops)])
@@ -1924,11 +1926,11 @@
 \\   fn=<name> <arity>    one per user defun, so builders need not rescan
 \\                        the KL (arity bugs were the #1 stage-2 trap)
 \\   global=              *stinput* etc., split out of primitive=
-\\   primitive-optional=  guarded-dead unless the port's char-st*
-\\                        predicates return true; a port may omit them
+\\   primitive-optional=  guarded-dead unless the port's char-stream?
+\\                        predicate returns true; byte-only ports need not call them
 \\ Builders must ignore keys they do not recognise.
 
-(set *optional-primitives* [shen.write-string shen.read-unit-string])
+(set *optional-primitives* [write-string read-unit-string])
 (set *global-primitives*   [*stinput* *stoutput*])
 
 (define write-manifest
@@ -1961,7 +1963,7 @@
   Dir UserFiles Fns Required Optional Globals NeedsEval Computed NPruned Reaches Cannot InitOrder Strip ->
     (let Sink (open (@s Dir "/yggdrasil.manifest") out)
          W1 (pr-kl-line ["yggdrasil-manifest" 4] Sink)
-         W2 (pr-kl-line ["kernel-version" "42.2"] Sink)
+         W2 (pr-kl-line ["kernel-version" "43.1"] Sink)
          W3 (pr-kl-line ["kernel" "kernel.kl"] Sink)
          W4 (pr-kl-line ["init" shen.initialise] Sink)
          W5 (pr-kl-line ["user" | UserFiles] Sink)
@@ -1984,7 +1986,7 @@
   Dir UserFiles Fns Required Optional Globals NeedsEval Computed NPruned Reaches Cannot InitOrder Strip ->
     (let Sink (open (@s Dir "/yggdrasil.manifest.txt") out)
          W1 (pr (make-string "manifest-version=4~%") Sink)
-         W2 (pr (make-string "kernel-version=42.2~%") Sink)
+         W2 (pr (make-string "kernel-version=43.1~%") Sink)
          W3 (pr (make-string "kernel=kernel.kl~%") Sink)
          W4 (pr (make-string "init=shen.initialise~%") Sink)
          W5 (ygg.mapc (/. F (pr (make-string "user=~A~%" F) Sink)) UserFiles)

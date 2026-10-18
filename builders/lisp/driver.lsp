@@ -7,6 +7,7 @@
 ;;;
 ;;; Expects alongside this file (staged by builders/lisp/build.shen):
 ;;;     package.lsp primitives.lsp native.lsp shen-utils.lsp overwrite.lsp
+;;;     dictionaries.lsp (Shen CL 3.1+ runtimes)
 ;;;     kernel.lsp <user>.lsp yggdrasil.config.lsp
 ;;;     compiler.lsp (eval-capable builds only: manifest needs-eval=true)
 ;;;
@@ -124,9 +125,11 @@
 #-ecl
 (progn
   (defun yggdrasil-import (file)
-    (load (compile-file file :verbose nil :print nil)))
+    (load (compile-file file :verbose nil :print nil #+sbcl :block-compile #+sbcl nil)))
 
   (yggdrasil-import "primitives.lsp")
+  (when (probe-file "dictionaries.lsp")
+    (yggdrasil-import "dictionaries.lsp"))
   (yggdrasil-import "native.lsp")
   (yggdrasil-import "shen-utils.lsp")
   ;; Eval-capable programs ship shen-cl's KL->Lisp compiler so the eval-kl
@@ -196,7 +199,9 @@
 ;; overwrite source text is embedded as a literal.
 #+ecl
 (let* ((modules (append '("package" "yggdrasil.config"
-                          "primitives" "native" "shen-utils")
+                          "primitives")
+                        (when (probe-file "dictionaries.lsp") '("dictionaries"))
+                        '("native" "shen-utils")
                         (when yggdrasil-needs-eval '("compiler"))
                         '("kernel")
                         yggdrasil-user-names))

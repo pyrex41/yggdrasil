@@ -1,0 +1,10 @@
+\\ Structural dictionary semantics must survive standalone Lisp staging.
+(let D (shen.dict 8)
+     Stored (shen.dict-> D [a [1 2]] payload)
+     Replaced (shen.dict-> D [a [1.0 2]] replacement)
+     Empty (shen.dict-> D empty-value [])
+  (do (output "structural: ~A~%" (shen.<-dict D [a [1 2.0]]))
+      (output "count: ~A~%" (shen.dict-count D))
+      (output "empty: ~A~%" (= [] (shen.<-dict D empty-value)))
+      (shen.dict-rm D [a [1.0 2.0]])
+      (output "remaining: ~A~%" (shen.dict-count D))))

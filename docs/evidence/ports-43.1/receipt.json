@@ -1,0 +1,83 @@
+{
+  "date": "2026-10-18",
+  "kernel_commit": "715824a52b55e9c81a9501df8548ff3edd8411f5",
+  "source_identity": "16 byte-identical core KL files, 731 source defuns, 727 graph functions",
+  "host": "shen-cl d9494df / SBCL 2.6.7; Go host acba88a in named control",
+  "gates": {
+    "lisp-lua": {
+      "artifact": "lisp-lua.log.gz",
+      "sha256": "c43a038f4ad48ee86cbcb210951f10b11410c5fa1b30e8cadc65c2bfe48a7684",
+      "parity_pass_rows": 10,
+      "summary": "parity-gate: PASS (10 fixture(s))"
+    },
+    "lisp-js": {
+      "artifact": "lisp-js.log.gz",
+      "sha256": "fcdc97b486388283540a189f54811d8eb305b43eb947bacb1449c8513505e257",
+      "parity_pass_rows": 10,
+      "summary": "parity-gate: PASS (10 fixture(s))"
+    },
+    "lisp-go": {
+      "artifact": "lisp-go.log.gz",
+      "sha256": "58a90660369177d268a47773e0ef6e4ee51662c13b89535492ff36ba681a9982",
+      "parity_pass_rows": 10,
+      "summary": "parity-gate: PASS (10 fixture(s))"
+    },
+    "lisp-scheme": {
+      "artifact": "lisp-scheme.log.gz",
+      "sha256": "af4af3c304acfea312da734ed4f50c41f00b49e260a138df46672fc9d5c036a0",
+      "parity_pass_rows": 4,
+      "summary": "parity-gate: PASS (4 fixture(s))"
+    },
+    "go-host-four": {
+      "artifact": "go-host-four.log.gz",
+      "sha256": "8fd76832a449e5c39924ad66a724de65a5d3b7ebb16c9e6debca6f65890b1c48",
+      "parity_pass_rows": 4,
+      "summary": "parity-gate: PASS (4 fixture(s))"
+    },
+    "public-io": {
+      "artifact": "public-io.log.gz",
+      "sha256": "2acb9abcf85758215af853239965464ab48a07fb80912b4f223e60301f0409ee",
+      "parity_pass_rows": 1,
+      "summary": "see log"
+    },
+    "host-oracles": {
+      "artifact": "host-oracles.log.gz",
+      "sha256": "972cead8bdf3fb706685bbdfe60b17571ab9d85aa8eab665dd4cbe8cea358d86",
+      "parity_pass_rows": 0,
+      "summary": "see log"
+    },
+    "wrong-host-control": {
+      "artifact": "wrong-host-control.log.gz",
+      "sha256": "3cfd3f6d1c6a89a2a0aed5542ab34a865608b74510f0aa780daac3ec92bb57f8",
+      "parity_pass_rows": 0,
+      "summary": "see log"
+    },
+    "lisp-swift": {
+      "artifact": "lisp-swift.log.gz",
+      "sha256": "12c2387b0ccf697e09dde61a7cc098e39666967cb7c74504b182eb23c64eb909",
+      "summary": "see log"
+    },
+    "lisp-truffle": {
+      "artifact": "lisp-truffle.log.gz",
+      "sha256": "145a4646e9fbde46341dd0d96504ea785c217a14cc68f97fb62aadb125039d53",
+      "summary": "parity-gate: PASS (4 fixture(s))"
+    },
+    "hosted-first": {
+      "artifact": "hosted-first.jsonl.gz",
+      "sha256": "10a42c5a905ce400998ec826efe6e9e7a47ade6832bbbe1ea43e120ecfe18d4b"
+    },
+    "hosted-remainder": {
+      "artifact": "hosted-remainder.jsonl.gz",
+      "sha256": "bae44eeb077d974fbc4e7796e6a8fdc76243ac2e689a39e81df715ad3e0ea184"
+    }
+  },
+  "hosted_go_tests": {
+    "top_level_passed": 131,
+    "top_level_skipped": [
+      "TestRunCaptureHelper"
+    ],
+    "failed": [],
+    "execution": "40 passes retained before 280s budget expiration; all remaining tests pass in 843.898s with 25m budget",
+    "excluded_build_tag": "shen_c (user-owned native C integration)"
+  }
+}
