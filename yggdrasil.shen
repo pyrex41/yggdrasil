@@ -2747,7 +2747,8 @@
            W5  (ygg.facts-file Dir "mentionsprim" (ygg.prim-rows Kernel))
            W6  (ygg.facts-file Dir "top"      (ygg.top-rows AllTops 1))
            W7  (ygg.facts-file Dir "formmentions"   (ygg.mention-rows AllTops 1 false))
-           W8  (ygg.facts-file Dir "formmentionsef" (ygg.mention-rows AllTops 1 true))
+           W8  (ygg.facts-file Dir "formmentionsef"
+                                  (ygg.mention-rows-observed AllTops 1 true RawKL RawFs))
            W9  (ygg.facts-file Dir "rawsym"   (map (/. S [S]) (ygg.remove-dups RawFs)))
            W10 (ygg.facts-file Dir "usersym"  (map (/. S [S])
                                                    (ygg.remove-dups (function-calls KL))))
@@ -2790,7 +2791,8 @@
                                 (mapcan (/. C (map (/. Pr [(hd C) Pr])
                                                    (ygg.prim-rows-body (hd (tl C)))))
                                         (value *read-data-cuts*)))
-           W29 (ygg.facts-file Dir "formmentionsrd" (ygg.mention-rows AllTops 1 data))
+           W29 (ygg.facts-file Dir "formmentionsrd"
+                                  (ygg.mention-rows-observed AllTops 1 data RawKL RawFs))
            Restore (ygg.pl-restore P)
            Report  (pr (make-string "yggdrasil-facts: mode=~A dir=~A kernel=~A~%"
                                     (ygg.mode-name Strip)
