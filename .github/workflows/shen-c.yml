@@ -27,10 +27,17 @@ jobs:
           repository: pyrex41/shen-c
           ref: 27fe901f2ce42d03cb9890bcc9729b034efb9e68
           path: shen-c
+      - name: Read the stage-1 host pin for this kernel
+        id: stage1
+        shell: bash
+        run: |
+          set -euo pipefail
+          ref="$(grep -Eom1 '^[0-9a-f]{40}$' yggdrasil/.github/shen-go.ref)"
+          echo "sha=$ref" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
           repository: pyrex41/shen-go
-          ref: 1f587de815e2583e204398f3b2989a88154ca192
+          ref: ${{ steps.stage1.outputs.sha }}
           path: shen-go
       - uses: actions/setup-go@v5
         with:
