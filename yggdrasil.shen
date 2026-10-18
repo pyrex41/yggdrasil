@@ -353,7 +353,9 @@
                 EvalFree (not (= Strip false))
                 KL       (strip-user-declares RawKL Strip)
                 AllTops  (toplevel-forms Kernel)
-                Tops     (prepare-tops AllTops Strip)
+                Tops     (prepare-tops AllTops Strip
+                           (ygg.observes-signatures? (append RawKL DynRawKL))
+                           (ygg.observes-macros? RawFs))
                 Seeds    (append (mapcan (fn called-fns) Tops)
                                  (append (function-calls KL)
                                          (function-calls DynRawKL)))
@@ -600,9 +602,17 @@
   [X | Xs] Ys -> (or (element? X Ys) (intersect? Xs Ys)))
 
 (define prepare-tops
-  Tops false -> Tops
-  Tops Strip -> (ygg.filter (/. T (not (ygg.signature-form? T)))
-                            (map (/. T (strip-eval-top T Strip)) Tops)))
+  Tops false _ _ -> Tops
+  Tops Strip ObservesSignatures ObservesMacros -> (ygg.filter
+                              (/. T (or (not (ygg.signature-form? T))
+                                        ObservesSignatures))
+                              (map (/. T (strip-eval-top T Strip ObservesMacros)) Tops)))
+
+(define ygg.observes-signatures?
+  RawKL -> (element? shen.*sigf* (function-calls RawKL)))
+
+(define ygg.observes-macros?
+  RawFs -> (element? macroexpand RawFs))
 
 (define declare-form?
   [declare | _] -> true
@@ -641,6 +651,11 @@
                    KL))
 
 (define strip-eval-top
+  [set *macros* V] true true -> [set *macros* V]
+  [set *macros* _] true _ -> [set *macros* []]
+  T _ _ -> T)
+
+(define strip-eval-top-legacy
   [set *macros* _] true -> [set *macros* []]
   T _ -> T)
 
@@ -1506,8 +1521,8 @@
    -> (append (map (/. R [kernel (row-head R)]) Graph)
       (append (ygg.cls-defuns Kernel)
       (append (map (/. R [formmentions | R]) (ygg.mention-rows AllTops 1 false))
-      (append (map (/. R [formmentionsef | R]) (ygg.mention-rows AllTops 1 true))
-      (append (map (/. R [formmentionsrd | R]) (ygg.mention-rows AllTops 1 data))
+      (append (map (/. R [formmentionsef | R]) (ygg.mention-rows-observed AllTops 1 true RawKL RawFs))
+      (append (map (/. R [formmentionsrd | R]) (ygg.mention-rows-observed AllTops 1 data RawKL RawFs))
       (append (map (/. S [usersym S]) (ygg.remove-dups (function-calls KL)))
       (append (map (/. S [rawsym S]) (ygg.remove-dups RawFs))
       (append (map (/. S [entry S]) (value *eval-entry-points*))
@@ -2658,7 +2673,9 @@
            EvalFree  (not (= Strip false))
            EvalBy    (ygg.filter (/. F (element? F (value *eval-entry-points*))) RawFs)
            KL        (strip-user-declares RawKL Strip)
-           Tops      (prepare-tops (toplevel-forms Kernel) Strip)
+           Tops      (prepare-tops (toplevel-forms Kernel) Strip
+                                  (ygg.observes-signatures? RawKL)
+                                  (ygg.observes-macros? RawFs))
            Graph2    (ygg.strip-graph Graph Strip)
            InitSeeds (ygg.remove-dups (mapcan (fn called-fns) Tops))
            UserSeeds (ygg.kernel-seeds (function-calls KL))
@@ -2820,7 +2837,8 @@
            W5  (ygg.facts-file Dir "mentionsprim" (ygg.prim-rows Kernel))
            W6  (ygg.facts-file Dir "top"      (ygg.top-rows AllTops 1))
            W7  (ygg.facts-file Dir "formmentions"   (ygg.mention-rows AllTops 1 false))
-           W8  (ygg.facts-file Dir "formmentionsef" (ygg.mention-rows AllTops 1 true))
+           W8  (ygg.facts-file Dir "formmentionsef"
+                                  (ygg.mention-rows-observed AllTops 1 true RawKL RawFs))
            W9  (ygg.facts-file Dir "rawsym"   (map (/. S [S]) (ygg.remove-dups RawFs)))
            W10 (ygg.facts-file Dir "usersym"  (map (/. S [S])
                                                    (ygg.remove-dups (function-calls KL))))
@@ -2863,7 +2881,8 @@
                                 (mapcan (/. C (map (/. Pr [(hd C) Pr])
                                                    (ygg.prim-rows-body (hd (tl C)))))
                                         (value *read-data-cuts*)))
-           W29 (ygg.facts-file Dir "formmentionsrd" (ygg.mention-rows AllTops 1 data))
+           W29 (ygg.facts-file Dir "formmentionsrd"
+                                  (ygg.mention-rows-observed AllTops 1 data RawKL RawFs))
            Restore (ygg.pl-restore P)
            Report  (pr (make-string "yggdrasil-facts: mode=~A dir=~A kernel=~A~%"
                                     (ygg.mode-name Strip)
@@ -2982,12 +3001,29 @@
   [F | _] -> F where (symbol? F)
   _ -> top)
 
+(define ygg.mention-rows-observed
+  Tops N Strip RawKL RawFs -> (ygg.mention-rows-observed-h Tops N Strip
+                                (ygg.observes-signatures? RawKL)
+                                (ygg.observes-macros? RawFs)))
+
+(define ygg.mention-rows-observed-h
+  [] _ _ _ _ -> []
+  [T | Ts] N Strip ObservesSignatures ObservesMacros ->
+    (ygg.mention-rows-observed-h Ts (+ N 1) Strip ObservesSignatures ObservesMacros)
+    where (and (ygg.signature-form? T) (not ObservesSignatures))
+  [T | Ts] N Strip ObservesSignatures ObservesMacros ->
+    (append (map (/. G [N G])
+                 (called-fns (strip-eval-top T Strip ObservesMacros)))
+            (ygg.mention-rows-observed-h Ts (+ N 1) Strip
+                                          ObservesSignatures ObservesMacros))
+  )
+
 (define ygg.mention-rows
   [] _ _ -> []
   [T | Ts] N false -> (append (map (/. G [N G]) (called-fns T))
                               (ygg.mention-rows Ts (+ N 1) false))
   [T | Ts] N Strip -> (ygg.mention-rows Ts (+ N 1) Strip) where (ygg.signature-form? T)
-  [T | Ts] N Strip -> (append (map (/. G [N G]) (called-fns (strip-eval-top T Strip)))
+  [T | Ts] N Strip -> (append (map (/. G [N G]) (called-fns (strip-eval-top-legacy T Strip)))
                               (ygg.mention-rows Ts (+ N 1) Strip)))
 
 \\ ------------------------------ TSV writer ------------------------------
