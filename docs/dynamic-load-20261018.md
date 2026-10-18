@@ -32,7 +32,7 @@ Shen-C v0.3.0 compiler/runtime. No full-kernel fallback was used.
 | Full default Go suite in isolated host-free source copy | PASS |
 | Original `23a2f39` full host-enabled CI | PASS, run 39156111660; historical baseline |
 | Current complete host-enabled local suite | UNKNOWN: 180-second run timed out after detecting a sibling host |
-| New focused Linux/macOS native CI | Runs the same tests with pinned stage-1 host; see current PR checks |
+| Focused Linux/macOS native CI | **PASS**, [run 39159617164](https://github.com/pyrex41/yggdrasil/actions/runs/39159617164) at `03038c7` |
 
 The first optional-load implementation failed independent parent validation:
 it kept the missing filename in the later bootstrap list. That failed log is
@@ -55,3 +55,7 @@ and [publication index](evidence/dynamic-load-20261018/publication.json) retain
 original/published hashes, final tests and rejected attempts. Raw app and C
 sources remain under `out-shen-c-rc-evidence/gap-closure/`. No performance or
 new release claim is made.
+
+The [native CI receipt](evidence/dynamic-load-20261018/native-ci.json) records both
+passing jobs. Later changes are documentation only; embedded source and builders
+are unchanged from the tested commit.

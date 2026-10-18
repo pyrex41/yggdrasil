@@ -84,6 +84,12 @@
       "raw_sha256": "f020483d08f32f967c73e759636cdc7a1b6606ef07dab9c62b5671ba4cf16d87",
       "published_path": "native-ci-failure.log.gz",
       "published_sha256": "6fd39144957842ece0150cfb52f873eacbd90089d961a779fb644732afd36858"
+    },
+    {
+      "raw_path": "out-shen-c-rc-evidence/gap-closure/native-ci.json",
+      "raw_sha256": "be95ee4bdfbb1111fea48f2d1f8d6a85cae0bde8cd467375af570efb60640e3f",
+      "published_path": "native-ci.json",
+      "published_sha256": "585df09c5574e6ef23663d0090ed4879df114c18e668657d637249a400005e62"
     }
   ]
 }
