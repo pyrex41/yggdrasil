@@ -1,0 +1,89 @@
+{
+  "scope": "Path-normalized portable evidence; raw binaries, generated C and full build trees retained locally. Original and published hashes identify normalization.",
+  "files": [
+    {
+      "raw_path": "out-shen-c-rc-evidence/gap-closure/native-receipt.json",
+      "raw_sha256": "c204ee46d14f2e4139bd65bfc9ff07171ebbf38ac02f309d20e9e6b3d3de4528",
+      "published_path": "native-receipt.json",
+      "published_sha256": "9d18a5d43612b131b55930553b3cd96b453282c28fc8ed54fd54e05b6b11755e"
+    },
+    {
+      "raw_path": "out-shen-c-rc-evidence/gap-closure/native.log",
+      "raw_sha256": "922f689982a308f843ffadafa9d2d7c0cb67b991d7090ae392cc3bb6fa8dbec1",
+      "published_path": "native.log.gz",
+      "published_sha256": "fa5343fab44521ee51d3e0fa8cb31b4f2ac12d2292551137ff4b865c496d8c19"
+    },
+    {
+      "raw_path": "out-shen-c-rc-evidence/gap-closure/native-v2.log",
+      "raw_sha256": "88a90964e61fa1559f01c5807b00e7de32f50489d28d3cdd586632b99191e6a4",
+      "published_path": "native-v2.log.gz",
+      "published_sha256": "e284dd0dd29f3b14f63e264f96c60e01723dbbb827894fd0dd5950d0c5a02ca1"
+    },
+    {
+      "raw_path": "out-shen-c-rc-evidence/gap-closure/native-final.log",
+      "raw_sha256": "7c1328b63f827d85d313cd199ea39e880237b97be88e8071b741ff235fc0b4b9",
+      "published_path": "native-final.log.gz",
+      "published_sha256": "eea11449f34e3d6984cd1407e4c5fb4f996f9d9a6df8e86ee7a50e4ee2582632"
+    },
+    {
+      "raw_path": "out-shen-c-rc-evidence/gap-closure/host-free.json",
+      "raw_sha256": "4b0151a63019888396a21455844ffa4d903c8854e7d6f4a8cdfacf04ca1ed001",
+      "published_path": "host-free.json",
+      "published_sha256": "0dc741f1c1cc49b51c543a474c57f1645e789beba095d9eda4f442ad84c6935d"
+    },
+    {
+      "raw_path": "out-shen-c-rc-evidence/gap-closure/host-free-final.log",
+      "raw_sha256": "bbf3b55fcbe7f3cc3d154a62964412f0c970574c6dabba513b1792fad866972a",
+      "published_path": "host-free-final.log.gz",
+      "published_sha256": "ae90f7b28baee8897ba38df3ffcbb77657c19fe4050259aaa39d0972b8caa585"
+    },
+    {
+      "raw_path": "out-shen-c-rc-evidence/gap-closure/default-final.log",
+      "raw_sha256": "5ec242ac424065c066e7ae121e95af194aed98df0c1000eedb542894fda41bd5",
+      "published_path": "default-final.log.gz",
+      "published_sha256": "280cd77c0874014527102f8402d3c9acb14a026622e18d57a48331f756d34ba2"
+    },
+    {
+      "raw_path": "out-shen-c-rc-evidence/gap-closure/run-native.out",
+      "raw_sha256": "d2e3247b04c233e242e2e5bf2acffe873e913cc3bee1691a4548cfea3ab72b7c",
+      "published_path": "run-native.out.gz",
+      "published_sha256": "14b2c12a720cff8b2df9ec9a7e6072a5cfeeacec0960ccd976fd40b73c90fd24"
+    },
+    {
+      "raw_path": "out-shen-c-rc-evidence/gap-closure/run-native.err",
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "published_path": "run-native.err.gz",
+      "published_sha256": "ac73670af3abed54ac6fb4695131f4099be9fbe39d6076c5d0264a6bbdae9d83"
+    },
+    {
+      "raw_path": "out-shen-c-rc-evidence/gap-closure/audit-native.out",
+      "raw_sha256": "12015f292173fd3b66b667a237059caa3c30e34ce96b852cda6d3479ead8f101",
+      "published_path": "audit-native.out.gz",
+      "published_sha256": "83172e567d2dea72d823302704e5aa1c09afd1874162d16ef319eda085797bf3"
+    },
+    {
+      "raw_path": "out-shen-c-rc-evidence/gap-closure/audit-native.err",
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "published_path": "audit-native.err.gz",
+      "published_sha256": "ac73670af3abed54ac6fb4695131f4099be9fbe39d6076c5d0264a6bbdae9d83"
+    },
+    {
+      "raw_path": "out-shen-c-rc-evidence/gap-closure/build-native.out",
+      "raw_sha256": "a301a69afdd899c449e3cbbcf9332b5800ea39267b1adda88c6633b44d87a235",
+      "published_path": "build-native.out.gz",
+      "published_sha256": "34d22865ba1e29135ad9d07e61f6475aa148389f8198f52814b2e42dd1150e95"
+    },
+    {
+      "raw_path": "out-shen-c-rc-evidence/gap-closure/build-native.err",
+      "raw_sha256": "bc4c3074cfdc3d3c052a34546852d5d6c6136858c5fe41f8a54a84bb0eb4a89a",
+      "published_path": "build-native.err.gz",
+      "published_sha256": "bbee860e3b492af602c2cb2d9659ac3ea33b3a19900aa05a55ed7167389f6a96"
+    },
+    {
+      "raw_path": "out-shen-c-rc-evidence/gap-closure/native-ci-failure.log",
+      "raw_sha256": "f020483d08f32f967c73e759636cdc7a1b6606ef07dab9c62b5671ba4cf16d87",
+      "published_path": "native-ci-failure.log.gz",
+      "published_sha256": "6fd39144957842ece0150cfb52f873eacbd90089d961a779fb644732afd36858"
+    }
+  ]
+}

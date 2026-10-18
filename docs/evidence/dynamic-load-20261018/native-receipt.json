@@ -1,0 +1,89 @@
+{
+  "revision": "0a4a14295fd3fcc1851dd1088bee89d87e353ae3",
+  "host_sha256": "e5166b02930f49d67844cdb3bf7eef5c7e23226862a8c2478d18eba1618db84d",
+  "runtime_revision": "6c990150ed9404985dc4a13fa3b77466d37de395",
+  "runtime_sources_sha256": {
+    "src/rc/eval.c": "5d49c8bd17cb29737538745776a7f8dad6f395e9d09e489e6886bae73961709f",
+    "src/rc/rc.c": "981142db8a86ff6f802035f2ca69dfba1558c0aa2e5df6fe545bc8f97f0d9114",
+    "src/rc/rc_internal.h": "397a2e0220e73ddfedff03a13fb3048d53c8c4d9ad534f730b0ddee943e1f860",
+    "src/rc/emit.c": "e4f56a44159e0a691d397b958770c39e8350519bc30d21b1067e09979166a03b",
+    "src/rc/primitives.c": "e745613a31beb3eea888d35a2f07a55ebc14f312a621a2dc88f4023eec0e32b1",
+    "src/rc/read.c": "f61444980f2d34d3986f9640103b3478501c4d368f6c2dd5058a4b39b3143667",
+    "src/rc/eval.h": "40840e20cb00334a7032ef11aec08ce6a0846912ae05dfb0d08e894ba7ad2e15",
+    "src/rc/main.c": "ab8acf1869eb6f6751cf454d107dfe6cf400f267562b758341115582893ee4d1",
+    "src/rc/primitives.h": "ad9a5b0483d68a1829b6a0557d9b71b0f0ab240b67ec152ab2f0e4f3c87782d2",
+    "src/rc/rc.h": "b77320047d47b013b5064b44d749e80fab11319769145d9e6a676371d9990aec",
+    "src/rc/emit.h": "ae1946b669f771941b12a706316a28090aefd126f54cc687fa00a3b10b322a9f",
+    "src/rc/eval_plan.h": "91c896c000ff381922ccd5fa72420aab6cc8f87f1f8b7851d97c69142f167af4",
+    "src/rc/read.h": "71fb3e8ce757174ee47dde95f732200ae1b023c66f8164ac0a4d82ebb241fea5"
+  },
+  "source_sha256": {
+    "main.go": "af91bef6547f81ffe7209ae00edbb0f98b7ff9d6cc377960819a761c8e27d7a6",
+    "yggdrasil.shen": "953d174dec8f1765d64243f68cb902b102e198277b09ada055b9acc43d5602c9",
+    "builders/c/build.sh": "681a50d3c337de3738eec111b555dad61ab53538488591c17c4868183e1ce1ba",
+    "builders/c/compile.py": "a97d184b186fed1d6252e3a6a4183efe0fb2ae4cfece328a667cbf021f8e05b4",
+    "builders.json": "0a580308a876f00ea85bd01b775c1beb6aeedf68dac2e3fc995561abd1f1b661",
+    "dynamic_load_test.go": "587456d78e5ebb9a5dca23c2bae1f4dc0f0eaf6194c93e3cd2634c87e0e83a7c",
+    "tests/tc-interp.shen": "9010d5f767330920a03a9911da47845fcf5d9aaa1d159695caf0f7564d91c024",
+    "tests/interpreter.shen": "795756fa345ba3644c14973e9c30c9d979a0585e7aed3860b56d8bb54444cd0c"
+  },
+  "runs": [
+    {
+      "label": "build-cli",
+      "command": [
+        "go",
+        "build",
+        "-o",
+        "<YGGDRASIL_ROOT>/.bin/ygg-rc-gaps",
+        "."
+      ],
+      "exit_code": 0,
+      "seconds": 13.340246041
+    },
+    {
+      "label": "build-native",
+      "command": [
+        "<YGGDRASIL_ROOT>/.bin/ygg-rc-gaps",
+        "build",
+        "tests/tc-interp.shen",
+        "<YGGDRASIL_ROOT>/out-shen-c-rc-evidence/gap-closure/tc-interp-final",
+        "--target",
+        "c",
+        "--host",
+        "<YGGDRASIL_ROOT>/.bin/shen-go-host"
+      ],
+      "exit_code": 0,
+      "seconds": 95.555276625
+    },
+    {
+      "label": "run-native",
+      "command": [
+        "<YGGDRASIL_ROOT>/out-shen-c-rc-evidence/gap-closure/tc-interp-final/app-c/app"
+      ],
+      "exit_code": 0,
+      "seconds": 2.0791900830000003
+    },
+    {
+      "label": "audit-native",
+      "command": [
+        "<SHEN_C_RELEASE_ROOT>/scripts/test-rc.sh",
+        "--audit-only",
+        "<YGGDRASIL_ROOT>/out-shen-c-rc-evidence/gap-closure/tc-interp-final/app-c/app"
+      ],
+      "exit_code": 0,
+      "seconds": 1.7994668329999968
+    }
+  ],
+  "cli_sha256": "b731d98f169ba9e2a1b67ac139c28dede1ada197f7a0977c8b8c54199fcbf28c",
+  "artifact_sha256": {
+    "kernel.kl": "421568188b34fb5b8b494f3d1ec27ead1106679de1a4becce471516446aa814a",
+    "yggdrasil.manifest.txt": "c498676db614f478e8abde3b67897cb2c80bb2796de6290250d62deefb765ae0",
+    "tc-interp.kl": "f9ae2f7ba424736da8d26a815bf571dd34a1f5ca7b82692f41ed35b971076518",
+    "app-c/app": "681768af48a87cc3fb3b5e0653413b524da7dae0e612657fdbada209e3ed063e",
+    "app-c/Makefile": "bfc08319399107f5269c8e82837a60df351289fef6498aa9afe57792fdbc0d2b",
+    "app-c/app.c": "cdbd49bd0fd17db71a8cf3fb72f58770285ceb59f90217f289b1d89383af32d3"
+  },
+  "source_unchanged": true,
+  "normal_form": 7,
+  "status": "PASS"
+}
