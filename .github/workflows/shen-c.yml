@@ -10,7 +10,13 @@ jobs:
     timeout-minutes: 15
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            cc: clang-18
+            ar: llvm-ar-18
+          - os: macos-latest
+            cc: clang
+            ar: ar
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -38,6 +44,7 @@ jobs:
         env:
           YGGDRASIL_SHEN_C_DIR: ${{ github.workspace }}/shen-c
           PKG_CONFIG: /nonexistent/no-boehm-or-pkg-config
-          CC: clang
+          CC: ${{ matrix.cc }}
+          AR: ${{ matrix.ar }}
           YGGDRASIL_DYNAMIC_HOST: ${{ github.workspace }}/shen-go/bin/shen-go
         run: go test -tags shen_c -count=1 -timeout 5m -run 'TestCBuilder|TestDynamicLoadClosure' -v .
