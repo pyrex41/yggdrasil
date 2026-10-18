@@ -159,6 +159,47 @@
                 Check (ygg.check-basenames Out [])
              Out))
 
+\\ A literal load inside a runtime form is different from a leading load: it
+\\ must stay in the emitted user KL so the program preserves its run-time
+\\ order.  Its source is nevertheless part of the shake's dependency
+\\ closure.  Scan those files for call names so a loaded interpreter can use
+\\ kernel functions (for example `fix`) that do not occur in the entry file.
+\\ This is deliberately an over-approximation: a conditional load keeps its
+\\ dependencies, which is safe and avoids pretending that the host can predict
+\\ run-time control flow.  The files are parsed and bootstrapped only; their
+\\ top-level forms are never evaluated during the shake or emitted early.
+(define ygg.literal-loads
+  [] -> []
+  [[load S] | Forms] -> [S | (ygg.literal-loads Forms)]  where (string? S)
+  [X | Forms] -> (append (ygg.literal-loads X) (ygg.literal-loads Forms))
+  _ -> [])
+
+(define ygg.dynamic-files
+  Files Static -> (reverse (ygg.dynamic-files-h (map (/. F [F []]) Files)
+                                               Static [])))
+
+(define ygg.dynamic-files-h
+  [] _ Acc -> Acc
+  [[F Stack] | Fs] Seen Acc ->
+    (ygg.dynamic-files-h Fs Seen Acc)
+      where (ygg.dynamic-cycle? F Stack)
+  [[F Stack] | Fs] Seen Acc ->
+    (let Forms (ygg.read-optional-file F)
+         Deps  (ygg.literal-loads Forms)
+         Paths (map (/. S (ygg.resolve-path (ygg.dirname F) S)) Deps)
+         New   (ygg.filter (/. D (not (element? D Seen))) Paths)
+         Next  (append (map (/. D [D [F | Stack]]) New) Fs)
+         Seen2 (append New Seen)
+         Acc2  (append New Acc)
+         (ygg.dynamic-files-h Next Seen2 Acc2)))
+
+(define ygg.read-optional-file
+  F -> (trap-error (read-file F) (/. E [])))
+
+(define ygg.dynamic-cycle?
+  F Stack -> (element? (truncate-filename F "")
+                       (map (/. P (truncate-filename P "")) Stack)))
+
 \\ Acc is every file emitted so far, newest first; Stack the files whose
 \\ loads are being expanded, for the cycle case.
 (define ygg.expand-h
@@ -257,16 +298,22 @@
                 Unlimit  (set *maximum-print-sequence-size* 1000000000)
                 Kernel   (kernel-code)
                 Graph    (call-graph Kernel)
-                KLFiles  (ygg.bootstrap-files Files)
+                SourceFiles (ygg.expand-files Files)
+                KLFiles  (ygg.bootstrap-files SourceFiles)
                 RawKL    (ygg.read-user-kl KLFiles)
-                RawFs    (function-calls RawKL)
+                DynFiles (ygg.dynamic-files SourceFiles SourceFiles)
+                DynKLFiles (ygg.bootstrap-files DynFiles)
+                DynRawKL (ygg.read-user-kl DynKLFiles)
+                RawFs    (append (function-calls RawKL)
+                                 (function-calls DynRawKL))
                 Strip    (ygg.strip-mode RawKL RawFs)
                 EvalFree (not (= Strip false))
                 KL       (strip-user-declares RawKL Strip)
                 AllTops  (toplevel-forms Kernel)
                 Tops     (prepare-tops AllTops Strip)
                 Seeds    (append (mapcan (fn called-fns) Tops) (function-calls KL))
-                Run      (ygg.shake-rules-run Kernel Graph AllTops KL RawFs RawKL)
+                Run      (ygg.shake-rules-run Kernel Graph AllTops KL RawFs
+                                                  (append RawKL DynRawKL))
                 Foot     (ygg.rule-footprint Seeds Graph)
                 [[maxprint MaxPrint] [kernel Kernel] [graph Graph]
                  [klfiles KLFiles] [rawfs RawFs] [evalfree EvalFree]
