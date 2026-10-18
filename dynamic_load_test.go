@@ -88,18 +88,18 @@ func TestDynamicLoadClosure(t *testing.T) {
 
 	t.Run("same-basename-dependencies", func(t *testing.T) {
 		source := filepath.Join(work, "same-basename-source")
-		for _, dir := range []string{"dir1", "dir2"} {
+		for _, dir := range []string{"deep/level"} {
 			if err := os.MkdirAll(filepath.Join(source, dir), 0o755); err != nil {
 				t.Fatal(err)
 			}
 		}
 		files := map[string]string{
-			"main.shen": `(do (load "dir1/x.shen") (load "dir2/x.shen")
+			"deep/level/main.shen": `(do (load "../../x.shen") (load "./x.shen")
   (pr "loaded" (stoutput)))
 `,
-			"dir1/x.shen": `(define first-dynamic X -> (fix (/. Y X) 0))
+			"x.shen": `(define first-dynamic X -> (fix (/. Y X) 0))
 `,
-			"dir2/x.shen": `(define second-dynamic X -> (shen.app X ""))
+			"deep/level/x.shen": `(define second-dynamic X -> (shen.app X ""))
 `,
 		}
 		for name, text := range files {
@@ -108,7 +108,7 @@ func TestDynamicLoadClosure(t *testing.T) {
 			}
 		}
 		artifact := filepath.Join(work, "same-basename-artifact")
-		build := exec.CommandContext(ctx, cli, "build", "main.shen", artifact,
+		build := exec.CommandContext(ctx, cli, "build", "deep/level/main.shen", artifact,
 			"--target", "c", "--host", host)
 		build.Dir = source
 		build.Env = append(os.Environ(), "YGGDRASIL_SHEN_C_DIR="+shenC)

@@ -227,7 +227,11 @@
 
 (define ygg.canonical-parts
   [] Acc -> (reverse Acc)
+  ["" | Parts] [] -> (ygg.canonical-parts Parts ["" | []])
+  ["" | Parts] Acc -> (ygg.canonical-parts Parts Acc)
   ["." | Parts] Acc -> (ygg.canonical-parts Parts Acc)
+  [".." | Parts] [".." | Acc] -> (ygg.canonical-parts Parts [".." | [".." | Acc]])
+  [".." | Parts] ["" | Acc] -> (ygg.canonical-parts Parts ["" | Acc])
   [".." | Parts] [_ | Acc] -> (ygg.canonical-parts Parts Acc)
   [".." | Parts] Acc -> (ygg.canonical-parts Parts [".." | Acc])
   [Part | Parts] Acc -> (ygg.canonical-parts Parts [Part | Acc]))
