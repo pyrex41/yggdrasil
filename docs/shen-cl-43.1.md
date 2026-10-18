@@ -34,8 +34,13 @@ conditional dictionary inclusion; they have not been run in this qualification.
   Prolog, stdin readers and the new structural dictionary regression.
 - The dictionary fixture verifies numeric structural keys, replacement count,
   a stored empty list, removal and count in a standalone Lisp artifact.
-- Lisp/Scheme, Lisp/Swift and Lisp/Truffle each pass fib, hello, the
+- Lisp/Scheme, Lisp/Swift, Lisp/Rust, Lisp/Julia and Lisp/Truffle each pass fib, hello, the
   dictionary fixture and stdin read-data with both targets checked.
+- Julia uses Julia 1.12.1 without a sysimage for this gate.
+- Erlang passes the same four fixture goldens in Docker, with one checked
+  target; this is an independent golden check, not a two-target parity run.
+- Joy passes its bounded sum artifact (32004000); this does not qualify the
+  full Shen kernel on the Joy VM.
 - The Go 43.1 launcher also works as a stage-1 host: fib, Prolog, metaeval
   and read-data pass on the Go stage-2 target, including two boots and stdin.
 - An old 42.2 host is rejected by the explicit kernel guard.

@@ -69,6 +69,34 @@
     "hosted-remainder": {
       "artifact": "hosted-remainder.jsonl.gz",
       "sha256": "bae44eeb077d974fbc4e7796e6a8fdc76243ac2e689a39e81df715ad3e0ea184"
+    },
+    "lisp-rust": {
+      "artifact": "lisp-rust.log.gz",
+      "sha256": "b6605e1d9c703fba656d3fd168d6b29f943a2e5e9cfbe99dfa986367d316120b",
+      "fixtures": 4,
+      "targets": 2,
+      "summary": "PASS against goldens and Lisp"
+    },
+    "erlang-goldens": {
+      "artifact": "erlang-goldens.log.gz",
+      "sha256": "55819277a01d63ef0bcbd812c216929284c690ce6a99078c06ae4a36e79635e2",
+      "fixtures": 4,
+      "targets": 1,
+      "summary": "PASS against committed goldens; Docker Erlang target only"
+    },
+    "joy-bounded": {
+      "artifact": "joy-bounded.log.gz",
+      "sha256": "c11f1961ebd18ac4c56f52341de126056692b66cf87a0a681fbea7b4e0ec17d2",
+      "summary": "PASS sum result32004000; bounded VM capability only, no full kernel claim"
+    },
+    "lisp-julia": {
+      "artifact": "lisp-julia.log.gz",
+      "sha256": "9d5e757a50e7c8166698c3ee6692bb67fb9cb375e63babdfbb45ed4cc6e3fd52",
+      "fixtures": 4,
+      "targets": 2,
+      "summary": "PASS fib/hello/lisp-dictionary/read-data against goldens, repeated boots",
+      "julia_commit": "9655446d9f67561cfbbf7336635869b673b471c9",
+      "sysimage": false
     }
   },
   "hosted_go_tests": {
