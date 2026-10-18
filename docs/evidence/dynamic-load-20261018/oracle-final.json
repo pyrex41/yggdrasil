@@ -1,0 +1,16 @@
+{
+  "command": [
+    "go",
+    "test",
+    "-count=1",
+    "-timeout",
+    "8m",
+    "-run",
+    "TestAnalysisOracleMatchesShake|TestFootprintEnginesAgree|TestFootprintOrderIsKernelLoadOrder|TestMultiFileLoadsAreHoisted",
+    "-v",
+    "."
+  ],
+  "exit_code": 0,
+  "seconds": 203.62851366700488,
+  "host_sha256": "e5166b02930f49d67844cdb3bf7eef5c7e23226862a8c2478d18eba1618db84d"
+}

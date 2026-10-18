@@ -1,0 +1,14 @@
+{
+  "run": 39161073991,
+  "jobs": [
+    {
+      "job": "with a Shen stage-1 host",
+      "job_id": 117774321904,
+      "checkout_revisions_in_order": [
+        "9a8574c0d7c64af2aea8ebb5d9990bea1f08a249"
+      ],
+      "raw_log_sha256": "0ea8b35da08175c0f1d5f2eab0f520675c103cef3c7aa9ff498701f49f16bdf8"
+    }
+  ],
+  "stage1_revision": "acba88a3f189f055285a9bdb22901ad688db7cd3"
+}

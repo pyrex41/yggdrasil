@@ -7,9 +7,16 @@ on:
 
 jobs:
   native-manifest:
+    timeout-minutes: 15
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            cc: clang-18
+            ar: llvm-ar-18
+          - os: macos-latest
+            cc: clang
+            ar: ar
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -20,13 +27,31 @@ jobs:
           repository: pyrex41/shen-c
           ref: 27fe901f2ce42d03cb9890bcc9729b034efb9e68
           path: shen-c
+      - name: Read the stage-1 host pin for this kernel
+        id: stage1
+        shell: bash
+        run: |
+          set -euo pipefail
+          ref="$(grep -Eom1 '^[0-9a-f]{40}$' yggdrasil/.github/shen-go.ref)"
+          echo "sha=$ref" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: pyrex41/shen-go
+          ref: ${{ steps.stage1.outputs.sha }}
+          path: shen-go
       - uses: actions/setup-go@v5
         with:
           go-version-file: yggdrasil/go.mod
           cache: false
-      - name: Test native manifest, initialization and arity registration
+      - name: Build pinned stage-1 host
+        working-directory: shen-go
+        run: go build -o bin/shen-go ./cmd/shen
+      - name: Test native manifest and dynamic-load dependency closure
         working-directory: yggdrasil
         env:
           YGGDRASIL_SHEN_C_DIR: ${{ github.workspace }}/shen-c
           PKG_CONFIG: /nonexistent/no-boehm-or-pkg-config
-        run: go test -tags shen_c -count=1 -timeout 3m -run 'TestCBuilder' -v .
+          CC: ${{ matrix.cc }}
+          AR: ${{ matrix.ar }}
+          YGGDRASIL_DYNAMIC_HOST: ${{ github.workspace }}/shen-go/bin/shen-go
+        run: go test -tags shen_c -count=1 -timeout 8m -run 'TestCBuilder|TestDynamicLoadClosure' -v .

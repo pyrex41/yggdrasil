@@ -1,0 +1,25 @@
+{
+  "run": 39161299449,
+  "jobs": [
+    {
+      "job": "native-manifest (macos-latest, clang, ar)",
+      "job_id": 117775001611,
+      "checkout_revisions_in_order": [
+        "57ef3bb4974cdb0c178c8809ce06707bda5fd455",
+        "27fe901f2ce42d03cb9890bcc9729b034efb9e68",
+        "acba88a3f189f055285a9bdb22901ad688db7cd3"
+      ],
+      "raw_log_sha256": "7af59e744c470ff101e3a4b7ec270ce9039dacb6c04e243b1cacb8a5ce68d007"
+    },
+    {
+      "job": "native-manifest (ubuntu-latest, clang-18, llvm-ar-18)",
+      "job_id": 117775001820,
+      "checkout_revisions_in_order": [
+        "57ef3bb4974cdb0c178c8809ce06707bda5fd455",
+        "27fe901f2ce42d03cb9890bcc9729b034efb9e68",
+        "acba88a3f189f055285a9bdb22901ad688db7cd3"
+      ],
+      "raw_log_sha256": "aed6e16f2afc9408261d4acf046dd801ede5b217ba48caa6e8c14d9f6a4bdac8"
+    }
+  ]
+}

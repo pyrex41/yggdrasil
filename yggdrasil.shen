@@ -161,6 +161,83 @@
                 Check (ygg.check-basenames Out [])
              Out))
 
+\\ A literal load inside a runtime form is different from a leading load: it
+\\ must stay in the emitted user KL so the program preserves its run-time
+\\ order.  Its source is nevertheless part of the shake's dependency
+\\ closure.  Scan those files for call names so a loaded interpreter can use
+\\ kernel functions (for example `fix`) that do not occur in the entry file.
+\\ This is deliberately an over-approximation: a conditional load keeps its
+\\ dependencies, which is safe and avoids pretending that the host can predict
+\\ run-time control flow.  The files are parsed and bootstrapped only; their
+\\ top-level forms are never evaluated during the shake or emitted early.
+(define ygg.literal-loads
+  [] -> []
+  [[load S] | Forms] -> [S | (ygg.literal-loads Forms)]  where (string? S)
+  [X | Forms] -> (append (ygg.literal-loads X) (ygg.literal-loads Forms))
+  _ -> [])
+
+(define ygg.dynamic-files
+  Files Static -> (reverse (ygg.dynamic-files-h (map (/. F [F []]) Files)
+                                               Static [])))
+
+(define ygg.dynamic-files-h
+  [] _ Acc -> Acc
+  [[F Stack] | Fs] Seen Acc ->
+    (ygg.dynamic-files-h Fs Seen Acc)
+      where (ygg.dynamic-cycle? F Stack)
+  [[F Stack] | Fs] Seen Acc ->
+    (let Forms (ygg.read-optional-file F)
+         Deps  (ygg.literal-loads Forms)
+         Paths (map (/. S (ygg.resolve-path (ygg.dirname F) S)) Deps)
+         New   (ygg.filter (/. D (and (ygg.readable-file? D)
+                                      (not (ygg.path-seen? D Seen)))) Paths)
+         Next  (append (map (/. D [D [F | Stack]]) New) Fs)
+         Seen2 (append New Seen)
+         Acc2  (append New Acc)
+         (ygg.dynamic-files-h Next Seen2 Acc2)))
+
+(define ygg.read-optional-file
+  F -> (trap-error (read-file F) (/. E [])))
+
+(define ygg.readable-file?
+  F -> (trap-error (do (read-file F) true) (/. E false)))
+
+(define ygg.dynamic-cycle?
+  F Stack -> (element? (ygg.canonical-path F)
+                       (map (fn ygg.canonical-path) Stack)))
+
+\\ Dynamic sources are not emitted, so equal basenames in different
+\\ directories are distinct dependencies.  Canonicalise only lexical path
+\\ aliases (./ and ../); preserve the caller's relative-directory semantics.
+(define ygg.path-seen?
+  F Seen -> (element? (ygg.canonical-path F)
+                       (map (fn ygg.canonical-path) Seen)))
+
+(define ygg.canonical-path
+  F -> (ygg.canonical-parts (ygg.path-parts F) []))
+
+(define ygg.path-parts
+  "" -> []
+  S -> (ygg.path-parts-h S "" []))
+
+(define ygg.path-parts-h
+  "" "" Parts -> (reverse Parts)
+  "" Cur Parts -> (reverse [Cur | Parts])
+  (@s C Ss) Cur Parts -> (ygg.path-parts-h Ss "" [Cur | Parts])
+      where (ygg.separator? C)
+  (@s C Ss) Cur Parts -> (ygg.path-parts-h Ss (cn Cur C) Parts))
+
+(define ygg.canonical-parts
+  [] Acc -> (reverse Acc)
+  ["" | Parts] [] -> (ygg.canonical-parts Parts ["" | []])
+  ["" | Parts] Acc -> (ygg.canonical-parts Parts Acc)
+  ["." | Parts] Acc -> (ygg.canonical-parts Parts Acc)
+  [".." | Parts] [".." | Acc] -> (ygg.canonical-parts Parts [".." | [".." | Acc]])
+  [".." | Parts] ["" | Acc] -> (ygg.canonical-parts Parts ["" | Acc])
+  [".." | Parts] [_ | Acc] -> (ygg.canonical-parts Parts Acc)
+  [".." | Parts] Acc -> (ygg.canonical-parts Parts [".." | Acc])
+  [Part | Parts] Acc -> (ygg.canonical-parts Parts [Part | Acc]))
+
 \\ Acc is every file emitted so far, newest first; Stack the files whose
 \\ loads are being expanded, for the cycle case.
 (define ygg.expand-h
@@ -259,16 +336,29 @@
                 Unlimit  (set *maximum-print-sequence-size* 1000000000)
                 Kernel   (kernel-code)
                 Graph    (call-graph Kernel)
-                KLFiles  (ygg.bootstrap-files Files)
+                SourceFiles (ygg.expand-files Files)
+                \\ SourceFiles already includes leading-load expansion; expanding
+                \\ them again would report every static dependency twice.
+                KLFiles  (map (fn bootstrap) SourceFiles)
                 RawKL    (ygg.read-user-kl KLFiles)
-                RawFs    (function-calls RawKL)
+                DynFiles (ygg.dynamic-files SourceFiles SourceFiles)
+                \\ Dynamic files are already discovered recursively.  Expanding
+                \\ them again would reject a transitive leading load as a
+                \\ duplicate; compile each source directly for analysis.
+                DynKLFiles (map (fn bootstrap) DynFiles)
+                DynRawKL (ygg.read-user-kl DynKLFiles)
+                RawFs    (append (function-calls RawKL)
+                                 (function-calls DynRawKL))
                 Strip    (ygg.strip-mode RawKL RawFs)
                 EvalFree (not (= Strip false))
                 KL       (strip-user-declares RawKL Strip)
                 AllTops  (toplevel-forms Kernel)
                 Tops     (prepare-tops AllTops Strip)
-                Seeds    (append (mapcan (fn called-fns) Tops) (function-calls KL))
-                Run      (ygg.shake-rules-run Kernel Graph AllTops KL RawFs RawKL)
+                Seeds    (append (mapcan (fn called-fns) Tops)
+                                 (append (function-calls KL)
+                                         (function-calls DynRawKL)))
+                Run      (ygg.shake-rules-run Kernel Graph AllTops KL RawFs
+                                                  (append RawKL DynRawKL))
                 Foot     (ygg.rule-footprint Seeds Graph)
                 [[maxprint MaxPrint] [kernel Kernel] [graph Graph]
                  [klfiles KLFiles] [rawfs RawFs] [evalfree EvalFree]

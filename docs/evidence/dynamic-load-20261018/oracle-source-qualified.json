@@ -1,0 +1,15 @@
+{
+  "revision": "34bd9d00b8d2c25c95f4458ac50a62b71359d5f9",
+  "source_sha256": {
+    "main.go": "af91bef6547f81ffe7209ae00edbb0f98b7ff9d6cc377960819a761c8e27d7a6",
+    "yggdrasil.shen": "b3675a1ddb8fcdfdfc46decac22c15b5e31a8e665985b20ee4ea7af142a21741",
+    "builders/c/build.sh": "681a50d3c337de3738eec111b555dad61ab53538488591c17c4868183e1ce1ba",
+    "builders/c/compile.py": "a97d184b186fed1d6252e3a6a4183efe0fb2ae4cfece328a667cbf021f8e05b4",
+    "builders.json": "0a580308a876f00ea85bd01b775c1beb6aeedf68dac2e3fc995561abd1f1b661",
+    "dynamic_load_test.go": "587456d78e5ebb9a5dca23c2bae1f4dc0f0eaf6194c93e3cd2634c87e0e83a7c",
+    "tests/tc-interp.shen": "9010d5f767330920a03a9911da47845fcf5d9aaa1d159695caf0f7564d91c024",
+    "tests/interpreter.shen": "795756fa345ba3644c14973e9c30c9d979a0585e7aed3860b56d8bb54444cd0c"
+  },
+  "host_sha256": "e5166b02930f49d67844cdb3bf7eef5c7e23226862a8c2478d18eba1618db84d",
+  "note": "Independent all-fixture oracle tests ran on the same frozen 34bd9d0 sources before pushing. Documentation and evidence edits only followed."
+}

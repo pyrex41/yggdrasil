@@ -1,0 +1,240 @@
+{
+  "conclusion": "success",
+  "databaseId": 39161299449,
+  "event": "pull_request",
+  "headSha": "fb753d50af0ae01fcd93a9b493dfd880c66aee84",
+  "jobs": [
+    {
+      "completedAt": "2026-10-18T20:04:41Z",
+      "conclusion": "success",
+      "databaseId": 117775001611,
+      "name": "native-manifest (macos-latest, clang, ar)",
+      "startedAt": "2026-10-18T20:00:24Z",
+      "status": "completed",
+      "steps": [
+        {
+          "completedAt": "2026-10-18T20:00:26Z",
+          "conclusion": "success",
+          "name": "Set up job",
+          "number": 1,
+          "startedAt": "2026-10-18T20:00:25Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-10-18T20:00:28Z",
+          "conclusion": "success",
+          "name": "Run actions/checkout@v4",
+          "number": 2,
+          "startedAt": "2026-10-18T20:00:26Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-10-18T20:00:32Z",
+          "conclusion": "success",
+          "name": "Run actions/checkout@v4",
+          "number": 3,
+          "startedAt": "2026-10-18T20:00:28Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-10-18T20:00:32Z",
+          "conclusion": "success",
+          "name": "Read the stage-1 host pin for this kernel",
+          "number": 4,
+          "startedAt": "2026-10-18T20:00:32Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-10-18T20:00:33Z",
+          "conclusion": "success",
+          "name": "Run actions/checkout@v4",
+          "number": 5,
+          "startedAt": "2026-10-18T20:00:32Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-10-18T20:00:55Z",
+          "conclusion": "success",
+          "name": "Run actions/setup-go@v5",
+          "number": 6,
+          "startedAt": "2026-10-18T20:00:33Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-10-18T20:01:41Z",
+          "conclusion": "success",
+          "name": "Build pinned stage-1 host",
+          "number": 7,
+          "startedAt": "2026-10-18T20:00:55Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-10-18T20:04:32Z",
+          "conclusion": "success",
+          "name": "Test native manifest and dynamic-load dependency closure",
+          "number": 8,
+          "startedAt": "2026-10-18T20:01:41Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-10-18T20:04:32Z",
+          "conclusion": "success",
+          "name": "Post Run actions/setup-go@v5",
+          "number": 13,
+          "startedAt": "2026-10-18T20:04:32Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-10-18T20:04:33Z",
+          "conclusion": "success",
+          "name": "Post Run actions/checkout@v4",
+          "number": 14,
+          "startedAt": "2026-10-18T20:04:32Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-10-18T20:04:34Z",
+          "conclusion": "success",
+          "name": "Post Run actions/checkout@v4",
+          "number": 15,
+          "startedAt": "2026-10-18T20:04:33Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-10-18T20:04:35Z",
+          "conclusion": "success",
+          "name": "Post Run actions/checkout@v4",
+          "number": 16,
+          "startedAt": "2026-10-18T20:04:34Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-10-18T20:04:38Z",
+          "conclusion": "success",
+          "name": "Complete job",
+          "number": 17,
+          "startedAt": "2026-10-18T20:04:35Z",
+          "status": "completed"
+        }
+      ],
+      "url": "https://github.com/pyrex41/yggdrasil/actions/runs/39161299449/job/117775001611"
+    },
+    {
+      "completedAt": "2026-10-18T20:05:02Z",
+      "conclusion": "success",
+      "databaseId": 117775001820,
+      "name": "native-manifest (ubuntu-latest, clang-18, llvm-ar-18)",
+      "startedAt": "2026-10-18T20:00:18Z",
+      "status": "completed",
+      "steps": [
+        {
+          "completedAt": "2026-10-18T20:00:19Z",
+          "conclusion": "success",
+          "name": "Set up job",
+          "number": 1,
+          "startedAt": "2026-10-18T20:00:19Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-10-18T20:00:20Z",
+          "conclusion": "success",
+          "name": "Run actions/checkout@v4",
+          "number": 2,
+          "startedAt": "2026-10-18T20:00:19Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-10-18T20:00:22Z",
+          "conclusion": "success",
+          "name": "Run actions/checkout@v4",
+          "number": 3,
+          "startedAt": "2026-10-18T20:00:20Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-10-18T20:00:22Z",
+          "conclusion": "success",
+          "name": "Read the stage-1 host pin for this kernel",
+          "number": 4,
+          "startedAt": "2026-10-18T20:00:22Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-10-18T20:00:23Z",
+          "conclusion": "success",
+          "name": "Run actions/checkout@v4",
+          "number": 5,
+          "startedAt": "2026-10-18T20:00:22Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-10-18T20:00:33Z",
+          "conclusion": "success",
+          "name": "Run actions/setup-go@v5",
+          "number": 6,
+          "startedAt": "2026-10-18T20:00:23Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-10-18T20:01:13Z",
+          "conclusion": "success",
+          "name": "Build pinned stage-1 host",
+          "number": 7,
+          "startedAt": "2026-10-18T20:00:33Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-10-18T20:04:59Z",
+          "conclusion": "success",
+          "name": "Test native manifest and dynamic-load dependency closure",
+          "number": 8,
+          "startedAt": "2026-10-18T20:01:13Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-10-18T20:04:59Z",
+          "conclusion": "success",
+          "name": "Post Run actions/setup-go@v5",
+          "number": 13,
+          "startedAt": "2026-10-18T20:04:59Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-10-18T20:05:00Z",
+          "conclusion": "success",
+          "name": "Post Run actions/checkout@v4",
+          "number": 14,
+          "startedAt": "2026-10-18T20:04:59Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-10-18T20:05:00Z",
+          "conclusion": "success",
+          "name": "Post Run actions/checkout@v4",
+          "number": 15,
+          "startedAt": "2026-10-18T20:05:00Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-10-18T20:05:00Z",
+          "conclusion": "success",
+          "name": "Post Run actions/checkout@v4",
+          "number": 16,
+          "startedAt": "2026-10-18T20:05:00Z",
+          "status": "completed"
+        },
+        {
+          "completedAt": "2026-10-18T20:05:00Z",
+          "conclusion": "success",
+          "name": "Complete job",
+          "number": 17,
+          "startedAt": "2026-10-18T20:05:00Z",
+          "status": "completed"
+        }
+      ],
+      "url": "https://github.com/pyrex41/yggdrasil/actions/runs/39161299449/job/117775001820"
+    }
+  ],
+  "status": "completed",
+  "url": "https://github.com/pyrex41/yggdrasil/actions/runs/39161299449"
+}
