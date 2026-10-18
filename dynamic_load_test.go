@@ -24,7 +24,10 @@ func TestDynamicLoadClosure(t *testing.T) {
 	}
 	work := t.TempDir()
 	cli := filepath.Join(work, "yggdrasil")
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	// Three separate native compilations take over three minutes on a
+	// hosted Linux runner. Keep the aggregate budget bounded and below Go's
+	// outer eight-minute timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
 	buildCLI := exec.CommandContext(ctx, "go", "build", "-o", cli, ".")
 	if out, err := buildCLI.CombinedOutput(); err != nil {

@@ -47,4 +47,4 @@ jobs:
           CC: ${{ matrix.cc }}
           AR: ${{ matrix.ar }}
           YGGDRASIL_DYNAMIC_HOST: ${{ github.workspace }}/shen-go/bin/shen-go
-        run: go test -tags shen_c -count=1 -timeout 5m -run 'TestCBuilder|TestDynamicLoadClosure' -v .
+        run: go test -tags shen_c -count=1 -timeout 8m -run 'TestCBuilder|TestDynamicLoadClosure' -v .
