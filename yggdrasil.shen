@@ -187,7 +187,8 @@
     (let Forms (ygg.read-optional-file F)
          Deps  (ygg.literal-loads Forms)
          Paths (map (/. S (ygg.resolve-path (ygg.dirname F) S)) Deps)
-         New   (ygg.filter (/. D (not (element? D Seen))) Paths)
+         New   (ygg.filter (/. D (and (ygg.readable-file? D)
+                                      (not (element? D Seen)))) Paths)
          Next  (append (map (/. D [D [F | Stack]]) New) Fs)
          Seen2 (append New Seen)
          Acc2  (append New Acc)
@@ -195,6 +196,9 @@
 
 (define ygg.read-optional-file
   F -> (trap-error (read-file F) (/. E [])))
+
+(define ygg.readable-file?
+  F -> (trap-error (do (read-file F) true) (/. E false)))
 
 (define ygg.dynamic-cycle?
   F Stack -> (element? (truncate-filename F "")
@@ -302,7 +306,10 @@
                 KLFiles  (ygg.bootstrap-files SourceFiles)
                 RawKL    (ygg.read-user-kl KLFiles)
                 DynFiles (ygg.dynamic-files SourceFiles SourceFiles)
-                DynKLFiles (ygg.bootstrap-files DynFiles)
+                \\ Dynamic files are already discovered recursively.  Expanding
+                \\ them again would reject a transitive leading load as a
+                \\ duplicate; compile each source directly for analysis.
+                DynKLFiles (map (fn bootstrap) DynFiles)
                 DynRawKL (ygg.read-user-kl DynKLFiles)
                 RawFs    (append (function-calls RawKL)
                                  (function-calls DynRawKL))

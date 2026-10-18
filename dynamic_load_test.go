@@ -81,7 +81,7 @@ func TestDynamicLoadClosure(t *testing.T) {
 		runNested := exec.CommandContext(ctx, filepath.Join(nestedOut, "app-c", "app"))
 		runNested.Dir, runNested.Env = source, os.Environ()
 		out, err := runNested.CombinedOutput()
-		if err != nil || !strings.Contains(string(out), "nested = 3\n") {
+		if err != nil || !strings.Contains(string(out), "nested = 3\\n") {
 			t.Fatalf("transitive dynamic-load output = %q, err = %v", out, err)
 		}
 	})
