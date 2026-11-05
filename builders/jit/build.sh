@@ -22,7 +22,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SHEN_JIT="${SHEN_JIT:-$ROOT/../shen-jit}"
 # Exit 3 is a capability SKIP: without the port this target cannot be checked.
 if [ ! -f "$SHEN_JIT/src/port/shen-jit.kl" ]; then
-    echo "jit: no Shen/JIT sources at $SHEN_JIT; set SHEN_JIT or YGGDRASIL_SHEN_JIT_DIR" >&2
+    echo "jit: no Shen/JIT sources at $SHEN_JIT; set YGGDRASIL_SHEN_JIT_DIR to a source checkout or a release source tarball" >&2
     exit 3
 fi
 SHEN_JIT="$(cd "$SHEN_JIT" && pwd)"
@@ -73,8 +73,13 @@ done
     -l "$WORK/tools/lower.shen" \
     -l "$WORK/tools/stage0.shen" \
     -l "$ROOT/builders/jit/build.shen" \
-    -e "(yggdrasil.jit.build \"$DIR\" [$USERS] $EVAL [\"$SHEN_JIT/src/port/shen-jit.kl\" \"$LOWER_KL\"] [$UNIVERSE] \"$WORK/stage0\")" \
+    -e "(yggdrasil.jit.build-checked \"$DIR\" [$USERS] $EVAL [\"$SHEN_JIT/src/port/shen-jit.kl\" \"$LOWER_KL\"] [$UNIVERSE] \"$WORK/stage0\")" \
     > "$WORK/lower.log" 2>&1 || { cat "$WORK/lower.log" >&2; exit 1; }
+# Exit 3: this target cannot express the program.
+if [ -f "$WORK/stage0/jit-refused.txt" ]; then
+    cat "$WORK/stage0/jit-refused.txt" >&2
+    exit 3
+fi
 [ -s "$WORK/stage0/toplevel.sbc" ] || { cat "$WORK/lower.log" >&2; echo "jit: the lowerer wrote no code" >&2; exit 1; }
 
 "$RUNTIME" --stage1 "$WORK/stage0" "$WORK/app.img"

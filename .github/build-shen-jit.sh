@@ -7,6 +7,12 @@ set -eu
 here=$(dirname "$0")
 version=$(sed -n 's/^version=//p' "$here/shen-jit.ref")
 sha256=$(sed -n 's/^sha256=//p' "$here/shen-jit.ref")
+# macOS's sha256sum -c exits 0 on a line it cannot parse, so an empty pin has to
+# be refused here.
+case "$sha256" in
+    *[!0-9a-f]*|"") echo "build-shen-jit: bad sha256 in shen-jit.ref" >&2; exit 1 ;;
+esac
+[ "${#sha256}" -eq 64 ] || { echo "build-shen-jit: bad sha256 in shen-jit.ref" >&2; exit 1; }
 name=shen-jit-$version.tar.gz
 mkdir -p "$1"
 curl -fsSL --retry 3 -o "$1/$name" "https://github.com/tizoc/shen-jit/releases/download/v$version/$name"

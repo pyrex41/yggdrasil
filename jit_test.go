@@ -336,3 +336,47 @@ func TestJitTraceCheck(t *testing.T) {
 		}
 	}
 }
+
+// A function defined twice cannot behave as written here, as user defuns are all
+// in the image before the first toplevel form runs. The builder has to refuse it,
+// not print the last definition's answer for both calls.
+func TestJitRefusesRedefinition(t *testing.T) {
+	jitCheckout(t)
+	if defaultHost() == nil {
+		t.Skip("no Shen host available")
+	}
+	dir := t.TempDir()
+	prog := filepath.Join(dir, "redefine.shen")
+	src := "(define f -> 1)\n(output \"~A~%\" (f))\n(define f -> 2)\n(output \"~A~%\" (f))\n"
+	if err := os.WriteFile(prog, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := run([]string{"build", prog, filepath.Join(dir, "out"), "--target", "jit"}); code != 3 {
+		t.Fatalf("build of a program that redefines a function exited %d, want 3", code)
+	}
+	msg, err := os.ReadFile(filepath.Join(dir, "out", "app-jit.build", "stage0", "jit-refused.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(msg), "defined more than once") {
+		t.Errorf("refusal does not say why: %q", msg)
+	}
+}
+
+// A machine with no host cannot check a program, which is not a failure of the
+// program: Bifrost reads exit 3 as a SKIP.
+func TestNoHostIsACapabilityLimit(t *testing.T) {
+	t.Setenv("YGGDRASIL_HOST", "")
+	t.Setenv("BIFROST_SHEN_JIT", "")
+	t.Chdir(t.TempDir())
+	if defaultHost() != nil {
+		t.Skip("a sibling host is in reach of the temp directory")
+	}
+	prog := filepath.Join(t.TempDir(), "p.shen")
+	if err := os.WriteFile(prog, []byte("(output \"x\")\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := run([]string{"shake", prog, filepath.Join(t.TempDir(), "out")}); code != 3 {
+		t.Fatalf("shake with no host exited %d, want 3", code)
+	}
+}

@@ -25,7 +25,8 @@
 \\   Entry            shen-jit.*entry* is set while stage 1 runs, so the image
 \\                    is a program.  When the artifact starts, its entry does what
 \\                    every builder's boot does: the kernel's toplevel forms, then
-\\                    shen.initialise, then the user's forms in manifest order.
+\\                    shen.initialise, then the user's toplevel forms in manifest
+\\                    order.  User defuns are already in the image by then.
 \\                    Stage 1 calls shen.initialise too, by name, so the slice's is
 \\                    guarded to do nothing until the entry has started.
 
@@ -181,6 +182,27 @@
   Path Names -> (let S (open Path out)
                      W (map (/. N (pr (make-string "~A~%" N) S)) Names)
                   (close S)))
+
+\\ User defuns are in the image before any toplevel form runs, so a function
+\\ defined twice would already be its last definition when the first toplevel form
+\\ called it.  That program is refused rather than given different output.
+(define yggdrasil.jit.duplicate
+  [] -> []
+  [N | Ns] -> N where (element? N Ns)
+  [_ | Ns] -> (yggdrasil.jit.duplicate Ns))
+
+(define yggdrasil.jit.build-checked
+  Slice Users Eval PortFiles Universe Out
+  -> (let UForms (mapcan (/. U (yggdrasil.jit.read (cn Slice (cn "/" U)))) Users)
+          Dup (yggdrasil.jit.duplicate (yggdrasil.jit.names (yggdrasil.jit.defuns UForms)))
+       (if (= Dup [])
+           (yggdrasil.jit.build Slice Users Eval PortFiles Universe Out)
+           (yggdrasil.jit.write-refusal Out Dup))))
+
+(define yggdrasil.jit.write-refusal
+  Out Dup -> (let S (open (cn Out "/jit-refused.txt") out)
+                  W (pr (make-string "jit: ~A is defined more than once, and this target defines every function before the program starts~%" Dup) S)
+               (close S)))
 
 (define yggdrasil.jit.build
   Slice Users Eval PortFiles Universe Out

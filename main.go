@@ -325,7 +325,8 @@ func shakeMode(prog, outdir string, host []string, evalStyle string, quiet bool,
 		host = defaultHost()
 	}
 	if host == nil {
-		return "", fmt.Errorf("no Shen host launcher found. Set $YGGDRASIL_HOST (or $BIFROST_SHEN_JIT) to a Shen 43.2 launcher, e.g.\n  YGGDRASIL_HOST=/path/to/shen-jit/build/shen-jit yggdrasil shake ...")
+		// Exit 3: nothing is wrong with the program, this machine just cannot check it.
+		return "", capabilityError{message: "no Shen host launcher found. Set $YGGDRASIL_HOST (or $BIFROST_SHEN_JIT) to a Shen 43.2 launcher, e.g.\n  YGGDRASIL_HOST=/path/to/shen-jit/build/shen-jit yggdrasil shake .."}
 	}
 	prog, _ = filepath.Abs(prog)
 	outdir, _ = filepath.Abs(outdir)
@@ -649,6 +650,16 @@ type builder struct {
 type capabilityError struct{ message string }
 
 func (e capabilityError) Error() string { return e.message }
+
+// shakeExitCode is 3 for a capability limit, which Bifrost reports as a SKIP,
+// and 1 for anything else.
+func shakeExitCode(err error) int {
+	var unsupported capabilityError
+	if errors.As(err, &unsupported) {
+		return 3
+	}
+	return 1
+}
 
 // portReadsUnknown is the only string builders.json's port_reads may hold. It
 // is a VALUE, not a missing key, because "nobody has measured this port's
@@ -1209,7 +1220,7 @@ func cmdStage(cmd string, rest []string) int {
 		out, err := shakeMode(prog, outdir, host, *evalStyle, false, opts)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "yggdrasil:", err)
-			return 1
+			return shakeExitCode(err)
 		}
 		if *typecheck {
 			if err := appendTypecheckManifest(out, host, checkedKernel); err != nil {
@@ -1236,7 +1247,7 @@ func cmdStage(cmd string, rest []string) int {
 	}
 	if _, err := shakeMode(prog, outdir, host, *evalStyle, true, opts); err != nil {
 		fmt.Fprintln(os.Stderr, "yggdrasil:", err)
-		return 1
+		return shakeExitCode(err)
 	}
 	if *typecheck {
 		abs, _ := filepath.Abs(outdir)

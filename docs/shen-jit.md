@@ -38,8 +38,9 @@ Stage 1 reads 24 fixed file names and calls four initialisers. The builder write
 unused files empty and supplies the initialisers. `shen-jit.initialise` sets
 `shen-jit.*entry*`, which makes the image a program whose arguments are all its own.
 
-When it starts, the artifact does what every builder's boot does: the kernel's toplevel
-forms, `shen.initialise`, then the user's forms. Stage 1's own call to
+When it starts, the artifact does what most builders' boot does: the kernel's toplevel
+forms, `shen.initialise`, then the user's toplevel forms. User functions are already in
+the image by then. Stage 1's own call to
 `shen.initialise` is guarded to do nothing, so a traced run records the boot. The cost
 is startup: about 4 ms for `fib`, against about 6.5 ms for a whole `shen-jit` running
 the same script (best of 30, macOS arm64, 2026-11-05).
@@ -53,6 +54,13 @@ What the build leaves in `<exe>.build/stage0/`:
 
 ### Limits
 
+- Every user function is defined before the first toplevel form runs. A program that
+  defines a function twice would see only the last definition, so the builder refuses
+  it with exit 3. A call made before its definition succeeds here, where a whole
+  Shen raises that the function is undefined.
+- The target needs Shen/JIT's source tree, from `../shen-jit` or
+  `YGGDRASIL_SHEN_JIT_DIR`. A release's single executable can host a shake but cannot
+  build this target.
 - The port's functions and any in `jit-port-support.txt` are not woven by `--trace`,
   so `trace-check` does not see them, as it does not see another port's natives.
 - `scip-check` reports SKIP: nothing has established that this target compiles calls
