@@ -114,7 +114,7 @@ env:
   # each add a host-gated test therefore needs the count re-measured and the
   # enumeration above re-written; that is the intended cost, and it is what
   # this integration paid.)
-  NO_HOST_EXPECTED_SKIPS: "58"
+  NO_HOST_EXPECTED_SKIPS: "59"
   # macos-latest and windows-latest may skip MORE than that, for reasons that
   # have nothing to do with a host: portable_test.go:138 skips without python3
   # and portable_test.go:382 skips without node.  Both are present on the

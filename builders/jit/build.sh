@@ -86,4 +86,4 @@ fi
 cat "$RUNTIME" "$WORK/app.img" > "$OUT.tmp"
 chmod +x "$OUT.tmp"
 mv "$OUT.tmp" "$OUT"
-grep '^jit:' "$WORK/lower.log" >&2 | sort -u || true
+grep '^jit:' "$WORK/lower.log" | sort -u >&2 || true

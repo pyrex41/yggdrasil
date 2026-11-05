@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 // jitCheckout returns the sibling Shen/JIT checkout, or skips.
@@ -295,7 +297,9 @@ func TestJitThread(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, argv := jitBuild(t, src, shakeOpts{})
-	out, err := exec.Command(argv[0], argv[1:]...).Output()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, argv[0], argv[1:]...).Output()
 	if err != nil || string(out) != "finished\n" {
 		t.Fatalf("stdout = %q, err = %v", out, err)
 	}

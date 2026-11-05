@@ -7,8 +7,8 @@
 \\
 \\ Stage 1 (this file): shake a program against that kernel and emit
 \\ minimal KL + a manifest.  Pure Shen against the certified kernel API.
-\\ The reference host is shen-cl built on the same 43.2 kernel (its
-\\ 3.2.0 release line); any host whose `bootstrap` emits portable KL will do
+\\ The reference host is Shen/JIT, on the same 43.2 kernel;
+\\ any host whose `bootstrap` emits portable KL will do
 \\ (see docs/targets.md).  Other hosts may emit port-internal hooks from
 \\ their bootstrap compiler (see README, host-portability gotcha).  Stage 2
 \\ (per target, lives in each port repo): compile the shaken KL with the

@@ -24,7 +24,7 @@ in the order declared by `*kernel*` in `yggdrasil.shen`. The files contain
 functions for reachability analysis. The vendored files retain upstream
 whitespace, including spaces inside multiline string literals.
 
-The release's `compiler.kl`, `stlib.kl`, and six `extension-*.kl` files remain outside the
+The release's `stlib.kl` and six `extension-*.kl` files remain outside the
 shake universe. Compile-time extension expansion occurs on the matching
 43.2 host. A program that calls an excluded library at runtime still needs
 an explicit module; vendoring the core does not make that library reachable.

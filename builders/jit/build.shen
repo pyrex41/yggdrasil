@@ -13,8 +13,9 @@
 \\   Port overrides   A port defun replaces the slice's defun of the same name,
 \\                    as stage 0 does for the whole kernel.
 \\   Port closure     Starting from those overrides and the program, a port
-\\                    defun is kept when any kept form names it.  Naming is
-\\                    conservative: a symbol in data keeps a function too.
+\\                    defun is kept when any kept form calls it.  A symbol in
+\\                    data does not keep a function: a name called through data
+\\                    is a computed name, which the shake reports.
 \\   Port support     A kernel function that kept port code names and the slice
 \\                    does not have is taken from Universe and listed in
 \\                    jit-port-support.txt, since it runs outside the manifest.

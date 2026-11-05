@@ -14,7 +14,8 @@ yggdrasil run tests/fib.shen out/ --target jit
 Shen/JIT runs the shaker from `../shen-jit/build/shen-jit`, or wherever
 `YGGDRASIL_HOST` says. A shake of `tests/fib.shen` keeps the same 81 kernel functions
 and is byte-identical between runs. Its reader turns `8.0` into the integer 8, and
-reads an integer past the fixnum range as the nearest real, in what `bootstrap` emits.
+reads an integer past the fixnum range as a real, in what `bootstrap` emits. That real
+is not always the nearest: 2^63 is `9.223372036854778e18` on v0.2.
 
 ## As a target
 
@@ -67,7 +68,7 @@ What the build leaves in `<exe>.build/stage0/`:
   compositionally. `call_style`, `dispatch`, `special_forms`, `port_writes` and
   `native_deps` are undeclared, and `yggdrasil contract --target jit` shows them unknown.
 - `stlib` and the extensions are outside the universe, as on every target.
-- The builder is a POSIX shell script. It has run on macOS arm64 only; Linux runs in CI
+- The builder is a bash script. It has run on macOS arm64 only; Linux runs in CI
   once this is merged, and Windows has not been tried.
 
 ## What moving to 43.2 means for the other targets
