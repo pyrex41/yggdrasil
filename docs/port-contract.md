@@ -333,6 +333,7 @@ How a port implements the extractor is its business:
 | compiles to a language, lookup calls | pattern the generated code for binding and lookup sites | shen-go today (`scip.go` does this from the Go source) |
 | compiles to a language without an indexer | the language's own parser (go/ast, esprima, Lua's `luac -l`) | shen-lua, ShenScript |
 | interpreter, artifact is the KL slice | identity: `node`/`edge` from `kernel.kl` itself | shen-swift, the `kl` target |
+| baseline JIT over register bytecode, artifact holds the lowered slice | unmeasured: `scip-check` reports SKIP, as `call_style` is undeclared | Shen/JIT |
 | whole-program optimising compiler | not compositional; `body` is meaningless, only `node`/`edge` are compared, and the report says so | SBCL, Chez |
 
 SCIP is therefore the *first row*, not the contract. What is fixed is the

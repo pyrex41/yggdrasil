@@ -33,9 +33,10 @@ case "$DIR" in /*) ;; *) DIR="$PWD/$DIR" ;; esac
 case "$OUT" in /*) ;; *) OUT="$PWD/$OUT" ;; esac
 mkdir -p "$OUT"
 
-# The user .kl filename from the manifest (one expected for build/run).
-USER_KL="$(sed -n 's/^user=//p' "$DIR/yggdrasil.manifest.txt" | head -1)"
-[ -n "$USER_KL" ] || { echo "swift: no user= in manifest" >&2; exit 1; }
+# The user .kl filenames from the manifest: a multi-file program has one line per
+# file (docs/shake.md), and the interpreter takes one file of forms.
+USER_KLS="$(sed -n 's/^user=//p' "$DIR/yggdrasil.manifest.txt")"
+[ -n "$USER_KLS" ] || { echo "swift: no user= in manifest" >&2; exit 1; }
 
 # Resolve the shen-swift binary; build a release binary if none is provided and
 # none is already built (the interpreter is the runtime, referenced by `run`).
@@ -55,7 +56,11 @@ fi
 
 # The artifact is the shaken slice; copy it next to the launcher.
 cp "$DIR/kernel.kl" "$OUT/kernel.kl"
-cp "$DIR/$USER_KL"  "$OUT/user.kl"
+: > "$OUT/user.kl"
+printf '%s\n' "$USER_KLS" | while IFS= read -r user_kl; do
+    cat "$DIR/$user_kl" >> "$OUT/user.kl"
+    printf '\n' >> "$OUT/user.kl"
+done
 
 # `run` drives the interpreter on exactly this slice (no full-kernel load, no
 # launcher). SHEN_SWIFT_BIN is baked in but stays overridable at run time.

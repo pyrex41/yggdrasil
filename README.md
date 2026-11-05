@@ -1,7 +1,7 @@
 # Yggdrasil
 
 A tree-shaker for [Shen](https://shenlanguage.org). It takes a Shen program and
-the ShenOSKernel 43.1 kernel, works out which of the kernel's 727 functions the program can
+the ShenOSKernel 43.2 kernel, works out which of the kernel's 728 functions the program can
 reach, and emits just that slice as portable KLambda. A per-target builder then
 compiles the slice with the port's own compiler into a standalone artifact.
 
@@ -21,18 +21,19 @@ Or download a release binary, or `nix develop` for a shell with every target
 toolchain pinned. The CLI embeds the shaker and the kernel, so it runs without a
 checkout.
 
-Stage 1 needs a Shen host. By default it looks for a sibling `../shen-cl`
+Stage 1 needs a Shen host. By default it looks for a sibling `../shen-jit`
 checkout; set `YGGDRASIL_HOST` to any Shen launcher to override. Stage 2 needs
 the target port as a sibling checkout (`../shen-go`, `../shen-lua`, and so on)
 or a `YGGDRASIL_SHEN_<PORT>_DIR` variable pointing at one.
 
 The host must run the same community kernel as the vendored slice,
-ShenOSKernel 43.1. Shen CL 3.2.0 is the reference host. Set
-`YGGDRASIL_HOST=/path/to/shen-cl/bin/sbcl/shen` explicitly when checking a new
-checkout. A host still running 42.2 must be upgraded before use with this tree.
-Stage-2 targets also need the public `char-stream?`, `read-unit-string`, and
-`write-string` interfaces; target validation is recorded in
-[`docs/shen-cl-43.1.md`](docs/shen-cl-43.1.md).
+ShenOSKernel 43.2, and the shaker refuses any other.
+[Shen/JIT](https://github.com/tizoc/shen-jit) 0.2 is the reference host: its
+release archives are a single executable. The other ports are still on 43.1, so
+they are stage-2 targets until they move. Stage-2 targets also need the public
+`char-stream?`, `read-unit-string`, and `write-string` interfaces.
+[`docs/shen-jit.md`](docs/shen-jit.md) records what has been checked on 43.2, and
+[`docs/shen-cl-43.1.md`](docs/shen-cl-43.1.md) the earlier move to 43.1.
 
 ## Use
 
@@ -68,6 +69,7 @@ order was checked, and the flags the shake ran with.
 | `c` | shen-c v0.3.0+ | Native C with the independent reference-counted runtime |
 | `joy` | shen-joy | bounded image for the allocation-free device VM |
 | `kl` | shen-go `cmd/kl` | the slice run directly on the bare KLambda VM |
+| `jit` | Shen/JIT | one native executable holding only the slice, 0.35 MB for `fib` |
 
 Build and run recipes are data in [`builders.json`](builders.json).
 [`docs/targets.md`](docs/targets.md) has the per-target details, sizes and
@@ -102,6 +104,7 @@ assumed.
 | [`docs/shake.md`](docs/shake.md) | how the shake works: reachability, eval-stripping, initialisation, pruning |
 | [`docs/analysis-rules.md`](docs/analysis-rules.md) | the Datalog rules, the runtime trace, the SCIP check |
 | [`docs/port-contract.md`](docs/port-contract.md) | the facts a port declares and how each is verified |
+| [`docs/shen-jit.md`](docs/shen-jit.md) | the Shen/JIT host and target, and the move to kernel 43.2 |
 | [`docs/parity.md`](docs/parity.md) | the cross-target behavioural gate |
 | [`docs/why.md`](docs/why.md) | footprint attribution |
 | [`docs/lowering.md`](docs/lowering.md) | port-specific lowering, and what running it found |
@@ -122,8 +125,8 @@ Without them, host-gated tests skip by name and CI asserts the exact skip count.
 
 ## Lineage
 
-The kernel is the community ShenOSKernel 43.1 (Shen-Language/shen-sources, tag
-`shen-43.1`, also used by shen-scheme 0.51), vendored byte-for-byte under
+The kernel is the community ShenOSKernel 43.2 (Shen-Language/shen-sources, tag
+`shen-43.2`, also used by Shen/JIT 0.2), vendored byte-for-byte under
 [`KLambda/`](KLambda/); [`KLambda/PROVENANCE.md`](KLambda/PROVENANCE.md) has the
 hashes and the lineage decision. Yggdrasil 1.0 targeted an earlier community
 kernel; this repository retargeted it to Tarver's S41.2 and S42.0 for a while,

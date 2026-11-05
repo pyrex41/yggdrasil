@@ -292,8 +292,8 @@ func TestPortReadsAreDeclaredForEveryTarget(t *testing.T) {
 				"the empty list, and only the --prune-init-unverified path substitutes the union",
 				name, reads)
 		}
-		if portReadsVerified(name) && name != "go" {
-			t.Errorf("target %s claims a verified port_reads; only go's list has been read off a runtime", name)
+		if portReadsVerified(name) && name != "go" && name != "jit" {
+			t.Errorf("target %s claims a verified port_reads; only go's and jit's lists have been read off a runtime", name)
 		}
 	}
 	if !portReadsVerified("go") {

@@ -338,7 +338,7 @@ func klDelta(foot, rs, special, users map[string]bool) (missing, extra []string)
 func cmdScipCheck(rest []string) int {
 	fs := flag.NewFlagSet("yggdrasil scip-check", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: shen-cl`)
+	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: shen-jit`)
 	evalStyle := fs.String("eval-style", "sub", "how the host evaluates the shake expr (sub | positional)")
 	target := fs.String("target", "go", "stage-2 target to build both programs with (only compositional backends are meaningful)")
 	if err := fs.Parse(reorderArgs(rest, "host", "eval-style", "target")); err != nil {

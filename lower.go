@@ -546,7 +546,7 @@ func reportLowering(outdir string, g lowerGate) (*lowerReport, error) {
 func cmdLower(rest []string) int {
 	fs := flag.NewFlagSet("yggdrasil lower", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: shen-cl`)
+	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: Shen/JIT`)
 	evalStyle := fs.String("eval-style", "sub", "how the host evaluates the shake expr (sub | positional)")
 	target := fs.String("target", "", "the port whose native_overrides table to lower against (required)")
 	reportOnly := fs.Bool("report-only", false, "shake and measure only: print how many kept kernel defuns the target declares a native for, and which. Never writes lowered/ and is never refused by the install-phase gate")
@@ -663,10 +663,10 @@ type lowerCheckPair struct {
 func cmdLowerCheck(rest []string) int {
 	fs := flag.NewFlagSet("yggdrasil lower-check", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: shen-cl`)
+	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: Shen/JIT`)
 	evalStyle := fs.String("eval-style", "sub", "how the host evaluates the shake expr (sub | positional)")
 	target := fs.String("target", "", "the port to lower for and run both slices on (required)")
-	reference := fs.String("reference", "lisp", "reference target whose canonical run is compared against the golden")
+	reference := fs.String("reference", "jit", "reference target whose canonical run is compared against the golden")
 	stdinFile := fs.String("stdin", "", "file fed to every run's stdin (default: tests/<name>.stdin when it exists)")
 	if err := fs.Parse(reorderArgs(rest, "host", "eval-style", "target", "reference", "stdin")); err != nil {
 		return 2

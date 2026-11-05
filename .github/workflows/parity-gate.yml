@@ -20,8 +20,8 @@ name: parity-gate
 #     so shrinkage is a failure, not a quieter success.
 #
 # Reference host: none.  The goldens are committed, so the gate runs with
-# --expect and needs no shen-cl/sbcl build; shen-go doubles as the stage-1 host
-# since Go is on the runner anyway.
+# --expect and needs no other build; Shen/JIT is the stage-1 host, as the port
+# on the kernel in KLambda/, and builds with the runner's C compiler.
 
 on:
   schedule:
@@ -30,10 +30,10 @@ on:
     inputs:
       targets:
         description: "comma-separated stage-2 targets"
-        default: "go,js,lua"
+        default: "jit,go,js,lua"
       min_targets:
         description: "fail unless every fixture checks at least this many"
-        default: "3"
+        default: "4"
 
 concurrency:
   group: parity-gate
@@ -44,13 +44,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      TARGETS: ${{ github.event.inputs.targets || 'go,js,lua' }}
-      MIN_TARGETS: ${{ github.event.inputs.min_targets || '3' }}
+      TARGETS: ${{ github.event.inputs.targets || 'jit,go,js,lua' }}
+      MIN_TARGETS: ${{ github.event.inputs.min_targets || '4' }}
     steps:
       - uses: actions/checkout@v4
 
-      # shen-go doubles as the stage-1 host here, so an unpinned master makes
-      # a red gate unattributable: rendering, host, or port? The SHA lives in
+      # shen-go is a stage-2 target here, so an unpinned master makes a red
+      # gate unattributable: rendering or port? The SHA lives in
       # .github/shen-go.ref -- one copy for the three workflows that need it.
       # (ShenScript and shen-lua below are still floating; pinning those is
       # separate work.)
@@ -83,7 +83,7 @@ jobs:
           # SHEN_GO_REF out of.
           git clone -q https://github.com/pyrex41/shen-go.git
           git -C shen-go checkout -q "$SHEN_GO_REF"
-          echo "shen-go host pinned at $(git -C shen-go rev-parse HEAD)"
+          echo "shen-go pinned at $(git -C shen-go rev-parse HEAD)"
           git clone --depth 1 -b master https://github.com/pyrex41/ShenScript.git
           git clone --depth 1 -b main   https://github.com/pyrex41/shen-lua.git
 
@@ -97,16 +97,15 @@ jobs:
         run: npm ci
         working-directory: ${{ github.workspace }}/../ShenScript
 
-      # The stage-1 host. shen-cl would mean an sbcl kernel build; shen-go is a
-      # `go build` we can afford, and the goldens mean no reference host is
-      # needed at all.
-      - name: build the shen-go stage-1 host
-        run: go build -o "$GITHUB_WORKSPACE/../shen-go-host" ./cmd/shen
-        working-directory: ${{ github.workspace }}/../shen-go
+      # The stage-1 host: the Shen/JIT release pinned in .github/shen-jit.ref,
+      # the only maintained port on the kernel in KLambda/.
+      - name: build the Shen/JIT stage-1 host (pinned)
+        run: sh .github/build-shen-jit.sh "$GITHUB_WORKSPACE/../shen-jit"
 
       - name: parity gate
         env:
-          YGGDRASIL_HOST: ${{ github.workspace }}/../shen-go-host
+          YGGDRASIL_HOST: ${{ github.workspace }}/../shen-jit/build/shen-jit
+          YGGDRASIL_SHEN_JIT_DIR: ${{ github.workspace }}/../shen-jit
           YGGDRASIL_SHEN_GO_DIR: ${{ github.workspace }}/../shen-go
           YGGDRASIL_SHENSCRIPT_DIR: ${{ github.workspace }}/../ShenScript
           YGGDRASIL_SHEN_LUA_DIR: ${{ github.workspace }}/../shen-lua

@@ -126,7 +126,7 @@ func TestLoadBuildersEmbedded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"lisp", "lua", "go", "joy", "rust", "js", "erlang", "c", "truffle", "truffle-native"} {
+	for _, want := range []string{"lisp", "lua", "go", "joy", "rust", "js", "erlang", "c", "truffle", "truffle-native", "jit"} {
 		if _, ok := b[want]; !ok {
 			t.Errorf("missing target %q", want)
 		}
