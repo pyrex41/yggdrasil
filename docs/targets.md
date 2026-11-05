@@ -45,6 +45,7 @@ Paths below are relative to the sibling port checkout unless they start with
 | `joy` | `builders/joy/build.sh <dir> <out.sji> [shen-joy]` | deterministic shen-joy image v1, run by the bounded allocation-free device VM | 308 bytes for `tests/joy-sum.shen` |
 | `js` | `node ShenScript/bin/yggdrasil-build.js <dir> <out.js>` | self-contained ES module on Node 20+, Bun or Deno 2 | ~73 KB; ~0.1 s on Node |
 | `julia` | `julia --project=shen-julia shen-julia/bin/yggdrasil-build.jl <dir> <outdir> --sysimage` | artifact project; with `--sysimage` a per-program sysimage, otherwise a lib-mode `.jl`. Kernel and user defuns are baked as module methods, the same AOT technique as shen-julia's own fast boot | sysimage ~266 MB, ~0.15 s warm (S42-era figure, not re-measured); lib mode ~0.5 s |
+| `jit` | `builders/jit/build.sh <dir> <exe>` (`SHEN_JIT`) | one native executable: Shen/JIT's runtime with an image of the slice and the part of the port it reaches, lowered by Shen/JIT's own lowerer. An eval-capable slice carries the lowerer. See [shen-jit.md](shen-jit.md) | 0.35 MB, ~4 ms; 0.9 MB with the lowerer (macOS arm64) |
 | `kl` | `go build ./cmd/kl` in the shen-go checkout, then `yggdrasil program-file` concatenates `kernel.kl`, `(shen.initialise)` and the user files into one KL stream | the slice run directly on shen-go's bare KLambda VM, no stage-2 compiler in between | |
 | `lisp` | `builders/lisp/build.sh <dir> <exe>` (`LISP_IMPL=sbcl\|clisp\|ecl`, `SHEN_CL`) | saved image, or a linked executable under ECL | SBCL 2.6.8 ~121 MB, ~25 ms, or ~11.5 MB and ~0.22 s with `YGGDRASIL_SBCL_COMPRESSION=1`; CLISP ~7.8 MB, ECL ~620 KB plus libecl (S42-era figures, not re-measured) |
 | `lua` | `luajit shen-lua/bin/yggdrasil-build.lua <dir> <out.lua>` | self-contained `.lua` | ~350 KB, ~20 ms |
@@ -73,6 +74,7 @@ kernel against the full 2,500-line one.
 | `c` | `cc` (C17), `python3`, `make` |
 | `erlang` | `erl`, `erlc`, `make`, `cc`, `curl`, `unzip`, `tar`, `shasum` |
 | `go`, `kl` | `go` |
+| `jit` | `cc`, `make`, only to build an unbuilt `../shen-jit` |
 | `joy` | `python3` |
 | `js` | `node` |
 | `julia` | `julia` |
@@ -267,7 +269,8 @@ The expression is always the same; only the launcher syntax differs. Write
 
 | host | command | note |
 |---|---|---|
-| shen-cl | `shen eval -q -l yggdrasil.shen -e SHAKE` | reference host, and the fastest |
+| Shen/JIT | `shen-jit eval -q -l yggdrasil.shen -e SHAKE` | reference host, and the only one here on 43.2; the rows below are history until each port moves |
+| shen-cl | `shen eval -q -l yggdrasil.shen -e SHAKE` | |
 | shen-go | `shen eval -q -l yggdrasil.shen -e SHAKE` | the CLI's fallback host when shen-cl is missing |
 | shen-lua | `bin/shen yggdrasil.shen -e SHAKE` | a `kernel-42.2` checkout (re-verified on `fib`); the published `0.11.x` LuaRocks rocks still carry S42.0 and would mix kernels; omit `-q` (see below) |
 | shen-rust | `shen-rust eval -l yggdrasil.shen -e SHAKE` | omit `-q`. Runs the deep call-graph walk on a 1 GB-stack thread |
@@ -284,20 +287,20 @@ ShenScript, shen-julia and shen-swift route `pr` to file streams regardless of
 `*hush*`, so `-q` is harmless there. Dropping `-q` everywhere is the safe
 default: it only adds a load-echo line to stdout, never to the artifacts.
 
+`yggdrasil.shen` ends by setting `*hush*` to false, so since the move to 43.2 a
+host using the kernel's `pr`, such as Shen/JIT, writes its files after `-q` too.
+
 The CLI writes this invocation for you. `--host "<launcher>"` overrides the
 launcher, and `--eval-style` says how the host takes the expression: `sub` (the
 default) or `positional` for shen-lua. Use an absolute path for the LuaRocks
-launcher, since the CLI runs it from a temporary shake directory. The `sub`
-style passes `-q`, so shen-scheme cannot be the CLI's host today (it writes
-empty artifacts and the CLI reports `shake produced no kernel.kl`); run it by
-hand as in the table.
+launcher, since the CLI runs it from a temporary shake directory.
 
 ## Environment variables
 
 | variable | effect |
 |---|---|
 | `YGGDRASIL_HOST` | stage-1 host launcher argv, checked first. Whitespace-separated, for example `node /path/shen.js` |
-| `BIFROST_SHEN_CL` | the same, checked second |
+| `BIFROST_SHEN_JIT` | the same, checked second |
 | `YGGDRASIL_SHEN_<PORT>_DIR` | the sibling port checkout for a target, overriding `../<port>` |
 | `YGGDRASIL_KEEP_TMP` | set to anything to keep scratch directories (host driver files, stage-2 build temp trees) instead of removing them after each run |
 
@@ -318,6 +321,7 @@ The port-directory variable names are per target in `builders.json`
 | `julia` | `YGGDRASIL_SHEN_JULIA_DIR` |
 | `scheme` | `YGGDRASIL_SHEN_SCHEME_DIR` |
 | `swift` | `YGGDRASIL_SHEN_SWIFT_DIR` |
+| `jit` | `YGGDRASIL_SHEN_JIT_DIR` |
 | `erlang` | `YGGDRASIL_SHEN_ERL_DIR` |
 | `truffle`, `truffle-native` | `YGGDRASIL_SHEN_TRUFFLE_DIR` |
 | `c` | `YGGDRASIL_SHEN_C_DIR` |

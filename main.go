@@ -238,11 +238,11 @@ func yggRoot() (string, error) {
 // ---- host (stage 1) ----
 
 // defaultHost resolves the stage-1 host launcher argv, or nil. Preference:
-// $YGGDRASIL_HOST / $BIFROST_SHEN_CL, then sibling shen-cl, then sibling
-// shen-go. Shen-C's native RC backend is supported for stage 2; its separate
-// bundled kernel has not been qualified as a stage-1 host for this 42.2 shake.
+// $YGGDRASIL_HOST / $BIFROST_SHEN_JIT, then sibling shen-jit. A host must run the
+// slice's own kernel, ShenOSKernel 43.2, which yggdrasil.shen checks; the other
+// ports are stage-2 targets until they move to it.
 func defaultHost() []string {
-	for _, env := range []string{"YGGDRASIL_HOST", "BIFROST_SHEN_CL"} {
+	for _, env := range []string{"YGGDRASIL_HOST", "BIFROST_SHEN_JIT"} {
 		if v := os.Getenv(env); v != "" {
 			parts := strings.Fields(v)
 			if hit := findExecutablePath(parts[0]); hit != "" {
@@ -251,11 +251,8 @@ func defaultHost() []string {
 		}
 	}
 	cwd, _ := os.Getwd()
-	// Use a compatible stage-1 host; Shen-C is supported as a stage-2 compiler.
 	for _, rel := range []string{
-		filepath.Join("..", "shen-cl", "bin", "sbcl", "shen"),
-		filepath.Join("..", "shen-go", "bin", "shen"),
-		filepath.Join("..", "shen-go", "shen"),
+		filepath.Join("..", "shen-jit", "build", "shen-jit"),
 	} {
 		cand, _ := filepath.Abs(filepath.Join(cwd, rel))
 		if hit := findExecutablePath(cand); hit != "" {
@@ -328,7 +325,7 @@ func shakeMode(prog, outdir string, host []string, evalStyle string, quiet bool,
 		host = defaultHost()
 	}
 	if host == nil {
-		return "", fmt.Errorf("no Shen host launcher found. Set $YGGDRASIL_HOST (or $BIFROST_SHEN_CL) to a Shen launcher, e.g.\n  YGGDRASIL_HOST=/path/to/shen-cl/bin/sbcl/shen yggdrasil shake ...")
+		return "", fmt.Errorf("no Shen host launcher found. Set $YGGDRASIL_HOST (or $BIFROST_SHEN_JIT) to a Shen 43.2 launcher, e.g.\n  YGGDRASIL_HOST=/path/to/shen-jit/build/shen-jit yggdrasil shake ...")
 	}
 	prog, _ = filepath.Abs(prog)
 	outdir, _ = filepath.Abs(outdir)
@@ -456,7 +453,7 @@ func runCheck(prog string, host []string, evalStyle string) (out, ver string, ok
 		host = defaultHost()
 	}
 	if host == nil {
-		return "", "", false, fmt.Errorf("no Shen host launcher found. Set $YGGDRASIL_HOST (or $BIFROST_SHEN_CL) to a Shen launcher, e.g.\n  YGGDRASIL_HOST=/path/to/shen-cl/bin/sbcl/shen yggdrasil check ...")
+		return "", "", false, fmt.Errorf("no Shen host launcher found. Set $YGGDRASIL_HOST (or $BIFROST_SHEN_JIT) to a Shen 43.2 launcher, e.g.\n  YGGDRASIL_HOST=/path/to/shen-jit/build/shen-jit yggdrasil check ...")
 	}
 	prog, _ = filepath.Abs(prog)
 	if _, statErr := os.Stat(prog); statErr != nil {
@@ -918,7 +915,7 @@ func siblingDir(target string, b builder) string {
 		"js":  "ShenScript", "julia": "shen-julia", "scheme": "shen-scheme",
 		"swift": "shen-swift", "erlang": "shen-erl", "lisp": "shen-cl", "hvm": "inets/shen-inets",
 		"truffle": "shen-truffle", "truffle-native": "shen-truffle",
-		"c": "shen-c", "forth": "shen-forth",
+		"c": "shen-c", "forth": "shen-forth", "jit": "shen-jit",
 	}[target]
 	cwd, _ := os.Getwd()
 	abs, _ := filepath.Abs(filepath.Join(cwd, "..", name))
@@ -999,6 +996,7 @@ func build(target, outdir string, web bool) ([]string, error) {
 		"{shen_truffle}": siblingDir(target, b),
 		"{shen_c}":       siblingDir("c", b),
 		"{shen_forth}":   siblingDir("forth", b),
+		"{shen_jit}":     siblingDir("jit", b),
 	}
 	// {program_file} is resolved BEFORE it joins the table, so that the step
 	// which writes it and the run that feeds it name one path once.
@@ -1150,7 +1148,7 @@ func run(args []string) int {
 func cmdStage(cmd string, rest []string) int {
 	fs := flag.NewFlagSet("yggdrasil "+cmd, flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: shen-cl`)
+	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: shen-jit`)
 	evalStyle := fs.String("eval-style", "sub", "how the host evaluates the shake expr (sub | positional)")
 	target := fs.String("target", "", "stage-2 target: one of the entries in builders.json, which `yggdrasil targets` lists (naming them here too is a second copy that goes stale, and did)")
 	web := fs.Bool("web", false, "with --target js: emit a browser-safe ES module (passes --web to ShenScript's builder)")
@@ -1305,7 +1303,7 @@ func cmdStage(cmd string, rest []string) int {
 func cmdCheck(rest []string) int {
 	fs := flag.NewFlagSet("yggdrasil check", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: shen-cl`)
+	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: shen-jit`)
 	evalStyle := fs.String("eval-style", "sub", "how the host evaluates the check expr (sub | positional)")
 	if err := fs.Parse(reorderArgs(rest, "host", "eval-style")); err != nil {
 		return 2
@@ -1345,7 +1343,7 @@ func runWhy(prog string, target string, host []string, evalStyle string) (string
 		host = defaultHost()
 	}
 	if host == nil {
-		return "", fmt.Errorf("no Shen host launcher found. Set $YGGDRASIL_HOST (or $BIFROST_SHEN_CL) to a Shen launcher, e.g.\n  YGGDRASIL_HOST=/path/to/shen-cl/bin/sbcl/shen yggdrasil why ...")
+		return "", fmt.Errorf("no Shen host launcher found. Set $YGGDRASIL_HOST (or $BIFROST_SHEN_JIT) to a Shen 43.2 launcher, e.g.\n  YGGDRASIL_HOST=/path/to/shen-jit/build/shen-jit yggdrasil why ...")
 	}
 	prog, _ = filepath.Abs(prog)
 	if _, statErr := os.Stat(prog); statErr != nil {
@@ -1398,7 +1396,7 @@ func whyReport(out string) (string, bool) {
 func cmdWhy(rest []string) int {
 	fs := flag.NewFlagSet("yggdrasil why", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: shen-cl`)
+	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: shen-jit`)
 	evalStyle := fs.String("eval-style", "sub", "how the host evaluates the why expr (sub | positional)")
 	trace := fs.String("trace", "", "also print the shortest call chain from the program to this kernel function")
 	if err := fs.Parse(reorderArgs(rest, "host", "eval-style", "trace")); err != nil {
@@ -1447,7 +1445,7 @@ func facts(prog, outdir string, host []string, evalStyle string, quiet bool, opt
 		host = defaultHost()
 	}
 	if host == nil {
-		return "", fmt.Errorf("no Shen host launcher found. Set $YGGDRASIL_HOST (or $BIFROST_SHEN_CL) to a Shen launcher, e.g.\n  YGGDRASIL_HOST=/path/to/shen-cl/bin/sbcl/shen yggdrasil facts ...")
+		return "", fmt.Errorf("no Shen host launcher found. Set $YGGDRASIL_HOST (or $BIFROST_SHEN_JIT) to a Shen 43.2 launcher, e.g.\n  YGGDRASIL_HOST=/path/to/shen-jit/build/shen-jit yggdrasil facts ...")
 	}
 	prog, _ = filepath.Abs(prog)
 	outdir, _ = filepath.Abs(outdir)
@@ -1515,7 +1513,7 @@ var factRelations = []string{
 func cmdFacts(rest []string) int {
 	fs := flag.NewFlagSet("yggdrasil facts", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: shen-cl`)
+	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: shen-jit`)
 	evalStyle := fs.String("eval-style", "sub", "how the host evaluates the facts expr (sub | positional)")
 	tgt := fs.String("target", "", "dump portReads for this target's runtime instead of the shaker's conservative default")
 	if err := fs.Parse(reorderArgs(rest, "host", "eval-style", "target")); err != nil {
@@ -1882,10 +1880,10 @@ func compareParity(r *parityResult, truth string) parityVerdict {
 func cmdParity(rest []string) int {
 	fs := flag.NewFlagSet("yggdrasil parity", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: shen-cl`)
+	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: shen-jit`)
 	evalStyle := fs.String("eval-style", "sub", "how the host evaluates the shake expr (sub | positional)")
 	targetFlag := fs.String("target", "", "comma-separated targets to check (default: all whose tools are on PATH)")
-	reference := fs.String("reference", "lisp", "reference target whose output is the truth source")
+	reference := fs.String("reference", "jit", "reference target whose output is the truth source")
 	expect := fs.String("expect", "", "golden stdout file; when given it is the authoritative truth")
 	timeFlag := fs.Bool("time", false, "report per-target wall-clock (advisory; never fails the gate)")
 	stdinFile := fs.String("stdin", "", "file fed to each artifact's stdin (both boots get the same bytes)")

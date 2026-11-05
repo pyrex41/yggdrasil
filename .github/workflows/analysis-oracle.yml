@@ -19,7 +19,7 @@ name: analysis-oracle
 # without Soufflé, and go test uses it when `souffle` is off PATH. This job
 # runs both and diffs them, so the two readings of analysis.dl cannot drift.
 #
-# It needs a shen-go build plus a shake per fixture, so it is minutes rather
+# It needs a Shen/JIT build plus a shake per fixture, so it is minutes rather
 # than seconds -- but "minutes" was never a reason to let it run NEVER. Until
 # this trigger list grew a `push`, the job had schedule + workflow_dispatch +
 # a path-filtered `pull_request`, and the branch it was written on has no PR:
@@ -54,18 +54,6 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-
-      # The stage-1 host is PINNED, for exactly the reason the Soufflé version
-      # below is pinned: an oracle whose host is "whatever master was that
-      # night" cannot attribute a red run to the rules, to the shake, or to the
-      # host. The SHA itself, and the note on moving it, live in
-      # .github/shen-go.ref -- one copy for the three workflows that need it.
-      - name: read the pinned shen-go SHA
-        run: |
-          set -euo pipefail
-          ref="$(grep -Eom1 '^[0-9a-f]{40}$' .github/shen-go.ref)"
-          echo "SHEN_GO_REF=$ref" >> "$GITHUB_ENV"
-          echo "shen-go pinned at $ref (.github/shen-go.ref)"
 
       - uses: actions/setup-go@v5
         with:
@@ -146,34 +134,19 @@ jobs:
           echo "souffle installed: $(command -v souffle)"
           souffle --version
 
-      # The stage-1 host, built the same way parity-gate.yml builds it, at the
-      # pinned SHEN_GO_REF above. A full clone, not `--depth 1`: a shallow
-      # clone carries no object to check a SHA out of.
-      - name: check out and build the shen-go stage-1 host (pinned)
-        run: |
-          set -euo pipefail
-          cd "$GITHUB_WORKSPACE/.."
-          git clone -q https://github.com/pyrex41/shen-go.git
-          cd shen-go
-          git checkout -q "$SHEN_GO_REF"
-          echo "shen-go host pinned at $(git rev-parse HEAD)"
-          make shen
-          ls -l shen || ls -l bin/shen
+      # The stage-1 host: the Shen/JIT release pinned in .github/shen-jit.ref,
+      # the only maintained port on the kernel in KLambda/.
+      - name: build the Shen/JIT stage-1 host (pinned)
+        run: sh .github/build-shen-jit.sh "$GITHUB_WORKSPACE/../shen-jit"
 
       - name: build the CLI
         run: go build -o yggdrasil_bin .
 
       - name: rules vs shake, every fixture
         env:
-          YGGDRASIL_HOST: ${{ github.workspace }}/../shen-go/shen
+          YGGDRASIL_HOST: ${{ github.workspace }}/../shen-jit/build/shen-jit
         run: |
           set -euo pipefail
-          # The host may land at ./shen or ./bin/shen depending on the
-          # makefile's era; take whichever exists.
-          if [ ! -x "$YGGDRASIL_HOST" ]; then
-            YGGDRASIL_HOST="$GITHUB_WORKSPACE/../shen-go/bin/shen"
-            export YGGDRASIL_HOST
-          fi
           fail=0
           checked=0
           for prog in tests/*.shen; do

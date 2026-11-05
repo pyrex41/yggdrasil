@@ -1,4 +1,6 @@
-# The shen-go stage-1 host pin: ONE SHA, read by every workflow that needs a
+# The shen-go pin: ONE SHA, read by the workflows that build the go and kl
+# stage-2 targets. It was the stage-1 host until the kernel moved to 43.2, whose
+# host is pinned in .github/shen-jit.ref.  It was read by every workflow that needed a
 # Shen host. Four workflows need it (go.yml's host-test, analysis-oracle.yml,
 # parity-gate.yml and shen-c.yml); hand-copied constants with hand-written
 # comments would drift, and the next mover would have to find all three.  The

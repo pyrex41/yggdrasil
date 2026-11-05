@@ -345,7 +345,7 @@ func traceCheckHost(prog, factsDir string, host []string, evalStyle string) (str
 		host = defaultHost()
 	}
 	if host == nil {
-		return "", errors.New("no Shen host launcher found. Set $YGGDRASIL_HOST (or $BIFROST_SHEN_CL) to a Shen launcher")
+		return "", errors.New("no Shen host launcher found. Set $YGGDRASIL_HOST (or $BIFROST_SHEN_JIT) to a Shen 43.2 launcher")
 	}
 	prog, _ = filepath.Abs(prog)
 	factsDir, _ = filepath.Abs(factsDir)
@@ -1145,7 +1145,7 @@ func defaultStdin(prog string) string {
 func cmdTraceCheck(rest []string) int {
 	fs := flag.NewFlagSet("yggdrasil trace-check", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: shen-cl`)
+	hostFlag := fs.String("host", "", `stage-1 host launcher (e.g. "node /p/shen.js"); default: shen-jit`)
 	evalStyle := fs.String("eval-style", "sub", "how the host evaluates the shake expr (sub | positional)")
 	target := fs.String("target", "", "stage-2 target to build and run the traced artifact on")
 	stdinFile := fs.String("stdin", "", "file fed to the artifact's stdin (default: tests/<name>.stdin when it exists)")
