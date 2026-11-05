@@ -50,7 +50,7 @@ concurrency:
 
 jobs:
   oracle:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -70,7 +70,7 @@ jobs:
       #     used to ask for never existed, which is the 404 that ran here.
       #   * The souffle-lang.github.io/ppa apt repo stopped at souffle 2.4
       #     (Release file dated 2023-03-05) and every version in it Depends on
-      #     libffi7/libtinfo5-era libraries. ubuntu-latest is ubuntu-24.04,
+      #     libffi7/libtinfo5-era libraries. this job pins ubuntu-24.04,
       #     which ships libffi8 and no libffi7, so apt can only answer "held
       #     broken packages". The repo is not a fallback, it is a trap; it is
       #     gone.
