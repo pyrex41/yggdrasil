@@ -39,7 +39,7 @@ Paths below are relative to the sibling port checkout unless they start with
 
 | target | builder | artifact | approximate size and startup |
 |---|---|---|---|
-| `c` | `builders/c/build.sh <dir> <outdir>` (`SHEN_C`) | Shen-C v0.3.0 `rc-build`: native `app.c` + Makefile and independent RC runtime | Remeasure for RC; earlier Boehm figures do not apply |
+| `c` | `builders/c/build.sh <dir> <outdir>` (`SHEN_C`) | Shen-C v0.5.0 `rc-build`: native `app.c` + Makefile and independent RC runtime | Remeasure for RC; earlier Boehm figures do not apply |
 | `erlang` | `builders/erlang/build.sh <dir> <outdir>` (`SHEN_ERL`) | slice compiled to BEAM plus the small shen-erl runtime and a `run` launcher; needs Erlang/OTP at run time but never boots the full kernel | ~170 KB plus Erlang/OTP; ~1.3 s (VM boot) |
 | `go` | `shen-go/cmd/yggdrasil-build <dir> <outdir>`, then `go build` | static binary | ~5.8 MB, ~11 ms; cross-compiles to linux and windows |
 | `joy` | `builders/joy/build.sh <dir> <out.sji> [shen-joy]` | deterministic shen-joy image v1, run by the bounded allocation-free device VM | 308 bytes for `tests/joy-sum.shen` |
