@@ -75,11 +75,15 @@ What the build leaves in `<exe>.build/stage0/`:
 
 The shaker refuses a host on another kernel. The maintained ports have moved to 43.2 on
 their default branches: shen-cl v3.2.1, shen-go v1.6.0, shen-lua v0.12.0, ShenScript
-v1.1.0-rc.2, shen-scheme v0.52-pyrex41.6, shen-julia v0.3.0, shen-c v0.5.0, and shen-rust,
-shen-swift, shen-erl and shen-truffle at merged commits. shen-joy has not moved. It is a
-bounded subset and not a host.
+v1.1.0-rc.2, shen-julia v0.3.0, shen-c v0.5.0, and shen-rust, shen-swift, shen-erl and
+shen-truffle at merged commits. shen-joy's bounded subset and its differential reference are
+on 43.2 too, though it is not a host.
 
-Bifrost's `yggdrasil-shake-parity` shook `tests/fib.shen` on 11 of those hosts, and
+shen-scheme follows upstream, which is now 0.54 on kernel 43.4. The shaker refuses it as a
+host, as it would any kernel but 43.2, and it remains a target.
+
+Before shen-scheme moved, Bifrost's `yggdrasil-shake-parity` shook `tests/fib.shen` on 11
+of those hosts, and
 `kernel.kl` and the manifest were byte-identical. shen-julia hosts too, but is too slow to
 take part without a sysimage. A shake on it matched Shen/JIT's in a separate run.
 
@@ -101,8 +105,8 @@ The other targets, from those ports' 43.2 commits, on macOS arm64:
 | target | fixtures |
 |---|---|
 | `rust`, `erlang`, `swift`, `truffle`, `lisp`, `c`, `julia` | 10 of 10, each run on its own |
-| `scheme` | 8 of 10, with `metaeval` and `read-data-eval` a capability SKIP |
-| `joy` | not checked on 43.2 |
+| `scheme`, on 0.54 and kernel 43.4 | 8 of 10, with `metaeval` and `read-data-eval` a capability SKIP |
+| `joy` | `tests/joy-sum.shen` only, as the rest of the set is outside its subset |
 
 Those were not one run. A single gate over every target needs every toolchain in one
 environment, and no such environment exists yet, so CI gates `jit`, `go`, `js` and `lua`.
