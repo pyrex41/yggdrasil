@@ -30,7 +30,8 @@ The host must run the same community kernel as the vendored slice,
 ShenOSKernel 43.2, and the shaker refuses any other.
 [Shen/JIT](https://github.com/tizoc/shen-jit) 0.2 is the reference host: its
 release archives are a single executable. The other maintained ports moved to 43.2 as
-well, and can host once you build them from their current default branch. Stage-2 targets also need the public
+well and can host once built from their default branch, except shen-scheme, which
+follows upstream to 43.4 and is a target only. Stage-2 targets also need the public
 `char-stream?`, `read-unit-string`, and `write-string` interfaces.
 [`docs/shen-jit.md`](docs/shen-jit.md) records what has been checked on 43.2, and
 [`docs/shen-cl-43.1.md`](docs/shen-cl-43.1.md) the earlier move to 43.1.
