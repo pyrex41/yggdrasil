@@ -71,12 +71,17 @@ What the build leaves in `<exe>.build/stage0/`:
 - The builder is a bash script. It has run on macOS arm64 only; Linux runs in CI
   once this is merged, and Windows has not been tried.
 
-## What moving to 43.2 means for the other targets
+## The other ports
 
-The shaker refuses a host on another kernel, so shen-cl, shen-go and the rest cannot
-host a shake until they move. They remain targets: their builders compile the slice,
-and some print a warning that the manifest's kernel is newer than they were certified
-against.
+The shaker refuses a host on another kernel. The maintained ports have moved to 43.2 on
+their default branches: shen-cl v3.2.1, shen-go v1.6.0, shen-lua v0.12.0, ShenScript
+v1.1.0-rc.2, shen-scheme v0.52-pyrex41.6, shen-julia v0.3.0, shen-c v0.5.0, and shen-rust,
+shen-swift, shen-erl and shen-truffle at merged commits. shen-joy has not moved. It is a
+bounded subset and not a host.
+
+Bifrost's `yggdrasil-shake-parity` shook `tests/fib.shen` on 11 of those hosts, and
+`kernel.kl` and the manifest were byte-identical. shen-julia hosts too, but is too slow to
+take part without a sysimage. A shake on it matched Shen/JIT's in a separate run.
 
 ## What was checked
 
@@ -91,6 +96,14 @@ Shen/JIT as the host:
 | `lower-check --target jit --reference jit` on `fib` | OK |
 | build and run `prolog` from the v0.2 source tarball | matches the golden |
 
-Not checked on 43.2, for want of a toolchain or a built port on that machine: the
-`lisp`, `rust`, `erlang`, `julia`, `scheme`, `swift`, `truffle`, `c` and `joy` targets.
+The other targets, from those ports' 43.2 commits, on macOS arm64:
+
+| target | fixtures |
+|---|---|
+| `rust`, `erlang`, `swift`, `truffle`, `lisp`, `c`, `julia` | 10 of 10, each run on its own |
+| `scheme` | 8 of 10, with `metaeval` and `read-data-eval` a capability SKIP |
+| `joy` | not checked on 43.2 |
+
+Those were not one run. A single gate over every target needs every toolchain in one
+environment, and no such environment exists yet, so CI gates `jit`, `go`, `js` and `lua`.
 `docs/evidence/` holds the earlier kernels' records.

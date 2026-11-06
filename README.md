@@ -29,8 +29,8 @@ or a `YGGDRASIL_SHEN_<PORT>_DIR` variable pointing at one.
 The host must run the same community kernel as the vendored slice,
 ShenOSKernel 43.2, and the shaker refuses any other.
 [Shen/JIT](https://github.com/tizoc/shen-jit) 0.2 is the reference host: its
-release archives are a single executable. The other ports are still on 43.1, so
-they are stage-2 targets until they move. Stage-2 targets also need the public
+release archives are a single executable. The other maintained ports moved to 43.2 as
+well, and can host once you build them from their current default branch. Stage-2 targets also need the public
 `char-stream?`, `read-unit-string`, and `write-string` interfaces.
 [`docs/shen-jit.md`](docs/shen-jit.md) records what has been checked on 43.2, and
 [`docs/shen-cl-43.1.md`](docs/shen-cl-43.1.md) the earlier move to 43.1.
@@ -66,7 +66,7 @@ order was checked, and the flags the shake ran with.
 | `scheme` | shen-scheme | Chez program |
 | `swift` | shen-swift | slice run by the shen-swift interpreter |
 | `truffle`, `truffle-native` | shen-truffle | JVM application or native image |
-| `c` | shen-c v0.3.0+ | Native C with the independent reference-counted runtime |
+| `c` | shen-c v0.5.0+ | Native C with the independent reference-counted runtime |
 | `joy` | shen-joy | bounded image for the allocation-free device VM |
 | `kl` | shen-go `cmd/kl` | the slice run directly on the bare KLambda VM |
 | `jit` | Shen/JIT | one native executable holding only the slice, 0.35 MB for `fib` |
