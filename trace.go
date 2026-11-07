@@ -345,7 +345,7 @@ func traceCheckHost(prog, factsDir string, host []string, evalStyle string) (str
 		host = defaultHost()
 	}
 	if host == nil {
-		return "", errors.New("no Shen host launcher found. Set $YGGDRASIL_HOST (or $BIFROST_SHEN_JIT) to a Shen 43.2 launcher")
+		return "", errors.New("no Shen host launcher found. Set $YGGDRASIL_HOST (or $BIFROST_SHEN_JIT) to a Shen 43.4 launcher")
 	}
 	prog, _ = filepath.Abs(prog)
 	factsDir, _ = filepath.Abs(factsDir)
