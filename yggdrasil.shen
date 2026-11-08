@@ -2538,9 +2538,9 @@
       \\ the go runtime (shen-go, kl/), and Shen/JIT's runtime and port code.
       \\ Sorted, as portReadsFor returns them.
       *argv* *home-directory* *hush* *property-vector* *sterror* *stinput*
-      *stoutput* shen-jit.*entry* shen-jit.defined shen-jit.lower.*fresh*
-      shen-jit.lower.*inline-depth* shen.*gensym* shen.*package*
-      shen.*residue* shen.*tc* shen.*userdefs*])
+      *stoutput* shen-jit.*entry* shen-jit.defined shen-jit.lower.*fixed*
+      shen-jit.lower.*fresh* shen-jit.lower.*inline-depth* shen.*gensym*
+      shen.*package* shen.*residue* shen.*tc* shen.*userdefs*])
 
 \\ (value V) with a literal V anywhere in a defun's body - unlike
 \\ ygg.io-reads this DOES descend into lambda and freeze, because a defun

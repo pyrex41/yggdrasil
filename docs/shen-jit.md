@@ -45,7 +45,7 @@ forms, `shen.initialise`, then the user's toplevel forms. User functions are alr
 the image by then. Stage 1's own call to
 `shen.initialise` is guarded to do nothing, so a traced run records the boot. The cost
 is startup: about 4 ms for `fib`, against about 6.5 ms for a whole `shen-jit` running
-the same script (best of 30, macOS arm64, 2026-11-05, on v0.2; not re-measured on v0.4).
+the same script (best of 30, macOS arm64, 2026-11-05, on v0.2; not re-measured since).
 
 What the build leaves in `<exe>.build/stage0/`:
 
@@ -74,7 +74,7 @@ What the build leaves in `<exe>.build/stage0/`:
 
 ## The other ports
 
-The shaker refuses a host on another kernel. Of the maintained ports, Shen/JIT 0.4 and
+The shaker refuses a host on another kernel. Of the maintained ports, Shen/JIT 0.5 and
 shen-scheme 0.54 are on 43.4. The others are on 43.2 on their default branches, so
 until each moves it is a stage-2 target and not a host: shen-cl v3.2.1, shen-go
 v1.6.0, shen-lua v0.12.0, ShenScript v1.1.0-rc.2, shen-julia v0.3.0, shen-c v0.5.0,
@@ -88,6 +88,24 @@ sysimage. A shake on it matched Shen/JIT's in a separate run. That has not been
 repeated on 43.4, where Shen/JIT is the only host checked.
 
 ## What was checked
+
+### Kernel 43.4, Shen/JIT v0.5
+
+On 2026-11-08, macOS arm64, Shen/JIT v0.5 (`246e4f9`) built from its release source
+tarball, with Shen/JIT as the host. The kernel archive is the one v0.4 pinned. v0.5
+keeps the stage-1 file names, the initialisers, the lowerer's names and the stage 0
+entry points `builders/jit` relies on. Its port adds an override of the kernel's
+`shen.str->bytes`, which the jit entry's `native_overrides` now lists, and its lowerer
+reads one more global, `shen-jit.lower.*fixed*`, which the jit entry's `port_reads` and
+the default `ygg.*port-reads*` list now hold.
+
+| check | result |
+|---|---|
+| `go test -run 'TestJit\|TestKernelIs'` and the port_reads tests | pass, `YGGDRASIL_SHEN_JIT_DIR` at v0.5 |
+| `go test ./...` with the host, without a sibling shen-go | only the two port_reads lists failed before they gained the new names |
+| two shakes of `tests/fib.shen` | `kernel.kl` and both manifests byte-identical; 81 kernel functions |
+| `trace-check --target jit` on `fib` | OK, matches `fib.expected`, boot phase recorded |
+| `parity --prune-init --target jit` on `fib` | PASS |
 
 ### Kernel 43.4, Shen/JIT v0.4
 

@@ -2,5 +2,5 @@
 # through .github/build-shen-jit.sh.  It runs ShenOSKernel 43.4, the kernel in
 # KLambda/, which yggdrasil.shen requires of a host.  The release's source
 # tarball builds with a C compiler alone.  Moving the pin moves both lines.
-version=0.4
-sha256=235840a8663a54d4ce671e1144fad3e8efba75a719f51e5705e10821513efd61
+version=0.5
+sha256=a22e578769b68a5ea2a7c247667cb455c6fc1ab0741c7e9b880e878c6abd230a

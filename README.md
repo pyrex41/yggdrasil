@@ -28,7 +28,7 @@ or a `YGGDRASIL_SHEN_<PORT>_DIR` variable pointing at one.
 
 The host must run the same community kernel as the vendored slice,
 ShenOSKernel 43.4, and the shaker refuses any other.
-[Shen/JIT](https://github.com/tizoc/shen-jit) 0.4 is the reference host: its
+[Shen/JIT](https://github.com/tizoc/shen-jit) 0.5 is the reference host: its
 release archives are a single executable. shen-scheme follows upstream to 43.4 too.
 The other maintained ports are on 43.2, so until each moves it is a stage-2 target
 and not a host. Stage-2 targets also need the public
@@ -127,7 +127,7 @@ Without them, host-gated tests skip by name and CI asserts the exact skip count.
 ## Lineage
 
 The kernel is the community ShenOSKernel 43.4 (Shen-Language/shen-sources, tag
-`shen-43.4`, also used by Shen/JIT 0.4), vendored byte-for-byte under
+`shen-43.4`, also used by Shen/JIT 0.5), vendored byte-for-byte under
 [`KLambda/`](KLambda/); [`KLambda/PROVENANCE.md`](KLambda/PROVENANCE.md) has the
 hashes and the lineage decision. Yggdrasil 1.0 targeted an earlier community
 kernel; this repository retargeted it to Tarver's S41.2 and S42.0 for a while,

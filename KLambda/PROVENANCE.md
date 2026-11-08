@@ -16,7 +16,7 @@ community **ShenOSKernel 43.4**, published by
 The tag's tree holds the Shen sources and not `klambda/`, which the release build
 generates from them, so the release asset is the published KLambda for that tag.
 On 2026-11-06 the asset's `sources/` directory was compared with the tag's and
-was identical, and the asset is the one Shen/JIT 0.4 pins, by the same SHA-256.
+was identical, and the asset is the one Shen/JIT pins, by the same SHA-256, in 0.4 and in 0.5.
 
 The universe is the fifteen core files (including `dict.kl`) and `init.kl`,
 in the order declared by `*kernel*` in `yggdrasil.shen`. The files contain
