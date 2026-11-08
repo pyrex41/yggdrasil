@@ -239,7 +239,7 @@ func yggRoot() (string, error) {
 
 // defaultHost resolves the stage-1 host launcher argv, or nil. Preference:
 // $YGGDRASIL_HOST / $BIFROST_SHEN_JIT, then sibling shen-jit. A host must run the
-// slice's own kernel, ShenOSKernel 43.2, which yggdrasil.shen checks; the other
+// slice's own kernel, ShenOSKernel 43.4, which yggdrasil.shen checks; the other
 // ports are stage-2 targets until they move to it.
 func defaultHost() []string {
 	for _, env := range []string{"YGGDRASIL_HOST", "BIFROST_SHEN_JIT"} {
@@ -326,7 +326,7 @@ func shakeMode(prog, outdir string, host []string, evalStyle string, quiet bool,
 	}
 	if host == nil {
 		// Exit 3: nothing is wrong with the program, this machine just cannot check it.
-		return "", capabilityError{message: "no Shen host launcher found. Set $YGGDRASIL_HOST (or $BIFROST_SHEN_JIT) to a Shen 43.2 launcher, e.g.\n  YGGDRASIL_HOST=/path/to/shen-jit/build/shen-jit yggdrasil shake .."}
+		return "", capabilityError{message: "no Shen host launcher found. Set $YGGDRASIL_HOST (or $BIFROST_SHEN_JIT) to a Shen 43.4 launcher, e.g.\n  YGGDRASIL_HOST=/path/to/shen-jit/build/shen-jit yggdrasil shake .."}
 	}
 	prog, _ = filepath.Abs(prog)
 	outdir, _ = filepath.Abs(outdir)
@@ -454,7 +454,7 @@ func runCheck(prog string, host []string, evalStyle string) (out, ver string, ok
 		host = defaultHost()
 	}
 	if host == nil {
-		return "", "", false, fmt.Errorf("no Shen host launcher found. Set $YGGDRASIL_HOST (or $BIFROST_SHEN_JIT) to a Shen 43.2 launcher, e.g.\n  YGGDRASIL_HOST=/path/to/shen-jit/build/shen-jit yggdrasil check ...")
+		return "", "", false, fmt.Errorf("no Shen host launcher found. Set $YGGDRASIL_HOST (or $BIFROST_SHEN_JIT) to a Shen 43.4 launcher, e.g.\n  YGGDRASIL_HOST=/path/to/shen-jit/build/shen-jit yggdrasil check ...")
 	}
 	prog, _ = filepath.Abs(prog)
 	if _, statErr := os.Stat(prog); statErr != nil {
@@ -1354,7 +1354,7 @@ func runWhy(prog string, target string, host []string, evalStyle string) (string
 		host = defaultHost()
 	}
 	if host == nil {
-		return "", fmt.Errorf("no Shen host launcher found. Set $YGGDRASIL_HOST (or $BIFROST_SHEN_JIT) to a Shen 43.2 launcher, e.g.\n  YGGDRASIL_HOST=/path/to/shen-jit/build/shen-jit yggdrasil why ...")
+		return "", fmt.Errorf("no Shen host launcher found. Set $YGGDRASIL_HOST (or $BIFROST_SHEN_JIT) to a Shen 43.4 launcher, e.g.\n  YGGDRASIL_HOST=/path/to/shen-jit/build/shen-jit yggdrasil why ...")
 	}
 	prog, _ = filepath.Abs(prog)
 	if _, statErr := os.Stat(prog); statErr != nil {
@@ -1456,7 +1456,7 @@ func facts(prog, outdir string, host []string, evalStyle string, quiet bool, opt
 		host = defaultHost()
 	}
 	if host == nil {
-		return "", fmt.Errorf("no Shen host launcher found. Set $YGGDRASIL_HOST (or $BIFROST_SHEN_JIT) to a Shen 43.2 launcher, e.g.\n  YGGDRASIL_HOST=/path/to/shen-jit/build/shen-jit yggdrasil facts ...")
+		return "", fmt.Errorf("no Shen host launcher found. Set $YGGDRASIL_HOST (or $BIFROST_SHEN_JIT) to a Shen 43.4 launcher, e.g.\n  YGGDRASIL_HOST=/path/to/shen-jit/build/shen-jit yggdrasil facts ...")
 	}
 	prog, _ = filepath.Abs(prog)
 	outdir, _ = filepath.Abs(outdir)

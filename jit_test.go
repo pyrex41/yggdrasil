@@ -82,19 +82,19 @@ func TestJitBuilderRecipe(t *testing.T) {
 }
 
 // The kernel is what yggdrasil.shen asks a host for, and what the manifest says.
-func TestKernelIs432(t *testing.T) {
+func TestKernelIs434(t *testing.T) {
 	init, err := os.ReadFile("KLambda/init.kl")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(init), `(set *version* "43.2")`) {
-		t.Error(`KLambda/init.kl does not set *version* to "43.2"`)
+	if !strings.Contains(string(init), `(set *version* "43.4")`) {
+		t.Error(`KLambda/init.kl does not set *version* to "43.4"`)
 	}
 	shaker, err := os.ReadFile("yggdrasil.shen")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`(= (version) "43.2")`, `["kernel-version" "43.2"]`, `kernel-version=43.2~%`} {
+	for _, want := range []string{`(= (version) "43.4")`, `["kernel-version" "43.4"]`, `kernel-version=43.4~%`} {
 		if !strings.Contains(string(shaker), want) {
 			t.Errorf("yggdrasil.shen lacks %s", want)
 		}

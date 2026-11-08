@@ -1,6 +1,6 @@
-# Shen/JIT and kernel 43.2
+# Shen/JIT and kernel 43.4
 
-Yggdrasil's kernel is community ShenOSKernel 43.2
+Yggdrasil's kernel is community ShenOSKernel 43.4
 ([provenance](../KLambda/PROVENANCE.md)), and [Shen/JIT](https://github.com/tizoc/shen-jit)
 is its reference host and a stage-2 target. No change to Shen/JIT is needed.
 
@@ -14,8 +14,9 @@ yggdrasil run tests/fib.shen out/ --target jit
 Shen/JIT runs the shaker from `../shen-jit/build/shen-jit`, or wherever
 `YGGDRASIL_HOST` says. A shake of `tests/fib.shen` keeps the same 81 kernel functions
 and is byte-identical between runs. Its reader turns `8.0` into the integer 8, and
-reads an integer past the fixnum range as a real, in what `bootstrap` emits. That real
-is not always the nearest: 2^63 is `9.223372036854778e18` on v0.2.
+reads an integer past the fixnum range as a real, in what `bootstrap` emits. Since
+v0.4 that real is the nearest: 2^63 is `9.223372036854776e18`, where v0.2 gave
+`9.223372036854778e18`.
 
 ## As a target
 
@@ -44,7 +45,7 @@ forms, `shen.initialise`, then the user's toplevel forms. User functions are alr
 the image by then. Stage 1's own call to
 `shen.initialise` is guarded to do nothing, so a traced run records the boot. The cost
 is startup: about 4 ms for `fib`, against about 6.5 ms for a whole `shen-jit` running
-the same script (best of 30, macOS arm64, 2026-11-05).
+the same script (best of 30, macOS arm64, 2026-11-05, on v0.2; not re-measured since).
 
 What the build leaves in `<exe>.build/stage0/`:
 
@@ -73,21 +74,60 @@ What the build leaves in `<exe>.build/stage0/`:
 
 ## The other ports
 
-The shaker refuses a host on another kernel. The maintained ports have moved to 43.2 on
-their default branches: shen-cl v3.2.1, shen-go v1.6.0, shen-lua v0.12.0, ShenScript
-v1.1.0-rc.2, shen-julia v0.3.0, shen-c v0.5.0, and shen-rust, shen-swift, shen-erl and
-shen-truffle at merged commits. shen-joy's bounded subset and its differential reference are
-on 43.2 too, though it is not a host.
+The shaker refuses a host on another kernel. Of the maintained ports, Shen/JIT 0.5 and
+shen-scheme 0.54 are on 43.4. The others are on 43.2 on their default branches, so
+until each moves it is a stage-2 target and not a host: shen-cl v3.2.1, shen-go
+v1.6.0, shen-lua v0.12.0, ShenScript v1.1.0-rc.2, shen-julia v0.3.0, shen-c v0.5.0,
+and shen-rust, shen-swift, shen-erl and shen-truffle at merged commits. shen-joy's
+bounded subset and its differential reference are on 43.2 too, though it is not a host.
 
-shen-scheme follows upstream, which is now 0.54 on kernel 43.4. The shaker refuses it as a
-host, as it would any kernel but 43.2, and it remains a target.
-
-Before shen-scheme moved, Bifrost's `yggdrasil-shake-parity` shook `tests/fib.shen` on 11
-of those hosts, and
-`kernel.kl` and the manifest were byte-identical. shen-julia hosts too, but is too slow to
-take part without a sysimage. A shake on it matched Shen/JIT's in a separate run.
+On 43.2, before shen-scheme moved, Bifrost's `yggdrasil-shake-parity` shook
+`tests/fib.shen` on 11 of those hosts, and `kernel.kl` and the manifest were
+byte-identical. shen-julia hosted too, but is too slow to take part without a
+sysimage. A shake on it matched Shen/JIT's in a separate run. That has not been
+repeated on 43.4, where Shen/JIT is the only host checked.
 
 ## What was checked
+
+### Kernel 43.4, Shen/JIT v0.5
+
+On 2026-11-08, macOS arm64, Shen/JIT v0.5 (`246e4f9`) built from its release source
+tarball, with Shen/JIT as the host. The kernel archive is the one v0.4 pinned. v0.5
+keeps the stage-1 file names, the initialisers, the lowerer's names and the stage 0
+entry points `builders/jit` relies on. Its port adds an override of the kernel's
+`shen.str->bytes`, which the jit entry's `native_overrides` now lists, and its lowerer
+reads one more global, `shen-jit.lower.*fixed*`, which the jit entry's `port_reads` and
+the default `ygg.*port-reads*` list now hold.
+
+| check | result |
+|---|---|
+| `go test -run 'TestJit\|TestKernelIs'` and the port_reads tests | pass, `YGGDRASIL_SHEN_JIT_DIR` at v0.5 |
+| `go test ./...` with the host, without a sibling shen-go | only the two port_reads lists failed before they gained the new names |
+| two shakes of `tests/fib.shen` | `kernel.kl` and both manifests byte-identical; 81 kernel functions |
+| `trace-check --target jit` on `fib` | OK, matches `fib.expected`, boot phase recorded |
+| `parity --prune-init --target jit` on `fib` | PASS |
+
+### Kernel 43.4, Shen/JIT v0.4
+
+On 2026-11-06, macOS arm64, Shen/JIT v0.4 (`d3348ce`) built from its release source
+tarball, with Shen/JIT as the host. `builders/jit` is unchanged from 43.2: v0.4 keeps
+the 24 stage-1 file names, the four initialisers, the lowerer's names and the stage 0
+entry points it relies on.
+
+| check | result |
+|---|---|
+| `scripts/sync-kernel.sh` | reproduces `KLambda/` byte for byte |
+| two shakes of `tests/fib.shen` | `kernel.kl` and both manifests byte-identical; 81 kernel functions |
+| `go test -run 'TestJit\|TestKernelIs'` and the port_reads tests | pass, `YGGDRASIL_SHEN_JIT_DIR` at v0.4 |
+| `go test ./...` without a host | 59 skips, as on 43.2 |
+| `trace-check --target jit` on `fib` | OK, boot phase recorded |
+| `parity --prune-init --target jit` on `fib` | PASS |
+| `lower-check --target jit` on `fib` | OK |
+| `scripts/parity-gate.sh --targets jit,go,kl,js,lua` | `fib` passes on 5 targets; the rest was not finished |
+
+`go`, `js` and `lua` were their ports' 43.2 checkouts, as stage-2 targets.
+
+### Kernel 43.2, Shen/JIT v0.2
 
 On 2026-11-05, macOS arm64, Shen/JIT v0.2 and its `main` at `715bf60`, with
 Shen/JIT as the host:
