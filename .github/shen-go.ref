@@ -43,4 +43,7 @@
 # 1f587de pin runs 42.2 and is rejected by the new stage-1 kernel guard.
 # acba88a includes the complete release, public stream interfaces and byte-port
 # refusal without input consumption; canonical 154/154 and KL certification pass.
-acba88a3f189f055285a9bdb22901ad688db7cd3
+# Moved 2026-11-09 to community ShenOSKernel 43.4: b50c301 is the merge of
+# pyrex41/shen-go#67 on master (kernel 43.4, 154/154). Previous pin:
+#   acba88a3f189f055285a9bdb22901ad688db7cd3
+b50c3011c1f624cba75c1f48dd3741ee4f09d3fb
