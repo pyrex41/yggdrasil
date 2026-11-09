@@ -25,7 +25,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: pyrex41/shen-c
-          ref: 27fe901f2ce42d03cb9890bcc9729b034efb9e68
+          ref: 7297406a3113e3fce83ebfd5127d2fe3a082683b  # pyrex41/shen-c#29 merge, kernel 43.4
           path: shen-c
       - uses: actions/setup-go@v5
         with:

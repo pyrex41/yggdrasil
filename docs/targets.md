@@ -269,7 +269,7 @@ The expression is always the same; only the launcher syntax differs. Write
 
 | host | command | note |
 |---|---|---|
-| Shen/JIT | `shen-jit eval -q -l yggdrasil.shen -e SHAKE` | reference host, and the only one here on 43.4; the rows below are history until each port moves |
+| Shen/JIT | `shen-jit eval -q -l yggdrasil.shen -e SHAKE` | reference host. Every port below is on 43.4 since its 43.4 release; all but shen-erl and shen-julia were checked as hosts on `fib`. The notes are as first measured |
 | shen-cl | `shen eval -q -l yggdrasil.shen -e SHAKE` | |
 | shen-go | `shen eval -q -l yggdrasil.shen -e SHAKE` | the CLI's fallback host when shen-cl is missing |
 | shen-lua | `bin/shen yggdrasil.shen -e SHAKE` | a `kernel-42.2` checkout (re-verified on `fib`); the published `0.11.x` LuaRocks rocks still carry S42.0 and would mix kernels; omit `-q` (see below) |

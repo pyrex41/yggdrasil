@@ -74,18 +74,29 @@ What the build leaves in `<exe>.build/stage0/`:
 
 ## The other ports
 
-The shaker refuses a host on another kernel. Of the maintained ports, Shen/JIT 0.5 and
-shen-scheme 0.54 are on 43.4. The others are on 43.2 on their default branches, so
-until each moves it is a stage-2 target and not a host: shen-cl v3.2.1, shen-go
-v1.6.0, shen-lua v0.12.0, ShenScript v1.1.0-rc.2, shen-julia v0.3.0, shen-c v0.5.0,
-and shen-rust, shen-swift, shen-erl and shen-truffle at merged commits. shen-joy's
-bounded subset and its differential reference are on 43.2 too, though it is not a host.
+The shaker refuses a host on another kernel. Every maintained port is on 43.4:
+Shen/JIT 0.5, shen-scheme 0.54, shen-cl v3.3.0, shen-go v1.7.0, shen-lua v0.13.0,
+ShenScript v1.1.0-rc.3, shen-julia v0.4.0, shen-c v0.6.0, and shen-rust, shen-swift,
+shen-erl and shen-truffle at merged commits. shen-joy's bounded subset and its
+differential reference, Shen/CL v3.3.0, are on 43.4 too, though it is not a host.
+
+On 2026-11-09, macOS arm64, Bifrost's `yggdrasil-shake-parity` shook `tests/fib.shen` on
+ten hosts: Shen/JIT, shen-scheme, shen-cl, shen-go, shen-lua, shen-rust, ShenScript,
+shen-swift, shen-c and shen-truffle. `kernel.kl` and the manifest were byte-identical (md5
+`4cff4a2a` and `d27cc480`). shen-julia was not a host, as it is too slow without a
+sysimage, and shen-erl was not run as one. The parity gate, with Shen/JIT as host, passed
+all ten fixtures on the `c`, `go`, `jit`, `js`, `julia`, `kl`, `lisp`, `lua`, `rust`,
+`scheme`, `swift` and `truffle` targets, apart from the capability SKIPs each declares, and
+the seven fixtures it reached on `erlang`. Bifrost's `docs/ports-43.4.md` has the corpus
+results.
+
+The paragraph below is from 43.2.
 
 On 43.2, before shen-scheme moved, Bifrost's `yggdrasil-shake-parity` shook
 `tests/fib.shen` on 11 of those hosts, and `kernel.kl` and the manifest were
 byte-identical. shen-julia hosted too, but is too slow to take part without a
 sysimage. A shake on it matched Shen/JIT's in a separate run. That has not been
-repeated on 43.4, where Shen/JIT is the only host checked.
+repeated on 43.4 by the run above.
 
 ## What was checked
 

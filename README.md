@@ -29,9 +29,8 @@ or a `YGGDRASIL_SHEN_<PORT>_DIR` variable pointing at one.
 The host must run the same community kernel as the vendored slice,
 ShenOSKernel 43.4, and the shaker refuses any other.
 [Shen/JIT](https://github.com/tizoc/shen-jit) 0.5 is the reference host: its
-release archives are a single executable. shen-scheme follows upstream to 43.4 too.
-The other maintained ports are on 43.2, so until each moves it is a stage-2 target
-and not a host. Stage-2 targets also need the public
+release archives are a single executable. Every other maintained port is on 43.4
+too, so each can be the host as well as a stage-2 target; ten have been checked as hosts. Stage-2 targets also need the public
 `char-stream?`, `read-unit-string`, and `write-string` interfaces.
 [`docs/shen-jit.md`](docs/shen-jit.md) records what has been checked on 43.4 and 43.2, and
 [`docs/shen-cl-43.1.md`](docs/shen-cl-43.1.md) the earlier move to 43.1.
