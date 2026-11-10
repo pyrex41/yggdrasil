@@ -13,7 +13,7 @@
       ] ++ lib.optionals stdenv.hostPlatform.isLinux [ gcc gforth ];
     in {
       packages = each (pkgs: rec {
-        yggdrasil = (pkgs.buildGoModule.override { go = pkgs.go_1_27; }) { pname = "yggdrasil"; version = "0.2.1"; src = pkgs.lib.cleanSource ./.; vendorHash = null; subPackages = [ "." ]; };
+        yggdrasil = (pkgs.buildGoModule.override { go = pkgs.go_1_27; }) { pname = "yggdrasil"; version = "0.2.2"; src = pkgs.lib.cleanSource ./.; vendorHash = null; subPackages = [ "." ]; };
         toolchain = pkgs.buildEnv { name = "yggdrasil-toolchain"; paths = tools pkgs; };
         default = yggdrasil;
       });

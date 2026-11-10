@@ -85,13 +85,16 @@ func (v klVisit) Visit(n ast.Node) ast.Visitor {
 		}
 	case *ast.CallExpr:
 		// MakeSymbol("f") is how the driver in main.go names an entry point
-		// it calls directly; PrimFunc(symF) is an ordinary lookup.
+		// it calls directly; PrimFunc(symF) or SymFn(symF) is an ordinary lookup.
 		if name, ok := makeSymbolArg(x); ok {
 			dst[name] = true
 			return v
 		}
+		// shen-go v1.8.0 looks a function up with SymFn(symF), earlier
+		// releases with PrimFunc(symF); either is a call, so an edge even
+		// from the initialiser.
 		id, ok := x.Fun.(*ast.Ident)
-		if !ok || id.Name != "PrimFunc" || len(x.Args) != 1 {
+		if !ok || (id.Name != "PrimFunc" && id.Name != "SymFn") || len(x.Args) != 1 {
 			return v
 		}
 		if a, ok := x.Args[0].(*ast.Ident); ok {
@@ -172,7 +175,9 @@ func buildKLGraph(moduleDir string) (*klGraph, error) {
 				fn, _ := call.Fun.(*ast.Ident)
 				ns, _ := call.Args[1].(*ast.Ident)
 				nameID, _ := call.Args[2].(*ast.Ident)
-				if fn == nil || fn.Name != "Call" || ns == nil || ns.Name != "ns2_1set" || nameID == nil {
+				// shen-go v1.8.0 emits the binding as Call2(__e, ns2_1set, sym, body);
+				// earlier releases used Call with the same arguments.
+				if fn == nil || (fn.Name != "Call" && fn.Name != "Call2") || ns == nil || ns.Name != "ns2_1set" || nameID == nil {
 					return true
 				}
 				name, ok := syms[nameID.Name]
