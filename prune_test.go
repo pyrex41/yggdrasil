@@ -525,10 +525,11 @@ func TestNativeOverridesMatchKernelFast(t *testing.T) {
 }
 
 // kernelFastRebindings returns the kernel names InstallKernelFast binds to
-// natives. Every rebinding in that function goes through one of five calls,
-// each taking the KL name as its first string literal.
+// natives. Every rebinding in that function goes through one of six calls,
+// each taking the KL name as its first string literal. shen-go v1.8.0 moved
+// symbol?, variable?, thaw and fail from overrideNative to overrideDirect.
 var kernelFastRebindRe = regexp.MustCompile(
-	`(?:overridePrimitive|overrideNative|restoreCanonicalPrimitive|canonicalOrMake)\("([^"]+)"|` +
+	`(?:overridePrimitive|overrideNative|overrideDirect|restoreCanonicalPrimitive|canonicalOrMake)\("([^"]+)"|` +
 		`BindSymbolFunc\(MakeSymbol\("([^"]+)"\)`)
 
 func kernelFastRebindings(t *testing.T, src string) map[string]bool {
