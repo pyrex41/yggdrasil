@@ -1,0 +1,63 @@
+name: shen-rust
+
+# The rust stage-2 target against the checkout pinned in .github/shen-rust.ref
+# (shen-rust v0.1.1). Native fib, the lean eval-free wasm32-wasip1 link, the
+# interpreter-only eval-capable scaffold, and (port)/(release).
+#
+# Not part of parity-gate.yml: an eval-capable cargo release build of
+# metaeval still dominates that job's wall clock. This job scaffolds
+# metaeval and does not link it.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  rust-target:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: read the pinned shen-rust SHA
+        run: |
+          set -euo pipefail
+          ref="$(grep -Eom1 '^[0-9a-f]{40}$' .github/shen-rust.ref)"
+          echo "SHEN_RUST_REF=$ref" >> "$GITHUB_ENV"
+          echo "shen-rust pinned at $ref (.github/shen-rust.ref)"
+
+      - name: check out shen-rust v0.1.1
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/.."
+          git clone -q --depth 1 --branch v0.1.1 https://github.com/pyrex41/shen-rust.git
+          head="$(git -C shen-rust rev-parse HEAD)"
+          echo "shen-rust at $head"
+          test "$head" = "$SHEN_RUST_REF"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: wasm-opt
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq binaryen
+
+      - name: build the Shen/JIT stage-1 host (pinned)
+        run: sh .github/build-shen-jit.sh "$GITHUB_WORKSPACE/../shen-jit"
+
+      - name: rust target
+        env:
+          YGGDRASIL_HOST: ${{ github.workspace }}/../shen-jit/build/shen-jit
+          YGGDRASIL_SHEN_JIT_DIR: ${{ github.workspace }}/../shen-jit
+          YGGDRASIL_SHEN_RUST_DIR: ${{ github.workspace }}/../shen-rust
+        run: go test -tags shen_rust -count=1 -timeout 40m -run 'TestRust' -v .

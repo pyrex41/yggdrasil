@@ -704,7 +704,8 @@ const yggdrasilStep = "{yggdrasil}"
 // also reachable as `yggdrasil <name> ARGS...` (see run()), which is how a
 // recipe step can be reproduced by hand when it misbehaves.
 var internalSteps = map[string]func(args []string) error{
-	"program-file": programFileStep,
+	"program-file":  programFileStep,
+	"rust-aot-boot": rustAotBootStep,
 }
 
 // programFileStep writes OUTDIR's shaken slice as ONE KL stream: the kernel,
@@ -740,6 +741,44 @@ func programFileStep(args []string) error {
 		body.WriteString("\n")
 	}
 	return os.WriteFile(out, body.Bytes(), 0o644)
+}
+
+// rustAotBootStep patches a scaffold written by shen-rust 0.1.1's
+// yggdrasil-build. On an eval-free shake that builder emits
+// boot_aot_slice, which runs shen.initialise before
+// register_hot_overrides. Kernel 43.4's initialiser calls bound?, and
+// klcompile lowers (trap-error (value X) ...) to value/or, a primitive
+// that exists only after the hot overrides. Installing them first lets
+// the lean image boot. An interpreter scaffold has no boot_aot_slice
+// call, and a second run finds the call already present.
+func rustAotBootStep(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: yggdrasil rust-aot-boot SCAFFOLD")
+	}
+	return patchRustAotBoot(filepath.Join(args[0], "src", "main.rs"))
+}
+
+func patchRustAotBoot(path string) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	src := string(b)
+	if !strings.Contains(src, "boot::boot_aot_slice") || strings.Contains(src, "register_hot_overrides") {
+		return nil
+	}
+	const old = "    let mut interp = Interp::new();\n    boot::boot_aot_slice"
+	const patched = "    let mut interp = Interp::new();\n" +
+		"    // Installed before boot_aot_slice. shen-rust 0.1.1 registers\n" +
+		"    // value/or in register_hot_overrides, which that boot calls\n" +
+		"    // after shen.initialise. Kernel 43.4's initialiser calls\n" +
+		"    // bound?, and klcompile lowered that to value/or.\n" +
+		"    shen_rust::primitives::register_hot_overrides(&mut interp);\n" +
+		"    boot::boot_aot_slice"
+	if !strings.Contains(src, old) {
+		return fmt.Errorf("%s: boot_aot_slice is not preceded by Interp::new() as rust-aot-boot expects", path)
+	}
+	return os.WriteFile(path, []byte(strings.Replace(src, old, patched, 1)), 0o644)
 }
 
 // manifestUserFiles reads the user= lines of the txt manifest, in order.
