@@ -267,11 +267,12 @@ was written on, so the gate has not returned a verdict for it.
 ### CI
 
 `.github/workflows/parity-gate.yml` runs the gate nightly and on
-`workflow_dispatch`, on `go,js,lua` with `--min-targets 3`. It clones the three
-stage-2 ports, installs LuaJIT, and uses **shen-go as the stage-1 host** — the
-committed goldens mean `--expect` supplies the truth, so no shen-cl/sbcl kernel
-build is needed. `rust` is left out: the eval-capable `metaeval` slice through a
-cargo release build dominates the wall clock.
+`workflow_dispatch`, on `jit,go,js,lua` with `--min-targets 4`. It clones the
+stage-2 ports and uses the pinned Shen/JIT as the stage-1 host. `rust` is left
+out of that job: linking the eval-capable `metaeval` slice still dominates the
+wall clock. `.github/workflows/shen-rust.yml` pins shen-rust v0.1.1 and runs
+the lean fib path, native and `wasm32-wasip1`, plus an interpreter-only
+scaffold of `metaeval` that it does not link.
 
 The job deliberately has no `continue-on-error` and always passes
 `--min-targets`. Both matter: the script exits **3** for "nothing was

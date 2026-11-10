@@ -1,0 +1,10 @@
+# The shen-rust pin for the rust stage-2 target. .github/workflows/shen-rust.yml
+# checks this SHA out and the tests under -tags shen_rust compare the
+# checkout to it. The first bare 40-hex line below is the pin.
+#
+# shen-rust v0.1.1 (2026-11-10), the merge of pyrex41/shen-rust#36.
+# Tag v0.1.1. Workspace version 0.1.1. Not published to crates.io.
+# Eval-free shakes link with default-features = false (no cedar, no
+# kernel-aot, no interpreter). needs-eval=true adds interpreter only.
+# (port) and (release) report 0.1.1. *version* stays "43.4".
+a653699c2f3c60efbce3d63e4045779b5e2777b3
