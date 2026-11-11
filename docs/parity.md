@@ -270,7 +270,7 @@ was written on, so the gate has not returned a verdict for it.
 `workflow_dispatch`, on `jit,go,js,lua` with `--min-targets 4`. It clones the
 stage-2 ports and uses the pinned Shen/JIT as the stage-1 host. `rust` is left
 out of that job: linking the eval-capable `metaeval` slice still dominates the
-wall clock. `.github/workflows/shen-rust.yml` pins shen-rust v0.1.1 and runs
+wall clock. `.github/workflows/shen-rust.yml` pins shen-rust v0.1.2 and runs
 the lean fib path, native and `wasm32-wasip1`, plus an interpreter-only
 scaffold of `metaeval` that it does not link.
 

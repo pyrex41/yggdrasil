@@ -328,13 +328,12 @@
     "run_impl": "shen-rust",
     "dir_env": "YGGDRASIL_SHEN_RUST_DIR",
     "_comment": [
-      "Pinned checkout: .github/shen-rust.ref (shen-rust v0.1.1).",
+      "Pinned checkout: .github/shen-rust.ref (shen-rust v0.1.2).",
       "Feature selection is yggdrasil-build's, not this recipe's: an",
       "eval-free manifest (cannot-reach=eval or needs-eval=false) gets",
       "default-features = false; needs-eval=true gets interpreter only;",
-      "--full is not passed. rust-aot-boot then installs shen-rust's hot",
-      "overrides before boot_aot_slice, because 0.1.1 registers value/or",
-      "after shen.initialise and kernel 43.4's initialiser calls bound?.",
+      "--full is not passed. v0.1.2 registers value/or inside boot_aot_slice",
+      "before shen.initialise, so the scaffold needs no extra boot patch.",
       "cargo build --release stays the native artifact. The same scaffold",
       "builds wasm32-wasip1; .github/workflows/shen-rust.yml does that for fib."
     ],
@@ -355,13 +354,6 @@
           "{outdir}/app-rust"
         ],
         "cwd": "{shen_rust}"
-      },
-      {
-        "argv": [
-          "{yggdrasil}",
-          "rust-aot-boot",
-          "{outdir}/app-rust"
-        ]
       },
       {
         "argv": [
