@@ -80,10 +80,10 @@ fib 20 = 6765
 
 ## Stage 2 — Rust
 
-The shen-rust v0.1.1 builder AOT-compiles every shaken defun to Rust via `klcompile` and scaffolds a standalone Cargo project (path-dependency on the `shen-rust` crate). An eval-free shake links with no default features. `yggdrasil build --target rust` also installs shen-rust's hot overrides before boot, which kernel 43.4's initialiser needs. The native fib binary is about 1.2 MB.
+The shen-rust v0.1.2 builder AOT-compiles every shaken defun to Rust via `klcompile` and scaffolds a standalone Cargo project (path-dependency on the `shen-rust` crate). An eval-free shake links with no default features. `boot_aot_slice` registers `value/or` before `shen.initialise`. The native fib binary is about 0.9 MB.
 
 ```bash
-(cd ../shen-rust && cargo run -q --release -p yggdrasil-build -- ../yggdrasil/out-demo ../yggdrasil/out-demo/fib-rust) >/dev/null 2>&1 && go run . rust-aot-boot out-demo/fib-rust && (cd out-demo/fib-rust && cargo build --release -q >/dev/null 2>&1) && ./out-demo/fib-rust/target/release/fib-rust
+(cd ../shen-rust && cargo run -q --release -p yggdrasil-build -- ../yggdrasil/out-demo ../yggdrasil/out-demo/fib-rust) >/dev/null 2>&1 && (cd out-demo/fib-rust && cargo build --release -q >/dev/null 2>&1) && ./out-demo/fib-rust/target/release/fib-rust
 ```
 
 ```output

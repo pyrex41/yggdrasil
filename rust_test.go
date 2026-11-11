@@ -10,10 +10,10 @@ import (
 	"testing"
 )
 
-// shen-rust v0.1.1, the commit .github/shen-rust.ref names.
-const shenRustV011 = "a653699c2f3c60efbce3d63e4045779b5e2777b3"
+// shen-rust v0.1.2, the commit .github/shen-rust.ref names.
+const shenRustV012 = "c8e3f0aa30897e377f14e929e2183ac47e37de9b"
 
-func TestRustPinIsV011(t *testing.T) {
+func TestRustPinIsV012(t *testing.T) {
 	dir := rustCheckout(t)
 	out, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
 	if err != nil {
@@ -21,15 +21,15 @@ func TestRustPinIsV011(t *testing.T) {
 	}
 	head := strings.TrimSpace(string(out))
 	pin := rustPinSHA(t)
-	if head != pin || head != shenRustV011 {
-		t.Fatalf("checkout %s, pin file %s, v0.1.1 %s", head, pin, shenRustV011)
+	if head != pin || head != shenRustV012 {
+		t.Fatalf("checkout %s, pin file %s, v0.1.2 %s", head, pin, shenRustV012)
 	}
 	cargo, err := os.ReadFile(filepath.Join(dir, "Cargo.toml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(cargo), `version = "0.1.1"`) {
-		t.Fatal("workspace Cargo.toml is not version 0.1.1")
+	if !strings.Contains(string(cargo), `version = "0.1.2"`) {
+		t.Fatal("workspace Cargo.toml is not version 0.1.2")
 	}
 	boot, err := os.ReadFile(filepath.Join(dir, "crates", "shen-rust", "src", "interp", "boot.rs"))
 	if err != nil {
@@ -77,9 +77,11 @@ func TestRustEvalFreeFibNativeAndWasm(t *testing.T) {
 		t.Fatalf("eval-free Cargo.toml should drop default features and the interpreter:\n%s", cargo)
 	}
 	mainSrc := mustRead(t, filepath.Join(scaffold, "src", "main.rs"))
-	if strings.Index(mainSrc, "register_hot_overrides") < 0 ||
-		strings.Index(mainSrc, "register_hot_overrides") > strings.Index(mainSrc, "boot::boot_aot_slice") {
-		t.Fatal("generated main does not install hot overrides before boot_aot_slice")
+	if strings.Contains(mainSrc, "register_hot_overrides") {
+		t.Fatal("generated main still patches boot with register_hot_overrides; v0.1.2 does that inside boot_aot_slice")
+	}
+	if !strings.Contains(mainSrc, "boot::boot_aot_slice") {
+		t.Fatal("eval-free scaffold did not call boot_aot_slice")
 	}
 	if !strings.Contains(mainSrc, `#[cfg(target_arch = "wasm32")]`) ||
 		!strings.Contains(mainSrc, `#[cfg(not(target_arch = "wasm32"))]`) {
@@ -153,9 +155,6 @@ func TestRustEvalCapableScaffoldKeepsInterpreterOnly(t *testing.T) {
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("yggdrasil-build: %v", err)
 	}
-	if err := rustAotBootStep([]string{scaffold}); err != nil {
-		t.Fatal(err)
-	}
 	cargo := mustRead(t, filepath.Join(scaffold, "Cargo.toml"))
 	if !strings.Contains(cargo, `default-features = false, features = ["interpreter"]`) {
 		t.Fatalf("eval-capable dependency line:\n%s", cargo)
@@ -165,7 +164,7 @@ func TestRustEvalCapableScaffoldKeepsInterpreterOnly(t *testing.T) {
 		t.Fatal("needs-eval=true scaffold used the aot-only boot")
 	}
 	if strings.Contains(mainSrc, "register_hot_overrides") {
-		t.Fatal("rust-aot-boot rewrote an interpreter scaffold")
+		t.Fatal("generated main calls register_hot_overrides; boot owns that")
 	}
 }
 
@@ -186,7 +185,7 @@ func TestRustPortAndRelease(t *testing.T) {
 		t.Fatalf("rust build: argv=%v err=%v", argv, err)
 	}
 	stdout := runCmd(t, argv[0], argv[1:]...)
-	if stdout != "port 0.1.1\nrelease 0.1.1\n" {
+	if stdout != "port 0.1.2\nrelease 0.1.2\n" {
 		t.Fatalf("stdout = %q", stdout)
 	}
 }

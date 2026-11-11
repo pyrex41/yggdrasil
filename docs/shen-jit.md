@@ -76,7 +76,7 @@ What the build leaves in `<exe>.build/stage0/`:
 
 The shaker refuses a host on another kernel. Every maintained port is on 43.4:
 Shen/JIT 0.5, shen-scheme 0.54, shen-cl v3.3.0, shen-go v1.8.0, shen-lua v0.13.0,
-ShenScript v1.1.0-rc.3, shen-julia v0.4.0, shen-c v0.6.0, and shen-rust v0.1.1, shen-swift,
+ShenScript v1.1.0-rc.3, shen-julia v0.4.0, shen-c v0.6.0, and shen-rust v0.1.2, shen-swift,
 shen-erl and shen-truffle at merged commits. shen-joy's bounded subset and its
 differential reference, Shen/CL v3.3.0, are on 43.4 too, though it is not a host.
 

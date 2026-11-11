@@ -49,7 +49,7 @@ Paths below are relative to the sibling port checkout unless they start with
 | `kl` | `go build ./cmd/kl` in the shen-go checkout, then `yggdrasil program-file` concatenates `kernel.kl`, `(shen.initialise)` and the user files into one KL stream | the slice run directly on shen-go's bare KLambda VM, no stage-2 compiler in between | |
 | `lisp` | `builders/lisp/build.sh <dir> <exe>` (`LISP_IMPL=sbcl\|clisp\|ecl`, `SHEN_CL`) | saved image, or a linked executable under ECL | SBCL 2.6.8 ~121 MB, ~25 ms, or ~11.5 MB and ~0.22 s with `YGGDRASIL_SBCL_COMPRESSION=1`; CLISP ~7.8 MB, ECL ~620 KB plus libecl (S42-era figures, not re-measured) |
 | `lua` | `luajit shen-lua/bin/yggdrasil-build.lua <dir> <out.lua>` | self-contained `.lua` | ~350 KB, ~20 ms |
-| `rust` | `cargo run --release -p yggdrasil-build -- <dir> <outdir>` in shen-rust v0.1.1, then `cargo build --release` | static binary. Eval-free shakes link with no default features. The same scaffold builds `wasm32-wasip1` | ~1.2 MB, ~2 ms native. Wasm after `wasm-opt -Oz` ~478 KB (~95 KB brotli), ~10.5 ms in Node |
+| `rust` | `cargo run --release -p yggdrasil-build -- <dir> <outdir>` in shen-rust v0.1.2, then `cargo build --release` | static binary. Eval-free shakes link with no default features. The same scaffold builds `wasm32-wasip1` | ~0.9 MB, ~2.7 ms native. Wasm after `wasm-opt -Oz` ~266 KB (~81 KB brotli), ~8.1 ms in Node |
 | `scheme` | `builders/scheme/build.sh <dir> <outdir>` (`SHEN_SCHEME`) | Scheme program dir plus a `run` launcher (`chez --script`), compiled with shen-scheme's own `kl->scheme`; overridden kernel functions (`pr`, `shen.char-stoutput?`, dict ops) come from its `overrides.scm`, exactly as its own build does. The artifact carries no KL-to-Scheme compiler, so a `needs-eval=true` slice is refused as a capability SKIP (exit 3) | ~100 KB plus Chez; ~0.4 s (compiles at load) |
 | `swift` | `builders/swift/build.sh <dir> <outdir>` (`SHEN_SWIFT`) | the slice plus a `run` launcher driving the shen-swift tree-walking interpreter in `--shaken` mode | |
 | `truffle` | `mvn -DskipTests package` in shen-truffle, then `java -jar target/yggdrasil-builder.jar --format jvm --runtime target/shen-truffle.jar <dir> <out>` | relocatable JVM application at `app-truffle/bin/shen-truffle` | |
@@ -88,10 +88,10 @@ kernel against the full 2,500-line one.
 
 A target whose tools are absent is skipped rather than failed.
 
-### The `rust` target, shen-rust v0.1.1
+### The `rust` target, shen-rust v0.1.2
 
 The checkout is the commit in [`.github/shen-rust.ref`](../.github/shen-rust.ref)
-(`a653699c2f3c60efbce3d63e4045779b5e2777b3`, tag `v0.1.1`), via
+(`c8e3f0aa30897e377f14e929e2183ac47e37de9b`, tag `v0.1.2`), via
 `YGGDRASIL_SHEN_RUST_DIR` or `../shen-rust`. The recipe runs
 `cargo run --release -p yggdrasil-build` there. The generated crate
 path-depends on that checkout. Feature flags stay the builder's:
@@ -99,26 +99,25 @@ path-depends on that checkout. Feature flags stay the builder's:
 (no Cedar, no precompiled kernel, no KL interpreter); `needs-eval=true`
 adds `interpreter` only. The recipe does not pass `--full`.
 
-shen-rust 0.1.1's `boot_aot_slice` runs `shen.initialise` before it
-registers `value/or`. Kernel 43.4's initialiser calls `bound?`, and
-klcompile lowers that `trap-error`/`value` pair to `value/or`, so a lean
-image exited during boot. The `rust-aot-boot` step installs
-`register_hot_overrides` first. `(port)` and `(release)` follow the crate
-version and report `0.1.1`.
+`boot_aot_slice` registers `value/or`, `<-address/or` and `<-vector/or`
+before kernel top-level forms and `shen.initialise`. The generated `main`
+calls `boot_aot_slice` and does not install those overrides itself.
+`(port)` and `(release)` follow the crate version and report `0.1.2`.
 
 On wasm32 the generated entry calls `run` directly. The 1 GB stack thread
 is `#[cfg(not(target_arch = "wasm32"))]`. `*home-directory*` is `"/"` when
 the host has no process cwd.
 
-`tests/fib.shen` (81 kernel functions), measured 2026-11-10 on x86-64
-Linux, rustc 1.99.1, best of five:
+`tests/fib.shen` (81 kernel functions), measured 2026-11-11 on x86-64
+Linux, rustc 1.99.1, best of five. The 0.1.1 column is the same fixture
+and machine from 2026-11-10:
 
-| artifact | size | startup |
+| artifact | v0.1.2 | v0.1.1 |
 |---|---:|---:|
-| native `cargo build --release` | 1,216,016 bytes | 1.93 ms |
-| `wasm32-wasip1` raw | 717,308 bytes | |
-| after `wasm-opt -Oz` | 477,605 bytes | 10.46 ms Node (compile + instantiate + start) |
-| that module, brotli `-q 11` | 94,905 bytes | |
+| native `cargo build --release` | 923,312 bytes, 2.68 ms | 1,216,016 bytes, 1.93 ms |
+| `wasm32-wasip1` raw | 430,156 bytes | 717,308 bytes |
+| after `wasm-opt -Oz` | 265,721 bytes, 8.10 ms Node | 477,605 bytes, 10.46 ms Node |
+| brotli `-q 11` | 80,772 bytes | 94,905 bytes |
 
 shen-rust's own published profile is a smaller, older fib slice (54 kernel
 defuns): 436,471 bytes after `wasm-opt`, 91,047 brotli, 10.53 ms. The
@@ -313,7 +312,7 @@ The expression is always the same; only the launcher syntax differs. Write
 | shen-cl | `shen eval -q -l yggdrasil.shen -e SHAKE` | |
 | shen-go | `shen eval -q -l yggdrasil.shen -e SHAKE` | the CLI's fallback host when shen-cl is missing |
 | shen-lua | `bin/shen yggdrasil.shen -e SHAKE` | a `kernel-42.2` checkout (re-verified on `fib`); the published `0.11.x` LuaRocks rocks still carry S42.0 and would mix kernels; omit `-q` (see below) |
-| shen-rust v0.1.1 | `shen-rust eval -l yggdrasil.shen -e SHAKE` | omit `-q`. The native host runs the deep call-graph walk on a 1 GB-stack thread. A wasm32 image built from a shake does not |
+| shen-rust v0.1.2 | `shen-rust eval -l yggdrasil.shen -e SHAKE` | omit `-q`. The native host runs the deep call-graph walk on a 1 GB-stack thread. A wasm32 image built from a shake does not |
 | shen-erl | `shen-erl eval -q -l yggdrasil.shen -e SHAKE` | |
 | ShenScript | `node bin/shen.js eval -l yggdrasil.shen -e SHAKE` | slowest host, roughly 25 s |
 | shen-julia | `shen-julia/bin/shen eval -l yggdrasil.shen -e SHAKE` | pre-create the output directory; the shake does not `mkdir` |

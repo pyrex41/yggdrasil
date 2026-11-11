@@ -1,7 +1,7 @@
 name: shen-rust
 
 # The rust stage-2 target against the checkout pinned in .github/shen-rust.ref
-# (shen-rust v0.1.1). Native fib, the lean eval-free wasm32-wasip1 link, the
+# (shen-rust v0.1.2). Native fib, the lean eval-free wasm32-wasip1 link, the
 # interpreter-only eval-capable scaffold, and (port)/(release).
 #
 # Not part of parity-gate.yml: an eval-capable cargo release build of
@@ -27,11 +27,11 @@ jobs:
           echo "SHEN_RUST_REF=$ref" >> "$GITHUB_ENV"
           echo "shen-rust pinned at $ref (.github/shen-rust.ref)"
 
-      - name: check out shen-rust v0.1.1
+      - name: check out shen-rust v0.1.2
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/.."
-          git clone -q --depth 1 --branch v0.1.1 https://github.com/pyrex41/shen-rust.git
+          git clone -q --depth 1 --branch v0.1.2 https://github.com/pyrex41/shen-rust.git
           head="$(git -C shen-rust rev-parse HEAD)"
           echo "shen-rust at $head"
           test "$head" = "$SHEN_RUST_REF"

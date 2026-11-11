@@ -59,7 +59,7 @@ order was checked, and the flags the shake ran with.
 | `go` | shen-go | static binary |
 | `lua` | shen-lua | self-contained LuaJIT script |
 | `js` | ShenScript | ES module for Node, or a browser module with `--web` |
-| `rust` | shen-rust v0.1.1 | static binary; eval-free shakes also link a lean `wasm32-wasip1` module |
+| `rust` | shen-rust v0.1.2 | static binary; eval-free shakes also link a lean `wasm32-wasip1` module |
 | `lisp` | shen-cl | saved image, SBCL, CLISP or ECL |
 | `erlang` | shen-erl | BEAM modules plus a small runtime |
 | `julia` | shen-julia | artifact project, optionally a sysimage |
