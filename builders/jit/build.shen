@@ -106,7 +106,7 @@
          (true (yggdrasil.jit.close-names Ss Todo Eval Kept PortT UniT Port Support)))))
 
 \\ What stage 1 calls by name.  A slice has no launcher and no extensions, and
-\\ the port's shen-jit.initialise registers primitives and thread through
+\\ the port's shen-jit.initialise registers primitives and isolates through
 \\ functions a slice does not carry.
 (define yggdrasil.jit.stubs
   Eval -> [[defun shen.x.features.initialise [features] true]
@@ -161,11 +161,6 @@
   true Body -> [do [shen-jit.register-primitives] Body]
   false Body -> Body)
 
-\\ What stage 1's port initialiser defines for a whole image, as a port defun: a
-\\ program on Shen/JIT can call thread without declaring it.
-(define yggdrasil.jit.thread
-  -> [defun thread [x] [shen-jit.thread x]])
-
 (define yggdrasil.jit.lower
   Forms Sealed -> (shen-jit.stage0.lower-file Forms Sealed))
 
@@ -210,8 +205,7 @@
   -> (let KForms (yggdrasil.jit.read (cn Slice "/kernel.kl"))
           UForms (mapcan (/. U (yggdrasil.jit.read (cn Slice (cn "/" U)))) Users)
           PortDs (yggdrasil.jit.defuns (mapcan (/. F (yggdrasil.jit.read F)) PortFiles))
-          Ports  [(yggdrasil.jit.thread)
-                  | (stage0.filter (/. D (not (= (yggdrasil.jit.name D) shen-jit.initialise))) PortDs)]
+          Ports  (stage0.filter (/. D (not (= (yggdrasil.jit.name D) shen-jit.initialise))) PortDs)
           UniDs  (yggdrasil.jit.defuns (mapcan (/. F (yggdrasil.jit.read F)) Universe))
           PortT  (yggdrasil.jit.table Ports)
           UniT   (yggdrasil.jit.table UniDs)
@@ -235,7 +229,8 @@
                    [do [set (yggdrasil.jit.boot-global) true]
                        (yggdrasil.jit.boot-body KIndex UIndex Eval)]]
           TopDs  (yggdrasil.jit.top-defuns Tops)
-          Closed (yggdrasil.jit.close (append KRest (append Replaced (append UDs (append Stubs (append [Entry | Tops] []))))) Eval Kept PortT UniT [] [])
+          \\ The runtime looks these up by name when isolates start and end.
+          Closed (yggdrasil.jit.close (append KRest (append Replaced (append UDs (append Stubs (append [Entry | Tops] [[shen-jit.start-isolate 0] [shen-jit.isolate-ending] [shen-jit.run-at-end]]))))) Eval Kept PortT UniT [] [])
           Sealed (append (map (/. D (yggdrasil.jit.guard-initialise D)) KRest) (append Replaced (append (hd Closed) (append (tl Closed) (append Stubs [Entry | TopDs])))))
           Names  (yggdrasil.jit.names Sealed)
           \\ User code calls the sealed names directly and stays open itself,

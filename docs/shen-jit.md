@@ -1,6 +1,6 @@
-# Shen/JIT and kernel 43.4
+# Shen/JIT and kernel 43.6
 
-Yggdrasil's kernel is community ShenOSKernel 43.4
+Yggdrasil's kernel is community ShenOSKernel 43.6
 ([provenance](../KLambda/PROVENANCE.md)), and [Shen/JIT](https://github.com/tizoc/shen-jit)
 is its reference host and a stage-2 target. No change to Shen/JIT is needed.
 
@@ -74,7 +74,7 @@ What the build leaves in `<exe>.build/stage0/`:
 
 ## The other ports
 
-The shaker refuses a host on another kernel. Every maintained port is on 43.4:
+The shaker requires a 43.6 host. The following historical 43.4 qualification used:
 Shen/JIT 0.5, shen-scheme 0.54, shen-cl v3.3.0, shen-go v1.8.0, shen-lua v0.13.0,
 ShenScript v1.1.0-rc.3, shen-julia v0.4.0, shen-c v0.6.0, and shen-rust, shen-swift,
 shen-erl and shen-truffle at merged commits. shen-joy's bounded subset and its
@@ -99,6 +99,14 @@ sysimage. A shake on it matched Shen/JIT's in a separate run. That has not been
 repeated on 43.4 by the run above.
 
 ## What was checked
+
+### Kernel 43.6, Shen/JIT v0.8
+
+On macOS arm64, Shen/JIT v0.8 at `75b57a5` was built from source. The
+JIT builder's focused tests cover native slices, evaluation, init pruning,
+and an isolate communicating through a channel. The builder retains the
+runtime's dynamically named isolate startup and cleanup functions. Other
+hosts and platforms have not been qualified for 43.6 by this check.
 
 ### Kernel 43.4, Shen/JIT v0.5
 

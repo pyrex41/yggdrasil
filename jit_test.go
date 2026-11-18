@@ -87,14 +87,14 @@ func TestKernelIs434(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(init), `(set *version* "43.4")`) {
-		t.Error(`KLambda/init.kl does not set *version* to "43.4"`)
+	if !strings.Contains(string(init), `(set *version* "43.6")`) {
+		t.Error(`KLambda/init.kl does not set *version* to "43.6"`)
 	}
 	shaker, err := os.ReadFile("yggdrasil.shen")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`(= (version) "43.4")`, `["kernel-version" "43.4"]`, `kernel-version=43.4~%`} {
+	for _, want := range []string{`(= (version) "43.6")`, `["kernel-version" "43.6"]`, `kernel-version=43.6~%`} {
 		if !strings.Contains(string(shaker), want) {
 			t.Errorf("yggdrasil.shen lacks %s", want)
 		}
@@ -284,14 +284,12 @@ func TestJitArtifactIsAProgram(t *testing.T) {
 	}
 }
 
-// thread is the one name stage 1's port initialiser defines for a whole image.
-func TestJitThread(t *testing.T) {
-	src := filepath.Join(t.TempDir(), "thread.shen")
-	body := `(set done false)
-(define work 0 -> (set done true) N -> (work (- N 1)))
-(thread (freeze (work 1000)))
-(define wait -> (if (value done) finished (wait)))
-(output "~A~%" (wait))
+// Isolates communicate through channels in a native slice.
+func TestJitIsolate(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "isolate.shen")
+	body := `(define work S -> (channel.send S finished))
+(let R (channel.new 1) _ (isolate.spawn work (channel.sender R))
+  (output "~A~%" (channel.receive R)))
 `
 	if err := os.WriteFile(src, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
@@ -299,9 +297,9 @@ func TestJitThread(t *testing.T) {
 	_, argv := jitBuild(t, src, shakeOpts{})
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, argv[0], argv[1:]...).Output()
+	out, err := exec.CommandContext(ctx, argv[0], argv[1:]...).CombinedOutput()
 	if err != nil || string(out) != "finished\n" {
-		t.Fatalf("stdout = %q, err = %v", out, err)
+		t.Fatalf("output = %q, err = %v", out, err)
 	}
 }
 

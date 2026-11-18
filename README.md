@@ -1,7 +1,7 @@
 # Yggdrasil
 
 A tree-shaker for [Shen](https://shenlanguage.org). It takes a Shen program and
-the ShenOSKernel 43.4 kernel, works out which of the kernel's 731 functions the program can
+the ShenOSKernel 43.6 kernel, works out which of the kernel's 731 functions the program can
 reach, and emits just that slice as portable KLambda. A per-target builder then
 compiles the slice with the port's own compiler into a standalone artifact.
 
@@ -27,10 +27,9 @@ the target port as a sibling checkout (`../shen-go`, `../shen-lua`, and so on)
 or a `YGGDRASIL_SHEN_<PORT>_DIR` variable pointing at one.
 
 The host must run the same community kernel as the vendored slice,
-ShenOSKernel 43.4, and the shaker refuses any other.
-[Shen/JIT](https://github.com/tizoc/shen-jit) 0.5 is the reference host: its
-release archives are a single executable. Every other maintained port is on 43.4
-too, so each can be the host as well as a stage-2 target; ten have been checked as hosts. Stage-2 targets also need the public
+ShenOSKernel 43.6, and the shaker refuses any other.
+[Shen/JIT](https://github.com/tizoc/shen-jit) 0.8 is the reference host: its
+release archives are a single executable. Other ports need a matching 43.6 kernel to serve as stage-1 hosts; their stage-2 compatibility must be checked separately. Stage-2 targets also need the public
 `char-stream?`, `read-unit-string`, and `write-string` interfaces.
 [`docs/shen-jit.md`](docs/shen-jit.md) records what has been checked on 43.4 and 43.2, and
 [`docs/shen-cl-43.1.md`](docs/shen-cl-43.1.md) the earlier move to 43.1.
@@ -125,8 +124,8 @@ Without them, host-gated tests skip by name and CI asserts the exact skip count.
 
 ## Lineage
 
-The kernel is the community ShenOSKernel 43.4 (Shen-Language/shen-sources, tag
-`shen-43.4`, also used by Shen/JIT 0.5), vendored byte-for-byte under
+The kernel is the community ShenOSKernel 43.6 (Shen-Language/shen-sources, tag
+`shen-43.6`, also used by Shen/JIT 0.8), vendored byte-for-byte under
 [`KLambda/`](KLambda/); [`KLambda/PROVENANCE.md`](KLambda/PROVENANCE.md) has the
 hashes and the lineage decision. Yggdrasil 1.0 targeted an earlier community
 kernel; this repository retargeted it to Tarver's S41.2 and S42.0 for a while,
