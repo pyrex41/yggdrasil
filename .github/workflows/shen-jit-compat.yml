@@ -1,0 +1,31 @@
+name: Shen/JIT compatibility
+on:
+  push:
+  pull_request:
+jobs:
+  jit:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        version: ["0.11", "0.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.x"
+      - name: Build host and target sources
+        shell: bash
+        run: |
+          if [ '${{ matrix.version }}' = 0.11 ]; then
+            sh .github/build-shen-jit.sh "$RUNNER_TEMP/shen-jit"
+          else
+            git clone https://github.com/tizoc/shen-jit.git "$RUNNER_TEMP/shen-jit"
+            git -C "$RUNNER_TEMP/shen-jit" checkout 02c7dd31ff9402c1e00f6bd2823bca591d5ddbb5
+            make -C "$RUNNER_TEMP/shen-jit" deps
+            make -C "$RUNNER_TEMP/shen-jit"
+          fi
+      - name: Test host and JIT target
+        env:
+          YGGDRASIL_HOST: ${{ runner.temp }}/shen-jit/build/shen-jit
+          YGGDRASIL_SHEN_JIT_DIR: ${{ runner.temp }}/shen-jit
+        run: go test -count=1 -run 'TestJit|TestKernelIs' ./...

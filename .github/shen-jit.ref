@@ -1,6 +1,6 @@
 # The Shen/JIT stage-1 host pin, read by every workflow that needs a Shen host,
-# through .github/build-shen-jit.sh.  It runs ShenOSKernel 43.6, the kernel in
+# through .github/build-shen-jit.sh.  It runs ShenOSKernel 43.7, the kernel in
 # KLambda/, which yggdrasil.shen requires of a host.  The release's source
 # tarball builds with a C compiler alone.  Moving the pin moves both lines.
-version=0.8
-sha256=77beca9458cfccf2790c9886baca67850eb380d39c262d1a5f14ba7b70982505
+version=0.11
+sha256=08c44e320e5be3f5b008a01e90c8595869c5bcbf2cd468ff47bf9000c3b8b210

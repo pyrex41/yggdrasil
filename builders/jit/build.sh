@@ -56,12 +56,24 @@ mkdir -p "$WORK/stage0" "$WORK/tools"
 
 # The tools under the names the Makefile gives them, as the host has its own
 # lowerer sealed under the real names (src/lowerer/README.md).
-sed -e 's/shen-jit\.lower\./stage0.lower./g' -e 's/(shen-jit\.sealed? /(stage0.sealed? /g' \
-    -e 's/(shen-jit\.inline-body /(stage0.inline-body /g' \
-    "$SHEN_JIT/src/lowerer/lower.shen" > "$WORK/tools/lower.shen"
-sed -e '/^(load "src\/lowerer\/host.shen")$/d' -e '/^(load "build\/tools\/lower.shen")$/d' \
+if [ -f "$SHEN_JIT/build/tools/namespaces.shen" ]; then
+    cp "$SHEN_JIT/build/tools/lower.shen" "$WORK/tools/lower.shen"
+    cp "$SHEN_JIT/build/tools/namespaces.shen" "$WORK/tools/namespaces.shen"
+    NAMESPACE_LOAD=1
+else
+    cat "$SHEN_JIT"/src/lowerer/{lower,inline,normalise,builders,emit,registers}.shen |
+        sed -e 's/shen-jit\.lower\./stage0.lower./g' -e 's/^(shen\.x\.namespace shen-jit\.lower$/(shen.x.namespace stage0.lower/' \
+        -e 's/^  (use shen-jit)$/  (use shen-jit) (use stage0)/' \
+        -e 's/(shen-jit\.sealed? /(stage0.sealed? /g' -e 's/(shen-jit\.inline-body /(stage0.inline-body /g' > "$WORK/tools/lower.shen"
+fi
+sed -e '/^(load "src\/lowerer\/host.shen")$/d' -e '/^(load "build\/tools\/namespaces.shen")$/d' \
+    -e '/^(load "build\/tools\/lower.shen")$/d' \
     -e '/^(shen-jit\.stage0\.main (value \*argv\*))$/d' \
     "$SHEN_JIT/src/lowerer/stage0.shen" > "$WORK/tools/stage0.shen"
+
+if [ ! -f "$WORK/tools/namespaces.shen" ]; then
+    sed -i.bak '/^(stage0.namespaces.initialise)$/d' "$WORK/tools/stage0.shen"
+fi
 
 UNIVERSE=""
 for f in toplevel core sys dict sequent yacc reader prolog track load writer macros declarations types t-star init; do
@@ -70,6 +82,7 @@ done
 
 "$SHEN_JIT_BIN" eval \
     -l "$SHEN_JIT/src/lowerer/host.shen" \
+    ${NAMESPACE_LOAD:+-l "$WORK/tools/namespaces.shen"} \
     -l "$WORK/tools/lower.shen" \
     -l "$WORK/tools/stage0.shen" \
     -l "$ROOT/builders/jit/build.shen" \

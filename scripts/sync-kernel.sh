@@ -2,8 +2,8 @@
 # Refreshes KLambda/ from the Shen-Language/shen-sources release named below,
 # checked by hash.  KLambda/PROVENANCE.md says what is vendored and why.
 set -eu
-VERSION=43.6
-SHA256=61d1795755a57da252ba8108cdfccc680f95a04bfd395a54f533ab6724647ef5
+VERSION=43.7
+SHA256=55911dd95b719aa0eaeff8fbd926fcbbb9cfafab04dc01f6e283750b9461e487
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT

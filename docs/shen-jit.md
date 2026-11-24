@@ -1,6 +1,6 @@
-# Shen/JIT and kernel 43.6
+# Shen/JIT and kernel 43.7
 
-Yggdrasil's kernel is community ShenOSKernel 43.6
+Yggdrasil's kernel is community ShenOSKernel 43.7
 ([provenance](../KLambda/PROVENANCE.md)), and [Shen/JIT](https://github.com/tizoc/shen-jit)
 is its reference host and a stage-2 target. No change to Shen/JIT is needed.
 
@@ -12,7 +12,7 @@ yggdrasil run tests/fib.shen out/ --target jit
 ## As a host
 
 Shen/JIT runs the shaker from `../shen-jit/build/shen-jit`, or wherever
-`YGGDRASIL_HOST` says. A shake of `tests/fib.shen` keeps the same 81 kernel functions
+`YGGDRASIL_HOST` says. A shake of `tests/fib.shen` emits 82 kernel defuns, including the synthesised initialiser,
 and is byte-identical between runs. Its reader turns `8.0` into the integer 8, and
 reads an integer past the fixnum range as a real, in what `bootstrap` emits. Since
 v0.4 that real is the nearest: 2^63 is `9.223372036854776e18`, where v0.2 gave
@@ -74,7 +74,7 @@ What the build leaves in `<exe>.build/stage0/`:
 
 ## The other ports
 
-The shaker requires a 43.6 host. The following historical 43.4 qualification used:
+The shaker requires a 43.7 host. The following historical 43.4 qualification used:
 Shen/JIT 0.5, shen-scheme 0.54, shen-cl v3.3.0, shen-go v1.8.0, shen-lua v0.13.0,
 ShenScript v1.1.0-rc.3, shen-julia v0.4.0, shen-c v0.6.0, and shen-rust v0.1.2, shen-swift,
 shen-erl and shen-truffle at merged commits. shen-joy's bounded subset and its
@@ -170,3 +170,7 @@ The other targets, from those ports' 43.2 commits, on macOS arm64:
 Those were not one run. A single gate over every target needs every toolchain in one
 environment, and no such environment exists yet, so CI gates `jit`, `go`, `js` and `lua`.
 `docs/evidence/` holds the earlier kernels' records.
+
+### Kernel 43.7, Shen/JIT v0.11 and v0.12
+
+The stage-1 host and JIT target support both releases. Their lowerers use namespaces; the builder gives the lowerer separate names from those sealed in the host.
